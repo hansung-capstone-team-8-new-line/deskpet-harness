@@ -1,4 +1,4 @@
-import type { ViewerPermission } from '@deskpet/contracts';
+import type { ConcurrencyLimiter, RequiredChecksSource, RequiredChecksUnknownReason, ViewerPermission } from '@deskpet/contracts';
 import { FetchHttpClient, HttpTransportError, type HttpClient, type HttpResponse } from '../http.js';
 import { parseErrorBody } from '../result.js';
 import {
@@ -18,8 +18,8 @@ import {
  *
  * inference / 미정
  * - 파일 목록 API는 SHA를 돌려주지 않으므로 changes section의 버전 근거를 만들지 않는다(unverified).
- * - 리뷰 상세 코멘트(pulls/{n}/comments)는 아직 조회하지 않는다.
- * - 필수 검사는 branch protection만 본다. rulesets는 미조회. 권한이 없어 조회 못 하면 unknown.
+ * - 리뷰 상세 코멘트(pulls/{n}/comments)는 review_comments로 조회한다. Copilot 작성자 판별 login은 추정값이다 (GitHubReviewGateway).
+ * - 필수 검사는 rulesets + classic branch protection을 본다. 조회 실패는 이유(plan_unsupported 등)와 함께 반환한다.
  */
 export interface RestGitHubTransportOptions {
   token: string;
@@ -27,12 +27,18 @@ export interface RestGitHubTransportOptions {
   allowWrites?: boolean;
   http?: HttpClient;
   fetchImpl?: typeof fetch;
+  /** GitHub 동시 호출 상한 (D-24) */
+  limiter?: ConcurrencyLimiter;
 }
 
 export class RestGitHubTransport implements GitHubTransport {
   readonly mode = 'rest' as const;
   private readonly http: HttpClient;
   private readonly allowWrites: boolean;
+
+  get writesEnabled(): boolean {
+    return this.allowWrites;
+  }
 
   constructor(o: RestGitHubTransportOptions) {
     if (!o.token) throw new Error('GITHUB_TOKEN is not set (.env)');
@@ -49,6 +55,7 @@ export class RestGitHubTransport implements GitHubTransport {
           'user-agent': 'deskpet-harness-mvp',
         }),
         o.fetchImpl,
+        o.limiter,
       );
   }
 
@@ -91,23 +98,16 @@ export class RestGitHubTransport implements GitHubTransport {
             status: (['queued', 'in_progress', 'completed'].includes(r.status) ? r.status : 'queued') as 'queued' | 'in_progress' | 'completed',
             conclusion: r.conclusion ?? null,
             ...(r.head_sha ? { headSha: String(r.head_sha) } : {}),
+            ...(r.id !== undefined ? { id: String(r.id) } : {}),
+            ...(r.started_at ? { startedAt: new Date(r.started_at).toISOString() } : {}),
+            ...(r.completed_at ? { completedAt: new Date(r.completed_at).toISOString() } : {}),
           })),
           resolvedHeadSha: q.ref,
           hasMore: typeof b.total_count === 'number' ? q.page * q.perPage < b.total_count : false,
         } satisfies TransportReadResultMap['check_runs'];
       }
-      case 'required_checks': {
-        const res = await this.raw('GET', `${repo}/branches/${enc(q.baseRef)}/protection/required_status_checks`, c);
-        if (res.status === 404 && /not protected/i.test(res.bodyText)) return { state: 'none_configured' };
-        if (res.status === 404 && /required status checks not enabled/i.test(res.bodyText)) return { state: 'none_configured' };
-        if (res.status >= 400) {
-          // 권한 부족 시 GitHub는 404/403을 돌려준다 → 설정 없음으로 추정하지 않는다
-          throw new GitHubTransportError('unsupported', `required checks not readable (${res.status}): ${parseErrorBody(res.bodyText).slice(0, 120)}`);
-        }
-        const b = JSON.parse(res.bodyText) as Gh;
-        const names = new Set<string>([...(b.contexts ?? []), ...((b.checks ?? []) as Gh[]).map((x) => String(x.context))]);
-        return { state: 'configured', names: [...names] };
-      }
+      case 'required_checks':
+        return this.requiredChecks(repo, q.baseRef, c);
       case 'reviews': {
         const b = await this.get(`${repo}/pulls/${q.prNumber}/reviews`, c, { per_page: String(q.perPage), page: String(q.page) });
         const list = Array.isArray(b) ? b : [];
@@ -118,10 +118,26 @@ export class RestGitHubTransport implements GitHubTransport {
             state: String(r.state) as 'APPROVED',
             ...(r.commit_id ? { commitSha: String(r.commit_id) } : {}),
             ...(r.submitted_at ? { submittedAt: new Date(r.submitted_at).toISOString() } : {}),
-            comments: r.body ? [{ body: String(r.body) }] : [],
+            comments: r.body ? [{ body: String(r.body), kind: 'summary' as const }] : [],
           })),
           hasMore: list.length >= q.perPage,
         } satisfies TransportReadResultMap['reviews'];
+      }
+      case 'review_comments': {
+        const b = await this.get(`${repo}/pulls/${q.prNumber}/comments`, c, { per_page: String(q.perPage), page: String(q.page) });
+        const list = Array.isArray(b) ? b : [];
+        return {
+          comments: list
+            .filter((x: Gh) => x.pull_request_review_id != null)
+            .map((x: Gh) => ({
+              reviewId: String(x.pull_request_review_id),
+              path: String(x.path ?? ''),
+              ...(typeof (x.line ?? x.original_line) === 'number' ? { line: Number(x.line ?? x.original_line) } : {}),
+              body: String(x.body ?? ''),
+              ...(x.commit_id ? { commitSha: String(x.commit_id) } : {}),
+            })),
+          hasMore: list.length >= q.perPage,
+        } satisfies TransportReadResultMap['review_comments'];
       }
       case 'viewer': {
         const me = await this.get('/user', c);
@@ -152,6 +168,70 @@ export class RestGitHubTransport implements GitHubTransport {
     if (res.status >= 400) throw mapStatus(res);
     const b = JSON.parse(res.bodyText) as Gh;
     return { kind: 'rest', reviewId: String(b.id), state: String(b.state), commitId: String(b.commit_id), submittedAt: new Date(b.submitted_at ?? Date.now()).toISOString(), user: String(b.user?.login ?? '') };
+  }
+
+
+  /**
+   * 필수 검사 설정 = rulesets(읽기 권한으로 조회 가능) ∪ classic branch protection(관리자 권한 필요).
+   * 조회 실패는 이유별로 구분한다. 무료 요금제의 비공개 저장소는 403 "Upgrade to GitHub Pro…" → plan_unsupported.
+   */
+  private async requiredChecks(repo: string, baseRef: string, c: { timeoutMs: number; signal?: AbortSignal }): Promise<TransportReadResultMap['required_checks']> {
+    // 1) rulesets
+    let rulesetNames: string[] = [];
+    let rulesetsReadable = false;
+    const rr = await this.rawSafe('GET', `${repo}/rules/branches/${enc(baseRef)}`, c);
+    if (rr && rr.status === 200) {
+      rulesetsReadable = true;
+      const rules = JSON.parse(rr.bodyText) as Gh[];
+      rulesetNames = (Array.isArray(rules) ? rules : [])
+        .filter((r) => r.type === 'required_status_checks')
+        .flatMap((r) => ((r.parameters?.required_status_checks ?? []) as Gh[]).map((x) => String(x.context)));
+    } else if (rr && rr.status === 404) {
+      rulesetsReadable = true; // 기능 없음 = 규칙 없음
+    }
+
+    // 2) classic branch protection
+    type Classic = { kind: 'configured'; names: string[] } | { kind: 'none' } | { kind: 'unavailable'; reasonCode: RequiredChecksUnknownReason; detail: string };
+    let classic: Classic;
+    const res = await this.rawSafe('GET', `${repo}/branches/${enc(baseRef)}/protection/required_status_checks`, c);
+    if (!res) classic = { kind: 'unavailable', reasonCode: 'lookup_failed', detail: 'network error' };
+    else if (res.status === 200) {
+      const b = JSON.parse(res.bodyText) as Gh;
+      classic = { kind: 'configured', names: [...new Set<string>([...(b.contexts ?? []), ...((b.checks ?? []) as Gh[]).map((x) => String(x.context))])] };
+    } else {
+      const detail = `${res.status} ${parseErrorBody(res.bodyText).slice(0, 160)}`;
+      if (res.status === 404 && /(not protected|required status checks not enabled)/i.test(res.bodyText)) classic = { kind: 'none' };
+      else if (res.status === 403 && /(upgrade to github pro|make this repository public)/i.test(res.bodyText)) classic = { kind: 'unavailable', reasonCode: 'plan_unsupported', detail };
+      else if ([401, 403, 404].includes(res.status)) classic = { kind: 'unavailable', reasonCode: 'insufficient_permission', detail };
+      else classic = { kind: 'unavailable', reasonCode: 'lookup_failed', detail };
+    }
+
+    // 3) 결합
+    const rulesetSet = [...new Set(rulesetNames)];
+    if (classic.kind === 'configured') {
+      const names = [...new Set([...classic.names, ...rulesetSet])];
+      const source: RequiredChecksSource = rulesetSet.length ? 'github_mixed' : 'github_branch_protection';
+      return rulesetsReadable ? { state: 'configured', names, source } : { state: 'configured', names, source, partial: true };
+    }
+    if (rulesetSet.length > 0) {
+      if (classic.kind === 'none') return { state: 'configured', names: rulesetSet, source: 'github_rulesets' };
+      // 요금제상 classic 보호가 존재할 수 없으면 rulesets만으로 완전하다
+      const partial = classic.reasonCode !== 'plan_unsupported';
+      return { state: 'configured', names: rulesetSet, source: 'github_rulesets', ...(partial ? { partial: true } : {}), githubUnavailableReason: classic.reasonCode };
+    }
+    if (classic.kind === 'none') {
+      return rulesetsReadable ? { state: 'none_configured', source: 'github_branch_protection' } : { state: 'unavailable', reasonCode: 'lookup_failed', detail: 'rulesets not readable' };
+    }
+    return { state: 'unavailable', reasonCode: classic.reasonCode, detail: classic.detail };
+  }
+
+  private async rawSafe(method: 'GET', path: string, c: { timeoutMs: number; signal?: AbortSignal }): Promise<HttpResponse | undefined> {
+    try {
+      return await this.raw(method, path, c);
+    } catch (e) {
+      if (e instanceof GitHubTransportError) return undefined;
+      throw e;
+    }
   }
 
   // ------------------------------------------------------------ helpers

@@ -10,7 +10,7 @@ export const ITEM_ID = '1000006';
 export const STAGE_ID = '1000038';
 export const T0 = '2026-10-04T10:00:00.000Z';
 
-export function route(overall = 0.95, intention = 'pr.review'): CurrentTurnInput['routeDecision'] {
+function route(overall = 0.95, intention = 'pr.review'): CurrentTurnInput['routeDecision'] {
   return {
     headOutputs: { intention: { value: intention, confidence: overall } },
     overallConfidence: overall,

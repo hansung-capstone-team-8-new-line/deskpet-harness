@@ -32,6 +32,24 @@ export interface GitHubReviewGatewayOptions {
   toolTimeoutMs?: number;
   /** Copilot 리뷰 작성자 판별 (inference: 실제 bot login은 통합 시 확인) */
   copilotLogins?: string[];
+  /**
+   * DeskPet 대체 필수 검사 목록 ('owner/name' → 검사 이름). GitHub가 요금제상 보호 기능을 제공하지 않을 때(plan_unsupported)만
+   * 사용한다. 권한 부족·조회 실패에는 쓰지 않는다 (그때는 GitHub 설정이 따로 있을 수 있으므로). README D-13.
+   */
+  requiredChecksFallback?: Record<string, string[]>;
+  /**
+   * 사람(운영자) 최종 확인 (감사 F-03). DurableAck 전에 묻고, 승인 뒤에는 대상 상태를 다시 확인한 다음에만 ack·전송한다.
+   * 응답 대기는 호출 deadline 안으로 제한한다. 거절·시간 초과는 전송 전 종료(not_sent)라 결과가 모호하지 않다.
+   */
+  operatorConfirm?: OperatorConfirm;
+}
+
+export type OperatorVerdict = 'approved' | 'declined' | 'timeout';
+export interface OperatorConfirm {
+  confirm(
+    cmd: { repository: { owner: string; name: string }; prNumber: number; commitId: string; event: 'APPROVE' },
+    c: { deadlineAt: string; signal?: AbortSignal },
+  ): Promise<OperatorVerdict>;
 }
 
 const READ = 'github.read';
@@ -123,6 +141,8 @@ export class GitHubReviewGateway implements GitHubReviewGatewayPort {
         observedAt: observedAt(),
         pagination: { hasMore: pages.truncated, pagesRead: pages.items.length },
         truncation: { truncated: pages.truncated, limit: q.maxPages * q.maxItemsPerSection },
+        // MVP 범위: 파일·증감 줄 수만. 변경 내용(diff)은 모으지 않는다 (감사 F-06, 범위 결정 대기)
+        detailCoverage: { patches: 'not_collected' },
       };
     }
     if (kind === 'checks') {
@@ -131,7 +151,7 @@ export class GitHubReviewGateway implements GitHubReviewGatewayPort {
       const runs = pages.items.flatMap((p) => p.runs);
       const req = await this.readOnce({ kind: 'required_checks', repository: q.repository, baseRef: pr.baseRef }, c);
       // 필수 검사 설정: 없다고 확인 vs 조회 불가를 구분한다. 결과 목록만 보고 추정하지 않는다
-      const requiredChecks: ChecksData['requiredChecks'] = req.ok ? req.data : { state: 'unknown', reason: req.error.message };
+      const requiredChecks = this.normalizeRequired(req.ok ? req.data : { state: 'unavailable', reasonCode: 'lookup_failed', detail: req.error.message }, q.repository);
       const runShas = new Set(runs.map((r) => r.headSha).filter(Boolean));
       const evidenceSha = runShas.size === 1 ? [...runShas][0] : runs.length === 0 ? pages.items[0]!.resolvedHeadSha : undefined;
       return {
@@ -148,10 +168,25 @@ export class GitHubReviewGateway implements GitHubReviewGatewayPort {
     const pages = await this.paged((page) => this.readOnce({ kind: 'reviews', repository: q.repository, prNumber: q.prNumber, page, perPage: q.maxItemsPerSection }, c), q.maxPages);
     if (!pages.ok) return unavailable('reviews', pages.error);
     const reviews: ReviewItem[] = pages.items.flatMap((p) => p.reviews).map((r) => ({ ...r, source: this.copilot.has(r.author) ? 'copilot' : 'human' }));
+    // 코드 줄 지적은 따로 모아 해당 리뷰에 붙인다. 실패해도 리뷰 목록은 쓰되 세부 범위를 표시한다 (감사 F-06)
+    let inline: 'complete' | 'partial' | 'unavailable' = 'complete';
+    if (reviews.length > 0) {
+      const cp = await this.paged((page) => this.readOnce({ kind: 'review_comments', repository: q.repository, prNumber: q.prNumber, page, perPage: q.maxItemsPerSection }, c), q.maxPages);
+      if (!cp.ok) inline = 'unavailable';
+      else {
+        if (cp.truncated) inline = 'partial';
+        const byReview = new Map(reviews.map((r) => [r.reviewId, r]));
+        for (const x of cp.items.flatMap((p) => p.comments)) {
+          byReview.get(x.reviewId)?.comments.push({ path: x.path, ...(x.line !== undefined ? { line: x.line } : {}), body: x.body, kind: 'inline', ...(x.severity ? { severity: x.severity } : {}) });
+        }
+      }
+    }
     return {
       sectionKind: 'reviews',
       availability: 'available',
+      // 목록 페이지 완전성. 세부 지적 수집 범위는 detailCoverage로 따로 표시한다
       completeness: pages.truncated ? 'partial' : 'complete',
+      detailCoverage: { inlineComments: inline },
       // 리뷰가 없으면 성공적으로 조회한 빈 목록
       data: { reviews },
       // inference: 리뷰는 항목별 commitSha로 버전을 표시한다. 섹션 단위 SHA는 모든 항목이 같은 SHA일 때만
@@ -169,8 +204,12 @@ export class GitHubReviewGateway implements GitHubReviewGatewayPort {
    * 지정 SHA에 APPROVE 제출. 실행 직전 외부 상태를 재검증하고 DurableAck 이후에만 전송한다.
    * 사전 조회와 제출 사이의 경쟁을 완전히 제거했다고 주장하지 않는다. commitID는 버전 지정이지 원자적 비교가 아니다.
    */
-  async submitApproval(cmd: SubmitApprovalCommand, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult> {
-    const ids = { operationId: handle.operationId, attemptId: handle.attemptId };
+  /** 승인 전 조건 확인 (head SHA·상태·권한·필수 검사) 과 직전 리뷰 목록. 운영자 확인 뒤에 한 번 더 부른다 */
+  private async approvalPrecheck(
+    cmd: SubmitApprovalCommand,
+    c: CallConstraints,
+    ids: { operationId: string; attemptId: string },
+  ): Promise<{ ok: true; priorReviewIds: string[]; viewer: { ok: true; data: { login: string; permission: ViewerPermission } } | { ok: false } } | { ok: false; result: GatewayResult }> {
     const ctx = await this.getReviewContext(
       { repository: cmd.repository, prNumber: cmd.prNumber, requestedSections: ['checks'], expectedHeadSha: cmd.expectedHeadSha, deadlineAt: c.deadlineAt },
       c,
@@ -187,13 +226,41 @@ export class GitHubReviewGateway implements GitHubReviewGatewayPort {
     if (ctx.consistency === 'changed' && !blockers.includes('sha_changed')) blockers.push('sha_changed');
     if (blockers.length > 0) {
       const code: ProvisionalErrorCode = blockers.includes('sha_changed') ? 'SHA_CHANGED' : 'POLICY_BLOCKED';
-      return notSent(err(WRITE, code, `pre-dispatch verification failed: ${blockers.join(',')}`, 'user_input', ids), `precheck:${blockers.join(',')}`, {
-        blockers,
-        observedHeadSha: ctx.observedHeadSha ?? ctx.initialHeadSha,
-      });
+      return {
+        ok: false,
+        result: notSent(err(WRITE, code, `pre-dispatch verification failed: ${blockers.join(',')}`, 'user_input', ids), `precheck:${blockers.join(',')}`, {
+          blockers,
+          observedHeadSha: ctx.observedHeadSha ?? ctx.initialHeadSha,
+        }),
+      };
     }
-    const priorReviewIds = await this.reviewIds(cmd, c);
+    return { ok: true, priorReviewIds: await this.reviewIds(cmd, c), viewer };
+  }
 
+  async submitApproval(cmd: SubmitApprovalCommand, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult> {
+    const ids = { operationId: handle.operationId, attemptId: handle.attemptId };
+    let pre = await this.approvalPrecheck(cmd, c, ids);
+    if (!pre.ok) return pre.result;
+
+    if (!this.o.transport.writesEnabled) {
+      // 쓰기 잠금: ack도 요청하지 않는다
+      return notSent(err(WRITE, 'POLICY_BLOCKED', 'writes disabled (allowWrites=false)', 'none', ids), 'writes_disabled', { priorReviewIds: pre.priorReviewIds });
+    }
+
+    const actual = { repository: cmd.repository, prNumber: cmd.prNumber, commitId: cmd.expectedHeadSha, event: 'APPROVE' as const };
+    if (this.o.operatorConfirm) {
+      // ack 전에 묻는다. 기다리는 동안 상태가 바뀔 수 있으므로 승인 뒤 조건을 처음부터 다시 확인한다
+      if (boundedTimeout(this.timeoutMs, c.deadlineAt, this.o.now()) <= 0 || c.signal?.aborted) {
+        return notSent(err(WRITE, 'DEADLINE_EXCEEDED', 'deadline exceeded before operator confirmation', 'none', ids), 'deadline_before_dispatch');
+      }
+      const verdict = await this.o.operatorConfirm.confirm(actual, { deadlineAt: c.deadlineAt, ...(c.signal ? { signal: c.signal } : {}) });
+      if (verdict === 'declined') return notSent(err(WRITE, 'CANCELLED', 'operator declined before sending', 'none', ids), 'operator_declined');
+      if (verdict === 'timeout') return notSent(err(WRITE, 'DEADLINE_EXCEEDED', 'operator confirmation timed out', 'none', ids), 'operator_timeout');
+      pre = await this.approvalPrecheck(cmd, c, ids);
+      if (!pre.ok) return pre.result;
+    }
+    const priorReviewIds = pre.priorReviewIds;
+    const viewer = pre.viewer;
     const timeoutMs = boundedTimeout(this.timeoutMs, c.deadlineAt, this.o.now());
     if (timeoutMs <= 0 || c.signal?.aborted) {
       return notSent(err(WRITE, 'DEADLINE_EXCEEDED', 'deadline exceeded before dispatch', 'none', ids), 'deadline_before_dispatch');
@@ -204,7 +271,6 @@ export class GitHubReviewGateway implements GitHubReviewGatewayPort {
       return notSent(err(WRITE, code, `no durable ack: ${ack.reason} ${ack.detail}`, 'none', ids), `no_ack:${ack.reason}`);
     }
 
-    const actual = { repository: cmd.repository, prNumber: cmd.prNumber, commitId: cmd.expectedHeadSha, event: 'APPROVE' as const };
     try {
       const res = await this.o.transport.submitApproval(actual, { timeoutMs, ...(c.signal ? { signal: c.signal } : {}) });
       const respondedAt = this.iso();
@@ -231,7 +297,8 @@ export class GitHubReviewGateway implements GitHubReviewGatewayPort {
     } catch (e) {
       if (!(e instanceof GitHubTransportError)) throw e;
       if (e.kind === 'not_sent') {
-        const code: ProvisionalErrorCode = e.proof === 'writes_disabled' ? 'POLICY_BLOCKED' : 'GITHUB_TRANSIENT';
+        // 쓰기 잠금·운영자 거절은 일시 오류가 아니므로 자동 재시도 대상이 아니다
+        const code: ProvisionalErrorCode = e.proof === 'writes_disabled' ? 'POLICY_BLOCKED' : e.proof === 'operator_declined' ? 'CANCELLED' : 'GITHUB_TRANSIENT';
         return notSent(err(WRITE, code, e.message, 'none', ids), e.proof ?? 'transport_not_sent');
       }
       if (e.kind === 'no_response' || e.kind === 'transient') {
@@ -282,6 +349,16 @@ export class GitHubReviewGateway implements GitHubReviewGatewayPort {
   }
 
   // ============================================================== helpers
+  private normalizeRequired(r: TransportReadResultMap['required_checks'], repo: { owner: string; name: string }): ChecksData['requiredChecks'] {
+    if (r.state !== 'unavailable') return r;
+    const key = `${repo.owner}/${repo.name}`.toLowerCase();
+    const fallback = Object.entries(this.o.requiredChecksFallback ?? {}).find(([k]) => k.toLowerCase() === key)?.[1];
+    if (r.reasonCode === 'plan_unsupported' && fallback) {
+      return { state: 'configured', names: fallback, source: 'deskpet_config', githubUnavailableReason: 'plan_unsupported' };
+    }
+    return { state: 'unknown', reasonCode: r.reasonCode, reason: r.detail };
+  }
+
   private iso() {
     return new Date(this.o.now()).toISOString();
   }

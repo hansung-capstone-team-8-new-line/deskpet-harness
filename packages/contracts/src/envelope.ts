@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { Id, UtcTimestamp } from './common.js';
-import { HarnessRequest, HarnessResumeRequest, HarnessResult, PipelineEvent } from './harness.js';
+import { HarnessCancel, HarnessRequest, HarnessResumeRequest, HarnessResult, PipelineEvent } from './harness.js';
 import { OutputEvent, OutputRequest } from './output.js';
+import { PipelineActionRequest, PipelineEurekaActionRequest, PipelineHarnessRequest, PipelineOutputRequest, PipelineLinksRequest, PipelineReminderRequest, PipelineRemindersRequest } from './pipelineBridge.js';
 import { OperationUpdated, Tombstone } from './projection.js';
 
 /**
@@ -23,8 +24,22 @@ export const PAYLOAD_BY_KIND = {
   'harness.request': HarnessRequest,
   'harness.resume': HarnessResumeRequest,
   'harness.result': HarnessResult,
+  /** 명시적 취소 (서비스 경계) */
+  'harness.cancel': HarnessCancel,
+  /** HarnessResult로 출력 문장 생성 요청 (매핑은 서버의 HarnessOutputMapper가 한다) */
+  'output.from_result': HarnessResult,
   'pipeline.event': PipelineEvent,
   'output.request': OutputRequest,
+  /** 파이프라인 문서 형식 (pipelineBridge.ts): HarnessAdapter.run / reconcile, OutputModel.generate */
+  'harness.run': PipelineHarnessRequest,
+  'harness.reconcile': PipelineActionRequest,
+  'output.generate': PipelineOutputRequest,
+  /** 파이프라인 문서 EurekaAdapter: execute / reconcile / reminders / reminder(itemId) */
+  'eureka.execute': PipelineEurekaActionRequest,
+  'eureka.reconcile': PipelineActionRequest,
+  'eureka.reminders': PipelineRemindersRequest,
+  'eureka.reminder': PipelineReminderRequest,
+  'eureka.links': PipelineLinksRequest,
   'output.event': OutputEvent,
   'operation.updated': OperationUpdated,
   'projection.tombstone': Tombstone,
@@ -34,7 +49,7 @@ export type EnvelopeKind = keyof typeof PAYLOAD_BY_KIND;
 export const EnvelopeKind = z.enum(Object.keys(PAYLOAD_BY_KIND) as [EnvelopeKind, ...EnvelopeKind[]]);
 
 /** 실행 요청 종류: deadlineAt 필수 */
-export const EXECUTION_KINDS: ReadonlySet<EnvelopeKind> = new Set(['harness.request', 'harness.resume']);
+export const EXECUTION_KINDS: ReadonlySet<EnvelopeKind> = new Set(['harness.request', 'harness.resume', 'harness.run', 'eureka.execute']);
 
 const EnvelopeHeader = z.object({
   schemaVersion: SchemaVersion,
@@ -65,7 +80,72 @@ export function parseEnvelope(input: unknown): ParseResult<Envelope> {
   const schema = PAYLOAD_BY_KIND[h.kind] as z.ZodTypeAny;
   const payload = schema.safeParse(h.payload);
   if (!payload.success) return { ok: false, issues: payload.error.issues.map((i) => `payload.${fmt(i)}`) };
+  // 봉투와 payload가 서로 다른 요청을 가리키면 실행하지 않는다 (감사 F-05)
+  const inner = payloadRequestId(h.kind, payload.data);
+  if (inner !== undefined && inner !== h.requestId) {
+    return { ok: false, issues: [`requestId: envelope requestId does not match payload (${inner})`] };
+  }
   return { ok: true, value: { ...h, payload: payload.data } as Envelope };
+}
+
+/** payload가 가리키는 요청 ID. 봉투 requestId와 같아야 한다. 해당 필드가 없는 kind는 undefined */
+export function payloadRequestId(kind: EnvelopeKind, payload: unknown): string | undefined {
+  const p = (payload ?? {}) as Record<string, unknown>;
+  switch (kind) {
+    case 'harness.request':
+    case 'harness.cancel':
+    case 'harness.result':
+    case 'output.from_result':
+    case 'pipeline.event':
+      return typeof p['requestId'] === 'string' ? p['requestId'] : undefined;
+    case 'harness.resume':
+      return typeof p['originalRequestId'] === 'string' ? p['originalRequestId'] : undefined;
+    case 'harness.run': {
+      const a = p['action'] as { requestId?: unknown } | undefined;
+      return typeof a?.requestId === 'string' ? a.requestId : undefined;
+    }
+    case 'harness.reconcile':
+    case 'output.generate':
+    case 'eureka.execute':
+    case 'eureka.reconcile':
+    case 'eureka.reminders':
+    case 'eureka.reminder':
+    case 'eureka.links':
+      return typeof p['requestId'] === 'string' ? p['requestId'] : undefined;
+    case 'output.request': {
+      const refs = p['requestRefs'] as { requestId?: unknown } | undefined;
+      return typeof refs?.requestId === 'string' ? refs.requestId : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * 봉투 deadline과 payload 안 실행 deadline 중 이른 쪽을 실행 deadline으로 쓴다 (감사 F-05).
+ * 봉투에 deadline이 없거나 payload deadline이 더 이르면 그대로 둔다.
+ */
+export function clampPayloadDeadline(env: Envelope): Envelope {
+  if (!env.deadlineAt) return env;
+  const outer = Date.parse(env.deadlineAt);
+  const clamp = (c: { deadlineAt: string }) => (Date.parse(c.deadlineAt) > outer ? { ...c, deadlineAt: env.deadlineAt! } : c);
+  if (env.kind === 'harness.request') {
+    const p = env.payload as Envelope<'harness.request'>['payload'];
+    return { ...env, payload: { ...p, constraints: clamp(p.constraints) } } as Envelope;
+  }
+  if (env.kind === 'harness.run') {
+    const p = env.payload as Envelope<'harness.run'>['payload'];
+    return { ...env, payload: { ...p, action: clamp(p.action) } } as Envelope;
+  }
+  if (env.kind === 'eureka.execute') {
+    const p = env.payload as Envelope<'eureka.execute'>['payload'];
+    return { ...env, payload: clamp(p) } as Envelope;
+  }
+  if (env.kind === 'harness.resume') {
+    const p = env.payload as Envelope<'harness.resume'>['payload'];
+    return { ...env, payload: { ...p, newCallConstraints: clamp(p.newCallConstraints) } } as Envelope;
+  }
+  return env;
 }
 
 export function makeEnvelope<K extends EnvelopeKind>(

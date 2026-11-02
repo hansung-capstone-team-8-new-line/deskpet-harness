@@ -1,6 +1,11 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { GitHubTransportError } from '@deskpet/gateways';
 import { ITEM_ID, PR, SHA_A, SHA_B } from '../support/builders.js';
 import { answer, askApproval, review, speak } from '../support/flows.js';
+import { ControllableSensor } from '../support/sensor.js';
 import { createWorld } from '../support/world.js';
 
 /** golden-scenario §5 세부 시나리오. 모든 외부 호출은 fixture. */
@@ -169,6 +174,22 @@ describe('S-07: response lost after sending → unknown', () => {
     const rec = await w.harness.reconcile(op.operationId, 'sys-restart', { deadlineAt: '2026-10-04T10:10:00.000Z' });
     expect(rec.status).toBe('still_unknown');
     expect(w.github.submitCount).toBe(1);
+  });  it('SQLite 파일 저장소: 응답 전 크래시 → 파일을 다시 열어도 unknown, 재전송 없음', async () => {
+    const w = createWorld({ durablePath: join(mkdtempSync(join(tmpdir(), 'deskpet-e2e-')), 'h.db') });
+    await review(w);
+    const q = await askApproval(w);
+    // 확인·operation 준비·ack까지 진행한 뒤 응답 전에 프로세스가 죽은 상황
+    w.github.afterSubmit = () => {
+      w.github.afterSubmit = undefined;
+      throw new Error('process crashed');
+    };
+    await expect(answer(w, q, '응, 승인해')).rejects.toThrow('process crashed');
+    w.restart();
+    const op = (await w.store.listOperations()).find((o) => o.action === 'submit_approval')!;
+    expect(op.actionResult).toMatchObject({ status: 'unknown', dispatchState: 'may_have_been_sent' });
+    const rec = await w.harness.reconcile(op.operationId, 'sys-restart', { deadlineAt: '2026-10-04T10:10:00.000Z' });
+    expect(rec.status).toBe('still_unknown');
+    expect(w.github.submitCount).toBe(1);
   });
 });
 
@@ -278,6 +299,111 @@ describe('Confirmation scope', () => {
       newCallConstraints: { deadlineAt: '2026-10-04T10:10:00.000Z', maxPages: 3, maxResultBytes: 1000, policyVersion: 'p' },
     });
     expect(fake.disposition).toBe('failed');
+    expect(w.github.submitCount).toBe(0);
+  });
+});
+
+describe('writes disabled (real-connection demo mode)', () => {
+  it('approval is not sent and no durable ack is requested; GitHub/Eureka unchanged', async () => {
+    const w = createWorld();
+    w.github.writesEnabled = false;
+    await review(w);
+    const q = await askApproval(w);
+    const r = await answer(w, q, '응, 승인해');
+    expect(r.actionResults[0]).toMatchObject({ action: 'submit_approval', status: 'failed', dispatchState: 'not_sent' });
+    const op = (await w.store.getOperation(r.actionResults[0]!.operationId))!;
+    expect(op.attempts.map((a) => a.dispatchState)).toEqual(['not_sent']);
+    expect(op.attempts[0]!.dispatchEvidence?.mayHaveBeenSentAt).toBeUndefined();
+    expect(w.github.submitCount).toBe(0);
+    expect(w.eurekaServer.writeCount('/')).toBe(0);
+    expect((await speak(r)).text).toBe('쓰기가 꺼져 있어서 PR 42번 승인 요청은 보내지 않았어요. PR과 Eureka 상태는 그대로예요.');
+  });
+});
+
+describe('operator declines at the final gate', () => {
+  it('records cancelled + not_sent and does not auto-retry', async () => {
+    const w = createWorld();
+    let prompts = 0;
+    const original = w.github.submitApproval.bind(w.github);
+    w.github.submitApproval = async () => {
+      prompts += 1;
+      throw new GitHubTransportError('not_sent', 'operator declined before sending', 'operator_declined');
+    };
+    await review(w);
+    const q = await askApproval(w);
+    const r = await answer(w, q, '응, 승인해');
+    expect(r.actionResults[0]).toMatchObject({ action: 'submit_approval', status: 'cancelled', dispatchState: 'not_sent' });
+    expect(prompts).toBe(1);
+    expect(w.github.submitCount).toBe(0);
+    void original;
+  });
+});
+
+describe('Sensor 자체 오류 → 판정 대기 (guide-sensor: suggestedActionStatus 미생성, assessment=pending)', () => {
+  it('쓰기 응답 뒤 센서만 실패하면 unknown/failed로 바꾸지 않고, 재전송 없이 reassess로 재판정한다', async () => {
+    const sensor = new ControllableSensor();
+    const w = createWorld({ sensor });
+    await review(w);
+    const q = await askApproval(w);
+    sensor.fail = (i) => i.gatewayResult.mode === 'write';
+    const r = await answer(w, q, '응, 승인해');
+    expect(r.actionResults).toEqual([]);
+    expect(r.facts['assessmentPending']).toMatchObject({ action: 'submit_approval', dispatchState: 'sent', recovery: 'none' });
+    expect((await speak(r)).text).toBe('PR 42번 승인 요청은 보냈지만 결과 판정을 아직 끝내지 못했어요. 다시 보내지 않고 기록으로 다시 확인할게요.');
+    const opId = (r.facts['assessmentPending'] as { operationId: string }).operationId;
+    let op = (await w.store.getOperation(opId))!;
+    expect(op).toMatchObject({ assessment: 'pending', recovery: 'none', executionPhase: 'response_received' });
+    expect(op.actionResult).toBeUndefined();
+    expect(w.github.submitCount).toBe(1);
+
+    // 센서가 계속 실패하면 대기 유지
+    expect((await w.harness.reassess(opId, 'sys-1')).status).toBe('still_pending');
+    // 센서 복구 후 저장된 응답 증거로만 재판정 (외부 호출 없음)
+    sensor.fail = null;
+    const re = await w.harness.reassess(opId, 'sys-2');
+    expect(re).toMatchObject({ status: 'assessed', actionResult: { status: 'succeeded' } });
+    op = (await w.store.getOperation(opId))!;
+    expect(op.assessment).toBe('assessed');
+    expect(w.github.submitCount).toBe(1);
+    expect((await w.harness.reassess(opId, 'sys-3')).status).toBe('not_needed');
+  });
+
+  it('복구 중 센서가 실패해도 복구 담당을 해제하고 unknown을 유지한다', async () => {
+    const sensor = new ControllableSensor();
+    const w = createWorld({ sensor, config: { maxRecoveryAttempts: 5 } });
+    await review(w);
+    const q = await askApproval(w);
+    w.github.failNextSubmit('drop_after_apply');
+    const r = await answer(w, q, '응, 승인해');
+    const a = r.actionResults[0]!;
+    expect(a.status).toBe('unknown');
+
+    sensor.fail = () => true;
+    const rec = await w.harness.reconcile(a.operationId, 'sys-1', { deadlineAt: '2026-10-04T10:10:00.000Z' });
+    expect(rec.status).toBe('still_unknown');
+    let op = (await w.store.getOperation(a.operationId))!;
+    expect(op.recovery).toBe('needed'); // running으로 남지 않는다
+    expect(op.currentExecutionAuthority).toBeUndefined();
+    expect(op.actionResult!.status).toBe('unknown');
+
+    sensor.fail = null;
+    const next = await w.harness.reconcile(a.operationId, 'sys-2', { deadlineAt: '2026-10-04T10:10:00.000Z' });
+    expect(next.status).not.toBe('busy');
+    op = (await w.store.getOperation(a.operationId))!;
+    expect(op.recovery).not.toBe('running');
+    expect(w.github.submitCount).toBe(1);
+  });
+
+  it('조회 응답의 센서 판정이 실패하면 그 결과로 승인 질문을 만들지 않는다', async () => {
+    const sensor = new ControllableSensor();
+    const w = createWorld({ sensor });
+    sensor.fail = (i) => i.gatewayResult.mode === 'read';
+    const r = await askApproval(w);
+    expect(r.pending).toBeUndefined();
+    expect(r.facts['reviewError']).toBe('sensor_assessment_pending');
+    expect((await speak(r)).text).toContain('검사 판정을 끝내지 못했어요');
+    const ops = await w.store.listOperations();
+    expect(ops.find((o) => o.action === 'get_review_context')).toMatchObject({ assessment: 'pending' });
     expect(w.github.submitCount).toBe(0);
   });
 });

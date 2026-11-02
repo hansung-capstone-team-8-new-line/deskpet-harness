@@ -6,6 +6,7 @@ import {
   GuideDecision,
   OutputRequest,
   ReviewSection,
+  clampPayloadDeadline,
   makeEnvelope,
   parseEnvelope,
 } from '@deskpet/contracts';
@@ -20,6 +21,21 @@ const envelope = (over: Record<string, unknown> = {}) => ({
   deadlineAt: '2026-10-04T10:01:00.000Z',
   payload: harnessRequest('req-1', voiceTurn('t-1', 'PR 42 리뷰해줘')),
   ...over,
+});
+
+describe('Envelope — 요청 일치·deadline (감사 F-05)', () => {
+  it('rejects a payload that belongs to another request', () => {
+    const r = parseEnvelope(envelope({ requestId: 'req-other' }));
+    expect(r.ok).toBe(false);
+  });
+
+  it('uses the earlier of envelope and payload deadline for execution', () => {
+    const r = parseEnvelope(envelope());
+    if (!r.ok) throw new Error('parse');
+    // builder payload deadline is later than the envelope deadline
+    const c = clampPayloadDeadline(r.value);
+    expect((c.payload as { constraints: { deadlineAt: string } }).constraints.deadlineAt).toBe('2026-10-04T10:01:00.000Z');
+  });
 });
 
 describe('Envelope', () => {

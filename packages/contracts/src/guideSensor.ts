@@ -65,6 +65,7 @@ export const GuideInput = z.object({
     deadlineAt: UtcTimestamp,
     policyVersion: z.string(),
     maxSteps: z.number().int().positive(),
+    wikiSearchAllowed: z.boolean().optional(),
   }),
   /** 구조화된 조회 facts (모델 요약으로 원 증거를 대체하지 않는다) */
   facts: z.record(z.unknown()).default({}),

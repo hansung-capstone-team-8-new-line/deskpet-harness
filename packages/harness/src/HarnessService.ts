@@ -27,18 +27,25 @@ import {
   type PendingView,
   type PipelineEvent,
   type ProvisionalErrorCode,
+  type LlmClient,
   type SensorAssessment,
   type SourceRef,
   type TaskRef,
+  type FollowUpNotice,
+  confirmationTokens,
+  extractPrLinks,
+  deliveredQuestionMatches,
 } from '@deskpet/contracts';
 import { StoreDispatchOwner } from './dispatch/DispatchOwner.js';
 import { reviewFacts, type ReviewFacts } from './facts.js';
 import { RuleBasedGuide, type Guide, type GuideFacts } from './guide/Guide.js';
+import { LlmGuide, RuleFirstGuide } from './guide/LlmGuide.js';
 import { DEFAULT_POLICY, type PolicyConfig } from './policy/config.js';
 import { expectedOutcomeFor } from './policy/expectedOutcome.js';
-import { classifyAnswer } from './policy/inputPolicy.js';
+import { classifyAnswer, writeInputBlockers } from './policy/inputPolicy.js';
 import type { WikiReader } from './ports.js';
 import type { Clock, IdGen } from './runtime/clock.js';
+import { collectTimings, timedPort } from './runtime/timing.js';
 import { DeterministicSensor, type Sensor } from './sensor/Sensor.js';
 import type { OperationStore, PrepareCommand } from './store/OperationStore.js';
 
@@ -59,9 +66,13 @@ export interface HarnessDeps {
   ids: IdGen;
   config?: PolicyConfig;
   guide?: Guide;
+  /** 있으면 규칙 Guide가 모르는 의도에 LLM 보조 Guide를 쓴다 (RuleFirstGuide). guide를 직접 주면 무시한다 */
+  llm?: LlmClient;
   sensor?: Sensor;
   wiki?: WikiReader;
   holderId?: string;
+  /** 요청이 끝난 뒤 확정된 결과 알림 (잠깐 기다려도 끝나지 않은 Eureka 반영, 주기 복구 결과). D-23 */
+  onFollowUp?: (n: FollowUpNotice) => void;
 }
 
 export interface CancellationSignal {
@@ -84,9 +95,19 @@ interface RequestMeta {
   taskRefs: TaskRef[];
   deadlineAt: string;
   abort: AbortController;
+  /** 마지막으로 쓴 시각. 오래된 항목 정리용 (감사 F-07) */
+  touchedAtMs: number;
+  /** 응답을 먼저 돌려준 뒤에도 진행 중인 후속 작업. 끝날 때까지 메타를 지우지 않는다 */
+  backgroundRunning?: boolean;
 }
 
+/** 메모리에 들고 있는 요청 상태 상한 (감사 F-07). 끝난 요청은 바로 지우고, 답변 대기 요청만 남긴다 */
+const MAX_TRACKED_REQUESTS = 500;
+
 const WRITE_RETRYABLE: ReadonlySet<ProvisionalErrorCode> = new Set(['GITHUB_TRANSIENT', 'EUREKA_TRANSIENT']);
+
+/** 쓰기 실행 결과. 센서 자체 오류면 확정 ActionResult 없이 판정 대기(assessment=pending)로 끝난다 */
+type WriteOutcome = { actionResult: ActionResult; operation: OperationRecord } | { assessmentPending: true; operation: OperationRecord };
 
 export class HarnessService {
   private readonly cfg: PolicyConfig;
@@ -95,10 +116,23 @@ export class HarnessService {
   private readonly holderId: string;
   private readonly owner: StoreDispatchOwner;
   private readonly requests = new Map<string, RequestMeta>();
+  private readonly background = new Set<Promise<unknown>>();
+  private noticeSeq = 0;
 
-  constructor(private readonly d: HarnessDeps) {
+  private readonly d: HarnessDeps;
+
+  constructor(deps: HarnessDeps) {
+    // 외부 호출 시간 기록 (NFR-01, D-26): port 경계에서 잰다
+    const d: HarnessDeps = {
+      ...deps,
+      github: timedPort(deps.github, 'github'),
+      eureka: timedPort(deps.eureka, 'eureka'),
+      ...(deps.wiki ? { wiki: timedPort(deps.wiki, 'wiki') } : {}),
+      ...(deps.llm ? { llm: timedPort(deps.llm, 'llm', { complete: 'llm.guide' }) } : {}),
+    };
+    this.d = d;
     this.cfg = d.config ?? DEFAULT_POLICY;
-    this.guide = d.guide ?? new RuleBasedGuide(this.cfg);
+    this.guide = d.guide ?? new RuleFirstGuide(new RuleBasedGuide(this.cfg), d.llm ? new LlmGuide(d.llm, { now: () => d.clock.nowMs(), timeoutMs: this.cfg.llmGuideTimeoutMs }) : undefined);
     this.sensor = d.sensor ?? new DeterministicSensor();
     this.holderId = d.holderId ?? 'harness-1';
     this.owner = new StoreDispatchOwner(d.store, d.clock, this.holderId, (op) => this.dispatchValidity(op));
@@ -113,8 +147,9 @@ export class HarnessService {
     if (dup) return dup; // 동일 turnId 재전달은 저장된 결과로 응답
 
     const meta = this.meta(req.requestId, req.currentTurn, req.context, req.constraints.deadlineAt, intentOf(req.currentTurn));
-    const result = await this.runGuideLoop(meta, req.currentTurn, req.context, req.constraints);
+    const result = await this.withTimings(() => (RETRY_INTENTS.has(meta.intent) ? this.retryStageCompletion(meta, req.currentTurn, req.context, req.constraints) : this.runGuideLoop(meta, req.currentTurn, req.context, req.constraints)));
     await this.d.store.recordTurnResult(req.currentTurn.turnId, result);
+    this.settle(result);
     return result;
   }
 
@@ -126,8 +161,9 @@ export class HarnessService {
     const dup = await this.d.store.getTurnResult(req.currentTurn.turnId);
     if (dup) return dup;
 
-    const result = await this.resumeInner(req);
+    const result = await this.withTimings(() => this.resumeInner(req));
     await this.d.store.recordTurnResult(req.currentTurn.turnId, result);
+    this.settle(result);
     return result;
   }
 
@@ -174,7 +210,9 @@ export class HarnessService {
       // 없는 오래된 확인 ID로 새 실행을 허용하지 않는다
       return this.processingFailure(meta.requestId, 'CONFIRMATION_INVALID', 'confirmation not found for pending');
     }
-    const answer = classifyAnswer(req.currentTurn, this.cfg);
+    let answer = classifyAnswer(req.currentTurn, this.cfg);
+    // 파이프라인이 승인으로 판단하지 않았으면(mutationApproved=false) 쓰기를 하지 않는다. 거절은 그대로 거절
+    if (answer.verdict === 'approved' && req.externalApproval === false) answer = { verdict: 'unclear', rationale: 'pipeline did not mark the answer as approval (mutationApproved=false)' };
     const evidence = {
       inputChannel: req.currentTurn.inputChannel,
       sttConfidenceState: req.currentTurn.sttConfidenceState,
@@ -221,7 +259,220 @@ export class HarnessService {
     if (conf.scope.action === 'submit_approval') {
       return this.executeApproval(meta, prepared.operation, prepared.authority, constraints);
     }
-    return this.executeStageCompletion(meta, prepared.operation, prepared.authority, constraints);
+    return this.stageCompletionWithWait(meta, prepared.operation, prepared.authority, constraints);
+  }
+
+  // ============================================================ follow-up (D-23)
+  /**
+   * Eureka 반영을 실행하고 followUpReplyWaitMs만 기다린다. 그 안에 끝나면 결과를, 아니면 '진행 중'을 돌려주고
+   * 끝난 결과는 onFollowUp 알림으로 보낸다. 실행 자체는 호출 deadline 안에서만 진행한다 (늘리지 않음).
+   */
+  private async stageCompletionWithWait(meta: RequestMeta, op: OperationRecord, authority: ExecutionAuthority, constraints: ExecutionConstraints): Promise<HarnessResult> {
+    const work = this.executeStageCompletion(meta, op, authority, constraints);
+    const waitMs = this.cfg.followUpReplyWaitMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = Symbol('late');
+    const first = await Promise.race([work, new Promise<typeof late>((r) => (timer = setTimeout(() => r(late), Math.max(0, waitMs))))]);
+    if (timer) clearTimeout(timer);
+    if (first !== late) return first;
+    meta.backgroundRunning = true;
+    const t = op.target as EurekaStageTarget;
+    const tracked = work
+      .then((r) => {
+        const ar = r.actionResults.find((a) => a.action === 'complete_stage');
+        this.emitNotice('late_completion', r, op.operationId, 'complete_stage', ar?.status ?? (r.facts['assessmentPending'] ? 'assessment_pending' : r.disposition));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        meta.backgroundRunning = false;
+        this.background.delete(tracked);
+        this.settle({ requestId: meta.requestId, disposition: 'completed', actionResults: [], facts: {}, sources: [], processingErrors: [] });
+      });
+    this.background.add(tracked);
+    return this.result(meta, 'completed', [], {
+      stageCompletion: { status: 'in_progress', operationId: op.operationId, itemId: t.itemId, stageId: t.stageId, stageName: op.actualRequest['stageName'] },
+    });
+  }
+
+  /** 이번 호출에서 외부 호출이 걸린 시간을 facts.timings에 붙인다 (NFR-01, D-26) */
+  private async withTimings(fn: () => Promise<HarnessResult>): Promise<HarnessResult> {
+    const { value, timings, totalMs } = await collectTimings(fn);
+    return { ...value, facts: { ...value.facts, timings: { totalMs, stages: timings } } };
+  }
+
+  /** 응답 뒤에도 진행 중인 후속 작업이 끝날 때까지 기다린다 (서버 종료·테스트용) */
+  async drainBackground(): Promise<void> {
+    while (this.background.size) await Promise.allSettled([...this.background]);
+  }
+
+  /**
+   * 주기 복구(RecoveryWorker)가 확정한 결과를 알린다. 요청 경로 안의 reconcile은 알리지 않는다 (그 응답에 이미 포함).
+   * GitHub 승인이 성공으로 확정되면 연결된 Eureka 단계의 상태와 기록을 다시 보고, 반영할 수 있을 때만 후속 확인 질문을
+   * 만들어 같이 보낸다 (D-24). 질문을 만들지 않은 이유는 facts.followUp에 남는다.
+   */
+  async notifyRecovered(op: OperationRecord, actionResult: ActionResult): Promise<HarnessResult> {
+    const facts: Record<string, unknown> = { recovered: { operationId: op.operationId, action: op.action } };
+    if (op.action === 'complete_stage' && op.target.kind === 'eureka_stage') {
+      facts['stageCompletion'] = { status: actionResult.status, itemId: op.target.itemId, stageId: op.target.stageId, stageName: op.actualRequest['stageName'] };
+    }
+    let result: HarnessResult = { requestId: op.requestId, disposition: 'completed', actionResults: [actionResult], facts, sources: [], processingErrors: [] };
+    if (op.action === 'submit_approval' && actionResult.status === 'succeeded') {
+      result = await this.followUpAfterRecovery(op, actionResult, facts).catch(() => result);
+    }
+    this.emitNotice('recovery', result, op.operationId, op.action, actionResult.status);
+    return result;
+  }
+
+  private async followUpAfterRecovery(op: OperationRecord, approval: ActionResult, facts: Record<string, unknown>): Promise<HarnessResult> {
+    const plain = (followUp: Record<string, unknown>): HarnessResult => ({ requestId: op.requestId, disposition: 'completed', actionResults: [approval], facts: { ...facts, followUp }, sources: [], processingErrors: [] });
+    const linked = op.actualRequest['linkedStage'] as TaskRef | undefined;
+    if (!linked?.stageId) return plain({ eligibility: 'not_applicable', reason: 'no_linked_eureka_stage' });
+    // 이미 후속 작업이 있거나 질문을 기다리는 중이면 새로 묻지 않는다
+    const existing = (await this.d.store.listOperations(op.requestId)).find((o) => o.action === 'complete_stage' && o.actualRequest['approvalOperationId'] === op.operationId);
+    if (existing) return plain({ eligibility: 'not_applicable', reason: 'followup_operation_exists', operationId: existing.operationId });
+    if ((await this.d.store.listWaitingPendings(op.requestId)).length) return plain({ eligibility: 'not_applicable', reason: 'question_already_waiting' });
+
+    const deadlineAt = new Date(this.d.clock.nowMs() + 30_000).toISOString();
+    const t = op.target as GitHubPrTarget;
+    // Eureka 기록 확인: 기록에서 찾은 연결이면 그 기록에 PR 주소가 아직 있는지 본다 (지워졌으면 묻지 않음)
+    if (linked.source.ref.includes('note:') && this.d.eureka.listStageNotes) {
+      const notes = await this.d.eureka.listStageNotes({ stageId: linked.stageId }, { deadlineAt });
+      if (!notes.ok) return plain({ eligibility: 'unverified', conditions: ['eureka_notes_unverified'] });
+      const still = notes.data!.notes.some((n) => extractPrLinks(n.content).some((l) => l.prNumber === t.prNumber && l.owner.toLowerCase() === t.repository.owner.toLowerCase() && l.name.toLowerCase() === t.repository.name.toLowerCase()));
+      if (!still) return plain({ eligibility: 'blocked', conditions: ['eureka_note_link_removed'] });
+    }
+    const meta =
+      this.requests.get(op.requestId) ??
+      this.restoreFromOperation(op, linked, deadlineAt);
+    meta.deadlineAt = deadlineAt;
+    if (!meta.taskRefs.some((r) => r.stageId === linked.stageId)) meta.taskRefs = [...meta.taskRefs, linked];
+    const constraints: ExecutionConstraints = { deadlineAt, maxPages: 3, maxResultBytes: 256_000, policyVersion: this.cfg.policyVersion };
+    const r = await this.followUpAfterApproval(meta, op, approval, constraints, facts);
+    this.settle(r);
+    return r;
+  }
+
+  /** 복구로 확정된 승인 operation에서 요청 메타를 다시 만든다 (재시작 뒤 메모리에 없을 때) */
+  private restoreFromOperation(op: OperationRecord, linked: TaskRef, deadlineAt: string): RequestMeta {
+    const a = op.actualRequest;
+    const m: RequestMeta = {
+      requestId: op.requestId,
+      conversationId: String(a['conversationId'] ?? 'unknown'),
+      contextId: String(a['contextId'] ?? `ctx-recovered-${op.requestId}`),
+      contextVersion: typeof a['contextVersion'] === 'number' ? a['contextVersion'] : 1,
+      intent: 'pr.approve',
+      stateRevision: 1,
+      cancelled: false,
+      eventGap: false,
+      taskRefs: [linked],
+      deadlineAt,
+      abort: new AbortController(),
+      touchedAtMs: this.d.clock.nowMs(),
+    };
+    this.requests.set(op.requestId, m);
+    return m;
+  }
+
+  private emitNotice(source: FollowUpNotice['source'], result: HarnessResult, operationId: string, action: string, status: string) {
+    if (!this.d.onFollowUp) return;
+    try {
+      this.d.onFollowUp({ noticeId: `notice-${this.holderId}-${this.d.clock.nowMs()}-${++this.noticeSeq}`, source, requestId: result.requestId, operationId, action, status, result, observedAt: this.d.clock.nowIso() });
+    } catch {
+      // 알림 실패는 업무 결과에 영향을 주지 않는다
+    }
+  }
+
+  /**
+   * 실패한 Eureka 반영 다시 하기 (D-23: "다시 해줘" 요청 자체를 동의로 본다).
+   * - 같은 대화에서 가장 최근의 complete_stage가 명시적으로 실패(failed)했을 때만. unknown은 다시 보내지 않는다 (주기 복구가 확인)
+   * - 승인 operation이 성공이고, 후속 적합성을 다시 확인해 통과해야 한다
+   * - 기존 확인 기록 규칙을 그대로 쓴다: 새 확인(pending·confirmation)을 만들고 이 턴을 그 답으로 기록한다. 질문 전달 증거는 channel=retry_request
+   * - 쓰기 입력 검사(음성 신뢰도 등)는 일반 승인 답변과 같다
+   */
+  private async retryStageCompletion(meta: RequestMeta, turn: CurrentTurnInput, ctx: ContextPacket, constraints: ExecutionConstraints): Promise<HarnessResult> {
+    const blockers = writeInputBlockers(turn, this.cfg);
+    if (blockers.length) return this.result(meta, 'completed', [], { retry: { status: 'input_blocked', reasons: blockers } });
+    const ops = (await this.d.store.listOperations()).filter((o) => o.action === 'complete_stage' && o.target.kind === 'eureka_stage');
+    const mine: OperationRecord[] = [];
+    for (const o of ops) {
+      const ap = await this.d.store.getOperation(String(o.actualRequest['approvalOperationId'] ?? ''));
+      if (ap && ap.actualRequest['conversationId'] === meta.conversationId) mine.push(o);
+    }
+    const refStage = ctx.taskRefs.find((r) => r.stageId)?.stageId;
+    const candidates = refStage ? mine.filter((o) => (o.target as EurekaStageTarget).stageId === refStage) : mine;
+    const last = candidates[candidates.length - 1];
+    if (!last) return this.result(meta, 'completed', [], { retry: { status: 'nothing_to_retry' } });
+    const lt = last.target as EurekaStageTarget;
+    const base = { operationId: last.operationId, itemId: lt.itemId, stageId: lt.stageId, stageName: last.actualRequest['stageName'] };
+    const st = last.actionResult?.status;
+    if (!st || st === 'unknown' || last.recovery !== 'none' || last.assessment === 'pending') return this.result(meta, 'completed', [], { retry: { status: 'result_unknown', ...base } });
+    if (st === 'succeeded') return this.result(meta, 'completed', [], { retry: { status: 'already_done', ...base } });
+    if (st !== 'failed') return this.result(meta, 'completed', [], { retry: { status: 'nothing_to_retry', ...base } });
+
+    const approvalOp = await this.d.store.getOperation(String(last.actualRequest['approvalOperationId']));
+    if (!approvalOp || approvalOp.actionResult?.status !== 'succeeded') return this.result(meta, 'completed', [], { retry: { status: 'approval_not_confirmed', ...base } });
+    const prTarget = approvalOp.target as GitHubPrTarget;
+    const approvedSha = String(approvalOp.actualRequest['commitId']);
+    const check = await this.followUpEligibility(prTarget, approvedSha, lt.itemId, lt.stageId, constraints);
+    if (check.eligibility !== 'eligible') return this.result(meta, 'completed', [], { retry: { status: 'blocked', ...base }, followUp: { eligibility: check.eligibility, conditions: check.conditions } });
+
+    const x = last.actualRequest;
+    const scope: ConfirmationScope = {
+      action: 'complete_stage',
+      target: { kind: 'eureka_stage', itemId: lt.itemId, stageId: lt.stageId },
+      exactChange: {
+        status: 'done',
+        approvalOperationId: approvalOp.operationId,
+        approvedSha,
+        reviewId: x['reviewId'] ?? approvalOp.actionResult.externalRefs.find((r) => r.kind === 'pull_request_review')?.id ?? '',
+        linkedRepository: `${prTarget.repository.owner}/${prTarget.repository.name}`,
+        linkedPrNumber: prTarget.prNumber,
+        priorStageStatus: check.evidence['stageStatus'],
+        stageName: check.evidence['stageName'] ?? x['stageName'],
+        followUpObservedAt: this.d.clock.nowIso(),
+        retryOf: last.operationId,
+      },
+    };
+    const view = await this.createQuestion(meta, 'confirmation', 'confirm_stage_completion', [], scope);
+    const conf = await this.d.store.getConfirmationForPending(view.pendingId);
+    const delivered = await this.d.store.markQuestionDelivered(view.pendingId, view.outputId, {
+      deliveredAt: this.d.clock.nowIso(),
+      channel: 'retry_request',
+      sourceMessageId: turn.turnId,
+      deliveredText: confirmationTokens(scope).join(' '),
+    });
+    if (!conf || !delivered) return this.processingFailure(meta.requestId, 'CONFIRMATION_INVALID', 'retry consent could not be recorded');
+    const commit = await this.d.store.atomicCommitAnswerAndClaim({
+      pendingId: view.pendingId,
+      expectedPendingRevision: delivered.revision,
+      requestId: meta.requestId,
+      conversationId: meta.conversationId,
+      answerTurnId: turn.turnId,
+      answeredAtMs: this.d.clock.nowMs(),
+      decision: {
+        kind: 'confirmation',
+        confirmationId: conf.confirmationId,
+        verdict: 'approved',
+        evidence: {
+          inputChannel: turn.inputChannel,
+          sttConfidenceState: turn.sttConfidenceState,
+          ...(turn.sttConfidence !== undefined ? { sttConfidence: turn.sttConfidence } : {}),
+          routeOverallConfidence: turn.routeDecision.overallConfidence,
+        },
+        rawText: turn.rawText,
+        rationale: `retry request treated as consent (D-23), retryOf=${last.operationId}`,
+        prepare: this.prepareFromScope(meta, conf),
+      },
+    });
+    if (!commit.ok) return this.answerRejected(meta, commit.reason, commit.pending);
+    meta.stateRevision += 1;
+    const prepared = commit.prepared;
+    if (!prepared || !prepared.ok) {
+      const reason = prepared && !prepared.ok ? prepared.reason : 'prepare_missing';
+      return this.result(meta, 'failed', [], {}, { errors: [errorInfo('harness.prepare', reason === 'capacity_exhausted' ? 'STORAGE_RESERVATION_FAILED' : 'CONFIRMATION_INVALID', reason, 'none')] });
+    }
+    const r = await this.stageCompletionWithWait(meta, prepared.operation, prepared.authority, constraints);
+    return { ...r, facts: { ...r.facts, retry: { status: 'started', retryOf: last.operationId } } };
   }
 
   // ============================================================ pipeline events
@@ -240,6 +491,12 @@ export class HarnessService {
     switch (e.kind) {
       case 'question_delivered':
         if (e.pendingId && e.outputId) {
+          // 확인 질문은 실제로 전달한 문장이 저장된 범위(대상·행위·버전)와 맞을 때만 전달로 인정한다 (감사 F-01)
+          const pd = await this.d.store.getPending(e.pendingId);
+          if (pd?.kind === 'confirmation' && pd.scope && !deliveredQuestionMatches(pd.scope, e.deliveredText)) {
+            if (meta) meta.stateRevision += 1;
+            return { applied: false, reason: e.deliveredText ? 'question_scope_mismatch' : 'delivered_text_required' };
+          }
           await this.d.store.markQuestionDelivered(e.pendingId, e.outputId, {
             deliveredAt: e.occurredAt,
             channel: e.channel ?? 'speech',
@@ -296,6 +553,28 @@ export class HarnessService {
 
   // ================================================================== reconcile
   /** 기존 결과 조회로만 복구한다. 쓰기를 실행하지 않는다. 동시에 하나의 복구 담당만 허용한다. */
+  /**
+   * 판정 대기(assessment=pending) operation의 센서 재검사. 외부 호출·재전송을 하지 않고 저장된 응답 증거만 다시 판정한다.
+   * 판정되면 일반 경로와 같이 ActionResult를 확정한다. unknown이면 recovery=needed로 읽기 복구 대상이 된다.
+   * 한계(MVP): 재검사로 승인이 성공 판정돼도 Eureka 후속 질문은 자동으로 시작하지 않는다.
+   */
+  async reassess(operationId: string, systemRequestId: string): Promise<{ status: 'assessed' | 'still_pending' | 'not_needed'; actionResult?: ActionResult }> {
+    const op = await this.d.store.getOperation(operationId);
+    if (!op || op.assessment !== 'pending' || op.currentExecutionAuthority) return { status: 'not_needed', ...(op?.actionResult ? { actionResult: op.actionResult } : {}) };
+    const last = op.attempts[op.attempts.length - 1]!;
+    const resp = (last.responseEvidence ?? {}) as Record<string, unknown>;
+    const g = resp['gatewayResult'] as GatewayResult | undefined;
+    if (!g) return { status: 'still_pending' };
+    const prior = (resp['priorEvidenceForAssessment'] as Record<string, unknown> | undefined) ?? op.priorEvidence;
+    const inspected = this.inspect({ requestId: systemRequestId, cancelled: false }, op, g, prior);
+    if (!inspected.ok) return { status: 'still_pending' };
+    const status = inspected.assessment.suggestedActionStatus ?? (isWriteAction(op.action) ? 'unknown' : 'failed');
+    const ar = this.toActionResult(op, inspected.assessment, g, status);
+    const recovery = isWriteAction(op.action) && (op.recovery === 'none' || op.recovery === 'needed') ? { recovery: status === 'unknown' ? ('needed' as const) : ('none' as const) } : {};
+    const after = await this.d.store.appendEvidence(op.operationId, { attemptId: last.attemptId, assessment: 'assessed', actionResult: ar, ...recovery });
+    return { status: 'assessed', actionResult: after.actionResult! };
+  }
+
   async reconcile(operationId: string, systemRequestId: string, constraints: { deadlineAt: string }): Promise<{ status: 'resolved' | 'still_unknown' | 'busy' | 'not_needed'; actionResult?: ActionResult; recovery?: string }> {
     const op = await this.d.store.getOperation(operationId);
     if (!op || op.recovery !== 'needed') return { status: 'not_needed', ...(op?.actionResult ? { actionResult: op.actionResult } : {}) };
@@ -337,17 +616,13 @@ export class HarnessService {
       void e;
       return { status: 'still_unknown', recovery: after.recovery, ...(after.actionResult ? { actionResult: after.actionResult } : {}) };
     }
-    const assessment = this.sensor.inspect({
-      requestId: systemRequestId,
-      operationId: op.operationId,
-      attemptId: last.attemptId,
-      executionRevision: op.revision,
-      expectedOutcome: op.expectedOutcome,
-      actualRequest: op.actualRequest,
-      gatewayResult: g,
-      priorEvidence,
-      executionContext: { cancelled: false, expired: false },
-    });
+    const inspected = this.inspect({ requestId: systemRequestId, cancelled: false }, op, g, priorEvidence);
+    if (!inspected.ok) {
+      // 센서 오류는 복구 실패로 보지 않는다. 복구 담당을 반드시 해제하고 외부 결과 불명 상태를 유지한다
+      const after = await this.d.store.releaseRecovery(op.operationId, holder, 'still_unknown');
+      return { status: 'still_unknown', recovery: after.recovery, ...(after.actionResult ? { actionResult: after.actionResult } : {}) };
+    }
+    const assessment = inspected.assessment;
     if (assessment.verdict === 'confirmed_success' || assessment.verdict === 'confirmed_failure') {
       const ar = this.toActionResult(op, assessment, { ...g, dispatchState: op.actionResult?.dispatchState ?? 'may_have_been_sent' }, assessment.suggestedActionStatus!);
       await this.d.store.appendEvidence(op.operationId, { attemptId: last.attemptId, actionResult: ar, assessment: 'assessed' });
@@ -382,7 +657,7 @@ export class HarnessService {
 
       let decision: GuideDecision;
       try {
-        decision = this.guide.proposeNext({
+        decision = await this.guide.proposeNext({
           requestId: meta.requestId,
           turnId: turn.turnId,
           stateRevision: meta.stateRevision,
@@ -390,10 +665,17 @@ export class HarnessService {
           context: { packet: ctx, wiki, unverified: [] },
           operations: [],
           confirmations: [],
-          constraints: { deadlineAt: constraints.deadlineAt, policyVersion: this.cfg.policyVersion, maxSteps: this.cfg.maxGuideSteps },
+          constraints: {
+            deadlineAt: constraints.deadlineAt,
+            policyVersion: this.cfg.policyVersion,
+            maxSteps: this.cfg.maxGuideSteps,
+            wikiSearchAllowed: constraints.wikiSearchAllowed !== false && !!this.d.wiki,
+          },
           facts: facts as Record<string, unknown>,
         });
         decision = GuideDecisionSchema.parse(decision);
+        const stepRef = decision.reasonRefs.find((r) => r.startsWith('llm:') || r.startsWith('llm_')) ?? `rule:${decision.kind}`;
+        facts.guideSteps = [...(facts.guideSteps ?? []), stepRef];
       } catch (e) {
         // 가이드 오류는 도구를 실행하지 않고 처리 오류로 종료한다
         return this.result(meta, 'failed', actionResults, exportFacts(facts), { errors: [errorInfo('harness.guide', 'GUIDE_ERROR', e instanceof Error ? e.message : 'guide error', 'none')], sources });
@@ -410,21 +692,29 @@ export class HarnessService {
             return this.result(meta, 'failed', actionResults, exportFacts(facts), { errors: [errorInfo('harness.guide', 'POLICY_BLOCKED', `action ${a.action} not allowed from guide`, 'none')], sources });
           }
           const { actionResult, review, error } = await this.executeReview(meta, a, constraints, meta.intent === 'pr.approve' ? 'approval_precheck' : 'review');
-          actionResults.push(actionResult);
-          sources.push({ kind: 'github', ref: `${a.repository.owner}/${a.repository.name}#${a.prNumber}`, observedAt: actionResult.observedAt });
+          if (actionResult) {
+            actionResults.push(actionResult);
+            sources.push({ kind: 'github', ref: `${a.repository.owner}/${a.repository.name}#${a.prNumber}`, observedAt: actionResult.observedAt });
+          }
           if (review) facts.review = review;
           else facts.reviewError = error ?? 'review_read_failed';
           meta.stateRevision += 1;
           break;
         }
         case 'need_context': {
-          if (this.d.wiki) {
+          // Wiki는 Guide 판단 참고 자료일 뿐이다 (D-19). 파이프라인이 허용하지 않으면 검색하지 않는다
+          if (constraints.wikiSearchAllowed === false) {
+            wiki = { outcome: 'not_queried', excerpts: [] };
+          } else if (this.d.wiki) {
             try {
               wiki = await this.d.wiki.search(turn.rawText, decision.payload.searchScope, { deadlineAt: constraints.deadlineAt });
             } catch {
               wiki = { outcome: 'failed', excerpts: [] }; // 검색 결과 없음과 검색 실패를 구분
             }
+            for (const e of wiki.excerpts) sources.push(e.source);
+            if (wiki.outcome === 'found') facts.wikiExcerpts = capExcerpts(wiki.excerpts.map((e) => ({ text: e.text, ref: e.source.ref })));
           } else wiki = { outcome: 'failed', excerpts: [] };
+          facts.wikiSearched = wiki.outcome;
           meta.stateRevision += 1;
           break;
         }
@@ -441,8 +731,13 @@ export class HarnessService {
           return this.result(meta, 'awaiting_user', actionResults, { ...exportFacts(facts), question: { ...questionFacts(view), ...(ctx.target ? { target: ctx.target } : {}) }, ...(decision.reasonRefs.length ? { questionReasons: decision.reasonRefs } : {}) }, { pending: view, sources });
         }
         case 'blocked':
-          return this.result(meta, 'completed', actionResults, { ...exportFacts(facts), blocked: { reasons: decision.payload.unmetConditions, intent: meta.intent } }, { sources });
+          return this.result(meta, 'completed', actionResults, { ...exportFacts(facts), blocked: { reasons: decision.payload.unmetConditions, intent: meta.intent, ...(decision.reasonRefs.length ? { guideRefs: decision.reasonRefs } : {}) } }, { sources });
         case 'finish':
+          if (decision.payload.reason === 'answer_partial') {
+            // Guide가 Wiki 발췌로는 배경을 답할 수 없다고 봤다 → 발췌는 출력에 넘기지 않고, 못 찾았다고만 알린다
+            delete facts.wikiExcerpts;
+            return this.result(meta, 'completed', actionResults, { ...exportFacts(facts), backgroundNotFound: true }, { sources });
+          }
           return this.result(meta, 'completed', actionResults, exportFacts(facts), { sources });
       }
     }
@@ -455,7 +750,7 @@ export class HarnessService {
     a: Extract<import('@deskpet/contracts').ActionArgs, { action: 'get_review_context' }>,
     constraints: ExecutionConstraints,
     purpose: 'review' | 'approval_precheck',
-  ): Promise<{ actionResult: ActionResult; review?: ReviewFacts; error?: string }> {
+  ): Promise<{ actionResult?: ActionResult; review?: ReviewFacts; error?: string }> {
     const target: GitHubPrTarget = { kind: 'github_pr', repository: a.repository, prNumber: a.prNumber };
     const prep = await this.d.store.reserveAndPrepare({
       owner: 'harness',
@@ -490,7 +785,13 @@ export class HarnessService {
       successTextOnly: false,
       ...(ctx.error ? { error: ctx.error } : {}),
     };
-    const assessment = this.inspect(meta, op, g);
+    const inspected = this.inspect(meta, op, g);
+    if (!inspected.ok) {
+      // 판정 대기: 조회 결과를 근거로 쓰지 않는다 (판정 없는 사실로 승인 질문을 만들지 않음)
+      await this.d.store.appendEvidence(op.operationId, this.pendingAssessmentEvidence(op.attempts[0]!.attemptId, g, inspected.diagnostic, op.priorEvidence));
+      return { error: 'sensor_assessment_pending' };
+    }
+    const assessment = inspected.assessment;
     const ar = this.toActionResult(op, assessment, g, assessment.suggestedActionStatus ?? 'failed');
     await this.d.store.appendEvidence(op.operationId, {
       attemptId: op.attempts[0]!.attemptId,
@@ -506,7 +807,9 @@ export class HarnessService {
   private async executeApproval(meta: RequestMeta, op: OperationRecord, authority: ExecutionAuthority, constraints: ExecutionConstraints): Promise<HarnessResult> {
     const t = op.target as GitHubPrTarget;
     const cmd = { operationId: op.operationId, confirmationId: op.confirmationRef!, repository: t.repository, prNumber: t.prNumber, expectedHeadSha: String(op.actualRequest['commitId']) };
-    const { actionResult, operation } = await this.runWrite(meta, op, authority, constraints, (h) => this.d.github.submitApproval(cmd, h, { deadlineAt: constraints.deadlineAt }));
+    const out = await this.runWrite(meta, op, authority, constraints, (h) => this.d.github.submitApproval(cmd, h, { deadlineAt: constraints.deadlineAt }));
+    if ('assessmentPending' in out) return this.assessmentPendingResult(meta, out.operation);
+    const { actionResult, operation } = out;
     const facts: Record<string, unknown> = {
       approval: {
         status: actionResult.status,
@@ -553,6 +856,9 @@ export class HarnessService {
         approvalOperationId: approvalOp.operationId,
         approvedSha,
         reviewId,
+        // 확인 질문 문장이 함께 말하는 승인 PR (전달 문장 검사 허용 목록, 감사 F-01)
+        linkedRepository: `${t.repository.owner}/${t.repository.name}`,
+        linkedPrNumber: t.prNumber,
         priorStageStatus: check.evidence['stageStatus'],
         stageName: check.evidence['stageName'],
         followUpObservedAt: this.d.clock.nowIso(),
@@ -634,7 +940,9 @@ export class HarnessService {
       githubSuccessEvidence: { approvalOperationId, reviewId: String(ar0['reviewId'] ?? ''), approvedSha, followUpObservedAt: String(ar0['followUpObservedAt'] ?? '') },
       expectedChange: { status: 'done' as const },
     };
-    const { actionResult } = await this.runWrite(meta, op, authority, constraints, (h) => this.d.eureka.completeStage(cmd, h, { deadlineAt: constraints.deadlineAt }));
+    const out = await this.runWrite(meta, op, authority, constraints, (h) => this.d.eureka.completeStage(cmd, h, { deadlineAt: constraints.deadlineAt }));
+    if ('assessmentPending' in out) return this.assessmentPendingResult(meta, out.operation);
+    const { actionResult } = out;
     return this.result(meta, 'completed', [actionResult], {
       stageCompletion: { status: actionResult.status, itemId: t.itemId, stageId: t.stageId, stageName: ar0['stageName'], dispatchState: actionResult.dispatchState },
     });
@@ -651,7 +959,7 @@ export class HarnessService {
     authority0: ExecutionAuthority,
     constraints: ExecutionConstraints,
     call: (h: ReturnType<StoreDispatchOwner['handleFor']>) => Promise<GatewayResult>,
-  ): Promise<{ actionResult: ActionResult; operation: OperationRecord }> {
+  ): Promise<WriteOutcome> {
     let op = op0;
     let authority = authority0;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -662,7 +970,18 @@ export class HarnessService {
         return { actionResult: current.actionResult, operation: current };
       }
       const priorEvidence = { ...current.priorEvidence, ...(g.response?.['priorReviewIds'] ? { priorReviewIds: g.response['priorReviewIds'] } : {}) };
-      const assessment = this.inspect(meta, current, g, priorEvidence);
+      const inspected = this.inspect(meta, current, g, priorEvidence);
+      if (!inspected.ok) {
+        // 센서만 실패: 재전송·재시도·unknown 매핑 없이 판정 대기로 남기고 reassess()로 재검사한다.
+        // 응답 없이 전송됐을 수 있으면 외부 결과 확인(읽기 복구)도 필요하다
+        const noResponse = g.outcome !== 'response' && g.dispatchState !== 'not_sent';
+        op = await this.d.store.appendEvidence(current.operationId, {
+          ...this.pendingAssessmentEvidence(authority.attemptId, g, inspected.diagnostic, priorEvidence),
+          ...(noResponse ? { recovery: 'needed' as const } : {}),
+        });
+        return { assessmentPending: true, operation: op };
+      }
+      const assessment = inspected.assessment;
       const status = assessment.suggestedActionStatus ?? 'unknown';
       const ar = this.toActionResult(current, assessment, g, status);
       const retryable = g.dispatchState === 'not_sent' && !!g.notSentProof && !!g.error && WRITE_RETRYABLE.has(g.error.provisionalCode);
@@ -694,6 +1013,20 @@ export class HarnessService {
     return { actionResult: op.actionResult!, operation: op };
   }
 
+  /** 판정 대기 응답: 성공·실패·불명을 말하지 않고 판정이 끝나지 않았다는 사실만 돌려준다 */
+  private assessmentPendingResult(meta: RequestMeta, op: OperationRecord): HarnessResult {
+    const last = op.attempts[op.attempts.length - 1];
+    return this.result(meta, 'completed', [], {
+      assessmentPending: {
+        operationId: op.operationId,
+        action: op.action,
+        target: op.target,
+        dispatchState: last?.dispatchState ?? 'unknown',
+        recovery: op.recovery,
+      },
+    });
+  }
+
   /** beforeDispatch 재검사: 취소·deadline·확인 유효성 */
   private async dispatchValidity(op: OperationRecord): Promise<string | null> {
     const meta = this.requests.get(op.requestId);
@@ -719,7 +1052,17 @@ export class HarnessService {
         isWrite: true,
         expectedOutcome: expectedOutcomeFor('submit_approval', s.target, { headSha: s.headSha! }),
         checkRuleVersion: this.cfg.checkRuleVersion,
-        actualRequest: { repository: s.target.repository, prNumber: s.target.prNumber, commitId: s.headSha, event: 'APPROVE', conversationId: meta.conversationId },
+        actualRequest: {
+          repository: s.target.repository,
+          prNumber: s.target.prNumber,
+          commitId: s.headSha,
+          event: 'APPROVE',
+          conversationId: meta.conversationId,
+          // 재시작·복구 뒤 Eureka 후속 질문을 만들 때 쓴다 (D-24)
+          contextId: meta.contextId,
+          contextVersion: meta.contextVersion,
+          ...linkedStageOf(meta.taskRefs, s.target),
+        },
         priorEvidence: {},
         holderId: this.holderId,
       };
@@ -800,10 +1143,19 @@ export class HarnessService {
     return this.result(meta, 'completed', [], { answerNotAccepted: reason, pendingState: pending?.state });
   }
 
-  private inspect(meta: RequestMeta, op: OperationRecord, g: GatewayResult, priorEvidence = op.priorEvidence): SensorAssessment {
+  /**
+   * Sensor 호출. 센서 자체 오류는 판정을 만들지 않는다 (guide-sensor: suggestedActionStatus 미생성, assessment=pending).
+   * 외부 결과 불명(unknown)과 판정 대기를 구분하기 위해 오류를 별도 값으로 돌려준다.
+   */
+  private inspect(
+    ctx: { requestId: string; cancelled: boolean },
+    op: OperationRecord,
+    g: GatewayResult,
+    priorEvidence = op.priorEvidence,
+  ): { ok: true; assessment: SensorAssessment } | { ok: false; diagnostic: string } {
     try {
-      return this.sensor.inspect({
-        requestId: meta.requestId,
+      const assessment = this.sensor.inspect({
+        requestId: ctx.requestId,
         operationId: op.operationId,
         attemptId: op.attempts[op.attempts.length - 1]!.attemptId,
         executionRevision: op.revision,
@@ -811,24 +1163,24 @@ export class HarnessService {
         actualRequest: op.actualRequest,
         gatewayResult: g,
         priorEvidence,
-        executionContext: { cancelled: meta.cancelled, expired: false },
+        executionContext: { cancelled: ctx.cancelled, expired: false },
       });
+      return { ok: true, assessment };
     } catch (e) {
-      // 센서 오류는 외부 실패로 단정하지 않는다: 판정 대기
-      return {
-        assessmentId: `asm-error-${op.operationId}`,
-        operationId: op.operationId,
-        attemptId: op.attempts[op.attempts.length - 1]!.attemptId,
-        basedOnRevision: op.revision,
-        verdict: 'indeterminate',
-        checks: [],
-        confirmedFacts: {},
-        externalRefs: g.externalRefs,
-        suggestedActionStatus: g.mode === 'write' && g.dispatchState !== 'not_sent' ? 'unknown' : 'failed',
-        followUpNeed: 'reconcile',
-        diagnostics: [`sensor error: ${e instanceof Error ? e.message : String(e)}`],
-      };
+      return { ok: false, diagnostic: `sensor error: ${e instanceof Error ? e.message : String(e)}` };
     }
+  }
+
+  /** 판정 대기 기록: 응답 증거(재검사용 GatewayResult 포함)를 남기고 확정 ActionResult는 만들지 않는다 */
+  private pendingAssessmentEvidence(attemptId: string, g: GatewayResult, diagnostic: string, priorEvidence: Record<string, unknown>) {
+    return {
+      attemptId,
+      ...(g.dispatchState === 'not_sent' ? (g.notSentProof ? { attemptDispatchState: 'not_sent' as const, notSentProof: g.notSentProof } : {}) : { attemptDispatchState: g.dispatchState }),
+      responseEvidence: { ...(g.response ?? {}), outcome: g.outcome, successTextOnly: g.successTextOnly, gatewayResult: g as unknown as Record<string, unknown>, priorEvidenceForAssessment: priorEvidence, sensorDiagnostic: diagnostic },
+      phase: g.outcome === 'response' ? ('response_received' as const) : ('stopped' as const),
+      assessment: 'pending' as const,
+      releaseAuthority: true,
+    };
   }
 
   private toActionResult(op: OperationRecord, a: SensorAssessment, g: GatewayResult, status: ActionResult['status']): ActionResult {
@@ -886,9 +1238,40 @@ export class HarnessService {
       taskRefs: ctx.taskRefs,
       deadlineAt,
       abort: new AbortController(),
+      touchedAtMs: this.d.clock.nowMs(),
     };
+    this.requests.delete(requestId);
     this.requests.set(requestId, m);
+    this.sweepRequests();
     return m;
+  }
+
+  /** 답변을 기다리지 않는 요청은 메모리에서 지운다. 결과는 turn 기록·operation 기록에 남아 있다 */
+  private settle(result: HarnessResult) {
+    const m = this.requests.get(result.requestId);
+    if (!m || m.backgroundRunning) return;
+    if (result.disposition === 'awaiting_user') m.touchedAtMs = this.d.clock.nowMs();
+    else if (!m.eventGap) this.requests.delete(result.requestId);
+  }
+
+  /**
+   * 질문 유효 기간이 지난 항목을 지운다. 그래도 상한을 넘으면 오래된 것부터 지우되, 순서 누락(eventGap)·취소 표시가 있는
+   * 항목은 유효 기간이 지날 때까지 남긴다 (지우면 그 표시로 막던 실행이 풀릴 수 있으므로).
+   */
+  private sweepRequests() {
+    if (this.requests.size <= MAX_TRACKED_REQUESTS) return;
+    const now = this.d.clock.nowMs();
+    const ttl = Math.max(this.cfg.confirmationTtlMs, this.cfg.clarificationTtlMs) * 2;
+    for (const [id, m] of this.requests) if (now - m.touchedAtMs > ttl) this.requests.delete(id);
+    for (const [id, m] of this.requests) {
+      if (this.requests.size <= MAX_TRACKED_REQUESTS) break;
+      if (!m.eventGap && !m.cancelled) this.requests.delete(id);
+    }
+  }
+
+  /** 진단·테스트용: 메모리에 들고 있는 요청 수 */
+  get trackedRequestCount(): number {
+    return this.requests.size;
   }
 
   private restoreMeta(p: Pending, req: HarnessResumeRequest): RequestMeta {
@@ -919,6 +1302,15 @@ export class HarnessService {
 }
 
 // ==================================================================== utils
+/** 승인 대상 PR과 연결된 Eureka 단계 (taskRefs). 복구 뒤 후속 질문에 쓰려고 operation에 남긴다 */
+function linkedStageOf(refs: TaskRef[], t: GitHubPrTarget): { linkedStage?: TaskRef } {
+  const ref = refs.find((r) => r.stageId && r.prNumber === t.prNumber && r.repository?.owner === t.repository.owner && r.repository?.name === t.repository.name);
+  return ref ? { linkedStage: ref } : {};
+}
+
+/** 실패한 Eureka 반영 다시 하기 의도 (라우터 intention, D-23). 값은 잠정 */
+const RETRY_INTENTS: ReadonlySet<string> = new Set(['eureka.retry', 'followup.retry']);
+
 function intentOf(turn: CurrentTurnInput): string {
   const v = turn.routeDecision.headOutputs['intention']?.value;
   return typeof v === 'string' ? v : 'unknown';
@@ -928,8 +1320,28 @@ function errorInfo(stage: string, code: ProvisionalErrorCode, message: string, n
   return { stage, provisionalCode: code, message, nextAction: next, ...(operationId ? { operationId } : {}) };
 }
 
+/** L-10 상한: 발췌 3개·합계 1,500자 */
+function capExcerpts(xs: { text: string; ref: string }[]): { text: string; ref: string }[] {
+  let budget = 1_500;
+  const out: { text: string; ref: string }[] = [];
+  for (const x of xs.slice(0, 3)) {
+    if (budget <= 0) break;
+    const text = x.text.slice(0, budget);
+    budget -= text.length;
+    out.push({ text, ref: x.ref });
+  }
+  return out;
+}
+
 function exportFacts(f: GuideFacts): Record<string, unknown> {
-  return { ...(f.review ? { review: f.review } : {}), ...(f.reviewError ? { reviewError: f.reviewError } : {}), ...(f.lastReviewedSha ? { lastReviewedSha: f.lastReviewedSha } : {}) };
+  return {
+    ...(f.review ? { review: f.review } : {}),
+    ...(f.reviewError ? { reviewError: f.reviewError } : {}),
+    ...(f.lastReviewedSha ? { lastReviewedSha: f.lastReviewedSha } : {}),
+    ...(f.wikiSearched ? { wikiSearch: f.wikiSearched } : {}),
+    ...(f.wikiExcerpts?.length ? { wiki: { excerpts: f.wikiExcerpts } } : {}),
+    ...(f.guideSteps?.length ? { guideSteps: f.guideSteps } : {}),
+  };
 }
 
 function questionMeaning(s: ConfirmationScope): string {

@@ -70,8 +70,8 @@ describe('G-01: review → approval confirmation → approve → follow-up check
 
     // 6) 웹 투영: 업무 결과를 각각 독립적으로 표시. 음성 실패는 업무 결과를 바꾸지 않는다 (S-10)
     const feed = new OutputProjectionFeed();
-    projector.apply(feed.toUpdate({ kind: 'channel_failed', outputId: 'out-final', requestRefs: { requestId: 'req-approve' }, channel: 'speech' }));
-    projector.apply(feed.toUpdate({ kind: 'channel_completed', outputId: 'out-final', requestRefs: { requestId: 'req-approve' }, channel: 'display' }));
+    projector.apply(feed.toUpdate({ kind: 'channel_failed', outputId: 'out-final', requestRefs: { requestId: 'req-approve' }, channel: 'speech' })!);
+    projector.apply(feed.toUpdate({ kind: 'channel_completed', outputId: 'out-final', requestRefs: { requestId: 'req-approve' }, channel: 'display' })!);
     const view = projector.project();
     expect(view.operations.find((o) => o.action === 'submit_approval')!.status).toBe('succeeded');
     expect(view.operations.find((o) => o.action === 'complete_stage')!.status).toBe('succeeded');

@@ -55,6 +55,8 @@ export const OutputContent = z.object({
   actionStatuses: z.array(z.object({ operationId: Id, status: ActionStatus })),
   validationResult: z.object({ passed: z.boolean(), failures: z.array(z.string()) }),
   fallbackUsed: z.boolean(),
+  /** 출력 모델 호출에 걸린 시간(ms). 모델을 부르지 않았으면 없음 (NFR-01, D-26) */
+  modelMs: z.number().nonnegative().optional(),
 });
 export type OutputContent = z.infer<typeof OutputContent>;
 

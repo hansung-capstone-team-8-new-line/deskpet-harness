@@ -23,7 +23,7 @@ export function goldenPr(): FakePr {
       { name: 'build', status: 'completed', conclusion: 'success', headSha: SHA_A },
       { name: 'test', status: 'completed', conclusion: 'success', headSha: SHA_A },
     ],
-    requiredChecks: { state: 'configured', names: ['build', 'test'] },
+    requiredChecks: { state: 'configured', names: ['build', 'test'], source: 'github_branch_protection' },
     reviews: [
       {
         reviewId: '8001',

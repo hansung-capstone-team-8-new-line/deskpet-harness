@@ -1,4 +1,4 @@
-import type { ChecksData, PrBasics, Repository, ReviewItem, ViewerPermission } from '@deskpet/contracts';
+import type { ChecksData, PrBasics, Repository, RequiredChecksSource, RequiredChecksUnknownReason, ReviewItem, ViewerPermission } from '@deskpet/contracts';
 
 /**
  * «port» GitHubTransport — MCP 또는 REST adapter로 교체 가능 (다이어그램, message-contracts §Write).
@@ -10,6 +10,8 @@ export type TransportReadQuery =
   | { kind: 'check_runs'; repository: Repository; prNumber: number; ref: string; page: number; perPage: number }
   | { kind: 'required_checks'; repository: Repository; baseRef: string }
   | { kind: 'reviews'; repository: Repository; prNumber: number; page: number; perPage: number }
+  /** 리뷰의 코드 줄 지적 (REST GET /pulls/{n}/comments). reviews의 본문과 별도로 모은다 */
+  | { kind: 'review_comments'; repository: Repository; prNumber: number; page: number; perPage: number }
   | { kind: 'viewer'; repository: Repository };
 
 export interface TransportReadResultMap {
@@ -18,8 +20,13 @@ export interface TransportReadResultMap {
   files: { files: { path: string; status: string; additions: number; deletions: number }[]; base?: string; headSha?: string; hasMore: boolean };
   /** MCP는 내부에서 현재 head를 조회하므로 ref 지정이 무시될 수 있다 → resolvedHeadSha로 보고 */
   check_runs: { runs: ChecksData['runs']; resolvedHeadSha?: string; hasMore: boolean };
-  required_checks: { state: 'configured'; names: string[] } | { state: 'none_configured' };
+  /** 조회 실패도 오류가 아니라 이유가 있는 결과로 돌려준다 (none_configured와 구분) */
+  required_checks:
+    | { state: 'configured'; names: string[]; source: RequiredChecksSource; partial?: boolean; githubUnavailableReason?: RequiredChecksUnknownReason }
+    | { state: 'none_configured'; source?: RequiredChecksSource }
+    | { state: 'unavailable'; reasonCode: RequiredChecksUnknownReason; detail: string };
   reviews: { reviews: Omit<ReviewItem, 'source'>[]; hasMore: boolean };
+  review_comments: { comments: { reviewId: string; path: string; line?: number; body: string; commitSha?: string; severity?: string }[]; hasMore: boolean };
   viewer: { login: string; permission: ViewerPermission };
 }
 
@@ -41,6 +48,8 @@ export class GitHubTransportError extends Error {
 
 export interface GitHubTransport {
   readonly mode: 'mcp' | 'rest';
+  /** false면 Gateway가 DurableAck를 요청하기 전에 쓰기를 차단한다 (전송하지 않았음이 확실) */
+  readonly writesEnabled: boolean;
   read<K extends TransportReadQuery['kind']>(
     query: Extract<TransportReadQuery, { kind: K }>,
     constraints: { timeoutMs: number; signal?: AbortSignal },

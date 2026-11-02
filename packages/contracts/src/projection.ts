@@ -40,9 +40,15 @@ export const SnapshotObject = z.object({
   state: z.record(z.unknown()),
 });
 
+/**
+ * MVP: 스냅샷 범위는 source 전체로 제한한다 (message-contracts §Output and Projection 보충).
+ * 하나의 스냅샷은 그 source의 모든 객체 종류를 같은 시점에 담아야 한다. 요청 단위 구독이 필요해지면 범위를 좁힌다.
+ */
+export const SNAPSHOT_SCOPE_ALL = 'all' as const;
+
 export const Snapshot = z.object({
   source: ProjectionSource,
-  scope: z.string().min(1),
+  scope: z.literal(SNAPSHOT_SCOPE_ALL),
   epoch: z.number().int().nonnegative(),
   objectsWithRevisions: z.array(SnapshotObject),
   /** 스냅샷에 포함된 삭제 revision (inference: 같은 epoch 내 부활 방지) */

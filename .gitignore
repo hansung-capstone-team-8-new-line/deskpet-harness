@@ -5,3 +5,8 @@ coverage/
 .env.*
 !.env.example
 *.log
+.deskpet/
+*.db
+*.db-wal
+*.db-shm
+*.db.lock

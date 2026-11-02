@@ -40,6 +40,12 @@ export const ChangesData = z.object({
     z.object({ path: z.string(), status: z.string(), additions: z.number().int(), deletions: z.number().int() }),
   ),
 });
+export const RequiredChecksSource = z.enum(['github_branch_protection', 'github_rulesets', 'github_mixed', 'deskpet_config']);
+export type RequiredChecksSource = z.infer<typeof RequiredChecksSource>;
+/** plan_unsupported: 요금제상 보호 기능 없음, insufficient_permission: 볼 권한 없음, lookup_failed: 일시 오류 */
+export const RequiredChecksUnknownReason = z.enum(['plan_unsupported', 'insufficient_permission', 'lookup_failed']);
+export type RequiredChecksUnknownReason = z.infer<typeof RequiredChecksUnknownReason>;
+
 export const ChecksData = z.object({
   runs: z.array(
     z.object({
@@ -47,13 +53,27 @@ export const ChecksData = z.object({
       status: z.enum(['queued', 'in_progress', 'completed']),
       conclusion: z.enum(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']).nullable(),
       headSha: GitSha.optional(),
+      /** 같은 이름의 실행이 여러 개일 때 최신 실행을 고르기 위한 근거 (GitHub check run id·시각) */
+      id: z.string().optional(),
+      startedAt: UtcTimestamp.optional(),
+      completedAt: UtcTimestamp.optional(),
     }),
   ),
-  /** 필수 검사 설정. 결과 목록만 보고 추정하지 않는다: 없다고 확인 vs 조회 불가 구분. */
+  /**
+   * 필수 검사 설정. 결과 목록만 보고 추정하지 않는다: 없다고 확인 vs 조회 불가 구분.
+   * source: 어디서 확인했는지. deskpet_config는 GitHub가 요금제상 보호 기능을 제공하지 않을 때만 쓰는 대체 설정 (README D-13).
+   * partial: 일부 출처만 확인됨(예: rulesets는 읽었지만 classic protection은 권한 부족) → 승인 차단.
+   */
   requiredChecks: z.discriminatedUnion('state', [
-    z.object({ state: z.literal('configured'), names: z.array(z.string()) }),
-    z.object({ state: z.literal('none_configured') }),
-    z.object({ state: z.literal('unknown'), reason: z.string() }),
+    z.object({
+      state: z.literal('configured'),
+      names: z.array(z.string()),
+      source: RequiredChecksSource.optional(),
+      partial: z.boolean().optional(),
+      githubUnavailableReason: RequiredChecksUnknownReason.optional(),
+    }),
+    z.object({ state: z.literal('none_configured'), source: RequiredChecksSource.optional() }),
+    z.object({ state: z.literal('unknown'), reasonCode: RequiredChecksUnknownReason.optional(), reason: z.string() }),
   ]),
 });
 export type ChecksData = z.infer<typeof ChecksData>;
@@ -66,7 +86,14 @@ export const ReviewItem = z.object({
   commitSha: GitSha.optional(),
   submittedAt: UtcTimestamp.optional(),
   comments: z.array(
-    z.object({ path: z.string().optional(), line: z.number().int().optional(), severity: z.string().optional(), body: z.string() }),
+    z.object({
+      path: z.string().optional(),
+      line: z.number().int().optional(),
+      severity: z.string().optional(),
+      body: z.string(),
+      /** summary: 리뷰 본문, inline: 코드 줄에 단 지적 (감사 F-06) */
+      kind: z.enum(['summary', 'inline']).optional(),
+    }),
   ),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
@@ -88,6 +115,17 @@ const sectionBase = {
   pagination: z.object({ hasMore: z.boolean(), pagesRead: z.number().int().nonnegative() }).optional(),
   truncation: z.object({ truncated: z.boolean(), limit: z.number().int().optional() }).optional(),
   error: ErrorInfo.optional(),
+  /**
+   * 섹션 안 세부 자료의 수집 범위 (감사 F-06). 목록 페이지 완전성(completeness)과 따로 표시한다.
+   * - patches: 변경 줄 내용(diff). MVP는 파일·증감 줄 수만 모으고 내용은 모으지 않는다(not_collected).
+   * - inlineComments: 리뷰의 코드 줄 지적. complete | partial(페이지 상한) | unavailable(조회 실패)
+   */
+  detailCoverage: z
+    .object({
+      patches: z.enum(['complete', 'partial', 'unavailable', 'not_collected']).optional(),
+      inlineComments: z.enum(['complete', 'partial', 'unavailable', 'not_collected']).optional(),
+    })
+    .optional(),
 };
 
 export const ReviewSection = z.discriminatedUnion('sectionKind', [

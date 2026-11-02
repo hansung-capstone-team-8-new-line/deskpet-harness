@@ -30,6 +30,12 @@
       ],
       "@deskpet/projector": [
         "packages/projector/src/index.ts"
+      ],
+      "@deskpet/llm": [
+        "packages/llm/src/index.ts"
+      ],
+      "@deskpet/server": [
+        "packages/server/src/index.ts"
       ]
     }
   },
@@ -38,6 +44,7 @@
     "packages/*/test/**/*.ts",
     "tests/**/*.ts",
     "vitest.config.ts",
-    "scripts/**/*.ts"
+    "scripts/**/*.ts",
+    "demo/**/*.ts"
   ]
 }

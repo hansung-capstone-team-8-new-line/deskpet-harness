@@ -7,3 +7,4 @@ export * from './github/GitHubTransport.js';
 export * from './github/FakeGitHubTransport.js';
 export * from './github/GitHubReviewGateway.js';
 export * from './github/RestGitHubTransport.js';
+export * from './github/requiredChecksConfig.js';

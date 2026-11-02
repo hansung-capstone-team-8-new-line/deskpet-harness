@@ -1,7 +1,7 @@
 import type { GatewayResult } from './guideSensor.js';
 import type { Repository } from './common.js';
 import type { ReviewContext, ReviewQuery } from './review.js';
-import type { TaskList, TaskState } from './eureka.js';
+import type { StageNoteList, TaskList, TaskState } from './eureka.js';
 
 /**
  * 패키지 간 공유하는 port 타입 (TS 전용, 직렬화 대상 아님).
@@ -66,6 +66,8 @@ export interface EurekaGatewayPort {
   getTaskState(query: { itemId: string; stageId?: string }, c: CallConstraints): Promise<ReadOutcome<TaskState>>;
   completeStage(cmd: CompleteStageCommand, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
   getChangeOutcome(q: ChangeOutcomeQuery, c: CallConstraints): Promise<GatewayResult>;
+  /** 단계 기록(note) 조회. 복구 뒤 후속 질문 전에 기록의 PR 연결이 그대로인지 본다 (D-24). 없는 구현이면 이 확인을 건너뛴다 */
+  listStageNotes?(query: { stageId: string; limit?: number }, c: CallConstraints): Promise<ReadOutcome<StageNoteList>>;
 }
 
 // --------------------------------------------------------- github port

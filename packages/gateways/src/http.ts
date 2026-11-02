@@ -7,6 +7,7 @@
  * inference: fetch는 connect timeout과 전체 timeout을 분리할 수 없어 전체 timeout만 적용한다.
  *            connect 2s(interface-contracts §7)는 실제 transport 선택 시 구현한다.
  */
+import { LimiterBusyError, type ConcurrencyLimiter } from '@deskpet/contracts';
 export interface HttpRequest {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string;
@@ -41,9 +42,22 @@ export class FetchHttpClient implements HttpClient {
     private readonly baseUrl: string,
     private readonly headers: () => Record<string, string>,
     private readonly fetchImpl: typeof fetch = fetch,
+    /** 이 서비스 동시 호출 상한 (D-24). 자리를 기다린 시간만큼 요청 timeout에서 뺀다. 자리가 안 나면 보내지 않음(not_sent) */
+    private readonly limiter?: ConcurrencyLimiter,
   ) {}
 
   async request(req: HttpRequest): Promise<HttpResponse> {
+    if (!this.limiter) return this.send(req);
+    const t0 = Date.now();
+    try {
+      return await this.limiter.run(() => this.send({ ...req, timeoutMs: Math.max(1, req.timeoutMs - (Date.now() - t0)) }), { waitMs: req.timeoutMs, ...(req.signal ? { signal: req.signal } : {}) });
+    } catch (e) {
+      if (e instanceof LimiterBusyError) throw new HttpTransportError({ kind: 'not_sent', proof: `limiter:${e.resource}:${e.reason}` });
+      throw e;
+    }
+  }
+
+  private async send(req: HttpRequest): Promise<HttpResponse> {
     const url = new URL(this.baseUrl.replace(/\/$/, '') + req.path);
     for (const [k, v] of Object.entries(req.query ?? {})) url.searchParams.set(k, v);
     const timeout = AbortSignal.timeout(req.timeoutMs);

@@ -12,14 +12,24 @@ import type { ReviewFacts } from '../facts.js';
  * - pr.approve : 승인 가능 조건 조회 → 확인 질문(ask_user confirmation) 또는 차단
  */
 export interface Guide {
-  proposeNext(input: GuideInput): GuideDecision;
+  /** 규칙 Guide는 동기, LLM 보조 Guide는 비동기로 답한다. Harness는 둘 다 await한다 */
+  proposeNext(input: GuideInput): GuideDecision | Promise<GuideDecision>;
 }
+
+/** 규칙 Guide가 처리하는 의도. 그 밖의 의도만 LLM 보조 Guide로 넘긴다 */
+export const RULE_INTENTS: ReadonlySet<string> = new Set(['pr.review', 'pr.approve']);
 
 export interface GuideFacts {
   review?: ReviewFacts;
   /** 같은 대화에서 사용자가 들은 리뷰의 SHA (Harness 기록에서) */
   lastReviewedSha?: string;
   reviewError?: string;
+  /** Wiki 검색을 했으면 그 결과 상태 (같은 요청에서 다시 검색하지 않는다) */
+  wikiSearched?: 'found' | 'empty' | 'failed' | 'not_queried';
+  /** 출력 모델에 넘길 Wiki 발췌 (최대 3개·1,500자, 출처). 배경 설명 참고용 (D-19 갱신) */
+  wikiExcerpts?: { text: string; ref: string }[];
+  /** Guide가 고른 단계 기록 (예: rule:..., llm:search_wiki). 진단·데모 표시용 */
+  guideSteps?: string[];
 }
 
 export class RuleBasedGuide implements Guide {

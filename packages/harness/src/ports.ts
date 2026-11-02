@@ -19,19 +19,4 @@ export class StaticWikiReader implements WikiReader {
   }
 }
 
-/**
- * «port» LlmClient — Guide 보조·출력 생성용. MVP는 mock (D-03).
- * 토큰·호출 수·deadline을 유한하게 제한한다. 출력은 제안일 뿐 실행 권한이 아니다.
- */
-export interface LlmClient {
-  generate(prompt: string, context: Record<string, unknown>, constraints: { maxTokens: number; deadlineAt: string }): Promise<string>;
-}
-
-export class MockLlmClient implements LlmClient {
-  calls = 0;
-  constructor(private readonly reply: (prompt: string, ctx: Record<string, unknown>) => string = () => '') {}
-  async generate(prompt: string, context: Record<string, unknown>): Promise<string> {
-    this.calls += 1;
-    return this.reply(prompt, context);
-  }
-}
+// LlmClient port는 @deskpet/contracts (llm.ts)로 옮겼다. 공급자 어댑터는 @deskpet/llm.

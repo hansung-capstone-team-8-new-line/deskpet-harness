@@ -1,4 +1,4 @@
-import type { OperationUpdated, ProjectionSource, Snapshot, SourceSyncState, Tombstone } from '@deskpet/contracts';
+import { SNAPSHOT_SCOPE_ALL, type OperationUpdated, type ProjectionSource, type Snapshot, type SourceSyncState, type Tombstone } from '@deskpet/contracts';
 
 /**
  * RequestStateProjector — 요청·작업·출력 이벤트를 웹 표시 상태로 변환한다. 실행을 지시하지 않는다.
@@ -32,6 +32,14 @@ export interface ProjectorOptions {
   bufferLimit?: number;
 }
 
+/**
+ * - applied: 적용
+ * - not_syncing: resync 중이 아님 (resync 없이 도착, 버퍼 포화·epoch 변경 후 늦게 도착). 다시 resync해야 한다
+ * - unsupported_scope: source 전체가 아닌 범위. 일부만 담긴 스냅샷이 다른 객체를 지우지 않도록 거부한다
+ * - stale_epoch: 현재보다 오래된 epoch. 상태를 되돌리지 않도록 거부하고 계속 기다린다
+ */
+export type SnapshotOutcome = 'applied' | 'not_syncing' | 'unsupported_scope' | 'stale_epoch';
+
 export type ApplyOutcome = 'applied' | 'duplicate_or_stale' | 'tombstoned' | 'buffered' | 'epoch_mismatch' | 'buffer_overflow';
 
 export class RequestStateProjector {
@@ -63,21 +71,27 @@ export class RequestStateProjector {
     return r;
   }
 
-  /** 재연결 시작: 이후 이벤트를 버퍼에 모은다 */
-  resync(source: ProjectionSource, scope: string): void {
+  /** 재연결 시작: 이후 이벤트를 버퍼에 모은다. MVP 범위는 source 전체 */
+  resync(source: ProjectionSource): void {
     const s = this.source(source);
     s.buffer = [];
-    s.scope = scope;
+    s.scope = SNAPSHOT_SCOPE_ALL;
     s.sync = 'syncing';
     delete s.incompleteReason;
   }
 
-  /** 전체 스냅샷 적용: 범위의 기존 투영을 교체하고 버퍼의 더 높은 revision만 적용한다 */
-  applySnapshot(snap: Snapshot): void {
+  /**
+   * 전체 스냅샷 적용: source의 기존 투영을 모두 교체하고 버퍼의 더 높은 revision만 적용한다.
+   * 스냅샷이 source의 모든 객체 종류를 같은 시점에 담는다는 전제다 (scope = source 전체).
+   */
+  applySnapshot(snap: Snapshot): SnapshotOutcome {
     const s = this.source(snap.source);
-    if (s.sync === 'incomplete' && s.incompleteReason === 'buffer_overflow') {
-      return; // 다시 resync를 시작해야 한다
+    if (!s.buffer) return 'not_syncing';
+    if ((snap.scope as string) !== SNAPSHOT_SCOPE_ALL) {
+      this.markIncomplete(s, `unsupported_scope:${String(snap.scope)}`);
+      return 'unsupported_scope';
     }
+    if (s.epoch !== undefined && snap.epoch < s.epoch) return 'stale_epoch';
     s.epoch = snap.epoch;
     s.scope = snap.scope;
     s.objects = new Map();
@@ -97,6 +111,7 @@ export class RequestStateProjector {
       this.applyOne(s, e);
     }
     this.notify();
+    return 'applied';
   }
 
   syncStates(): SourceSyncState[] {

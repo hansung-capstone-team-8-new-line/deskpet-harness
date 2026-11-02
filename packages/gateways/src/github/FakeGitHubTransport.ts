@@ -15,6 +15,7 @@ export interface FakePr {
   basics: Omit<PrBasics, 'observedAt'>;
   files: TransportReadResultMap['files']['files'];
   runs: ChecksData['runs'];
+  /** 'unsupported'는 권한 부족으로 조회 불가를 흉내 낸다 */
   requiredChecks: TransportReadResultMap['required_checks'] | 'unsupported';
   reviews: Omit<ReviewItem, 'source'>[];
 }
@@ -24,6 +25,8 @@ type ReadFault = TransportErrorKind;
 
 export class FakeGitHubTransport implements GitHubTransport {
   readonly fixture = true;
+  /** 테스트에서 쓰기 잠금을 흉내 낼 때 false로 바꾼다 */
+  writesEnabled = true;
   readonly reads: TransportReadQuery['kind'][] = [];
   submitCount = 0;
   private reviewSeq = 9000;
@@ -92,16 +95,25 @@ export class FakeGitHubTransport implements GitHubTransport {
         // MCP는 ref 입력 없이 현재 PR head 기준으로 조회한다 (message-contracts §Review Query)
         return { runs: p.runs, resolvedHeadSha: this.mode === 'mcp' ? p.basics.headSha : q.ref, hasMore: false };
       case 'required_checks':
-        if (p.requiredChecks === 'unsupported') throw new GitHubTransportError('unsupported', 'branch protection not readable');
+        if (p.requiredChecks === 'unsupported') return { state: 'unavailable', reasonCode: 'insufficient_permission', detail: 'branch protection not readable' };
         return p.requiredChecks;
       case 'reviews':
-        return { reviews: p.reviews, hasMore: false };
+        // 실제 API처럼 리뷰 목록에는 본문만, 코드 줄 지적은 review_comments로 나눠서 준다
+        return { reviews: p.reviews.map((r) => ({ ...r, comments: r.comments.filter((x) => !x.path).map((x) => ({ ...x, kind: 'summary' as const })) })), hasMore: false };
+      case 'review_comments':
+        return {
+          comments: p.reviews.flatMap((r) =>
+            r.comments.filter((x) => !!x.path).map((x) => ({ reviewId: r.reviewId, path: x.path!, ...(x.line !== undefined ? { line: x.line } : {}), body: x.body, ...(r.commitSha ? { commitSha: r.commitSha } : {}), ...(x.severity ? { severity: x.severity } : {}) })),
+          ),
+          hasMore: false,
+        };
       case 'viewer':
         return { ...this.viewer };
     }
   }
 
   async submitApproval(cmd: { repository: Repository; prNumber: number; commitId: string; event: 'APPROVE' }): Promise<TransportSubmitResponse> {
+    if (!this.writesEnabled) throw new GitHubTransportError('not_sent', 'writes disabled (allowWrites=false)', 'writes_disabled');
     const fault = this.submitFaults.shift();
     if (fault === 'refuse') throw new GitHubTransportError('not_sent', 'connection refused', 'fake_refused_before_request');
     this.submitCount += 1;

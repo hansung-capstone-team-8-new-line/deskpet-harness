@@ -33,6 +33,17 @@ export function expectedOutcomeFor(action: ActionName, target: Target, opts: { h
         requiredEvidence: ['stage_status', 'change_response'],
         completenessRequirement: { sections: [], allowTruncation: false },
       };
+    case 'register_item':
+    case 'postpone_item':
+    case 'complete_item':
+      // 직접 Eureka 경로 (파이프라인 Eureka 모듈 소유). 멱등키가 없어 응답 유실 시 인과 연결은 후보 수준 (README C-09)
+      return {
+        action,
+        target,
+        postconditions: ['eureka.linked_to_this_change'],
+        requiredEvidence: ['change_response'],
+        completenessRequirement: { sections: [], allowTruncation: false },
+      };
     default:
       return {
         action,

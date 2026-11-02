@@ -16,8 +16,8 @@ export async function askApproval(w: World, requestId = 'req-approve', opts: { s
 }
 
 /** 질문 전달 이벤트를 보고한 뒤 사용자의 답변으로 resume한다 */
-export async function answer(w: World, prev: HarnessResult, text: string, opts: { stt?: number | 'unavailable'; intention?: string; deliver?: boolean } = {}) {
-  const d = opts.deliver === false ? { pendingId: prev.pending!.pendingId, revision: prev.pending!.revision, confirmationId: prev.pending!.confirmationId } : await w.deliverQuestion(prev);
+export async function answer(w: World, prev: HarnessResult, text: string, opts: { stt?: number | 'unavailable'; intention?: string; deliver?: boolean; deliveredText?: string } = {}) {
+  const d = opts.deliver === false ? { pendingId: prev.pending!.pendingId, revision: prev.pending!.revision, confirmationId: prev.pending!.confirmationId } : await w.deliverQuestion(prev, 'speech', opts.deliveredText);
   return w.harness.resume({
     originalRequestId: prev.requestId,
     currentTurn: voiceTurn(nextTurn(), text, { ...(opts.stt !== undefined ? { stt: opts.stt } : {}), ...(opts.intention ? { intention: opts.intention } : {}) }),

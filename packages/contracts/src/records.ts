@@ -154,7 +154,8 @@ export type PendingState = z.infer<typeof PendingState>;
 
 export const QuestionDeliveryEvidence = z.object({
   deliveredAt: UtcTimestamp,
-  channel: z.enum(['speech', 'display', 'web']),
+  /** retry_request: 사용자가 실패한 반영을 "다시 해줘"로 직접 요청함 — 그 요청을 동의로 본다 (D-23). 질문을 말하지 않았다 */
+  channel: z.enum(['speech', 'display', 'web', 'retry_request']),
   sourceMessageId: Id,
   deliveredText: z.string().optional(),
 });
