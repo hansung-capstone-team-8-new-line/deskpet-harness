@@ -2,10 +2,11 @@
 /**
  * Harness 서비스 서버 (WebSocket). 파이프라인·데모 클라이언트·웹 화면이 이 서버에 연결한다.
  *
- *   pnpm harness                          # 쓰기 비활성 (GitHub 승인·Eureka 완료 요청은 보내지 않음)
- *   pnpm harness --allow-github-writes    # GitHub 승인 쓰기 허용. 승인은 요청 쪽(사용자 확인 질문·답변)에서만 받는다 (D-22).
- *                                         # DESKPET_STORE_PATH(영속 저장소) 필수. 같은 DB는 한 프로세스만 연다 (<DB>.lock)
- *   pnpm harness --allow-eureka-writes    # Eureka 쓰기 허용 (개발판 flw-d1·운영판 flw-v1). 영속 저장소 필수
+ *   pnpm harness                          # GitHub·Eureka 쓰기 허용이 기본 (D-38, 2026-11-09). 쓰기는 사용자 확인 답변이 있어야만 보낸다 (D-22)
+ *                                         # 쓰기에는 DESKPET_STORE_PATH(영속 저장소)가 필요하다. 없으면 쓰기를 끄고 시작한다
+ *   pnpm harness --read-only              # 쓰기 모두 끔 (조회만)
+ *   pnpm harness --no-github-writes       # GitHub 승인만 끔 / --no-eureka-writes: Eureka 쓰기만 끔
+ *                                         # 예전 옵션 --allow-github-writes·--allow-eureka-writes는 그대로 받지만 아무 효과 없음
  *   pnpm harness … --poc                  # POC 장애 주입 (DESKPET_POC_FAULTS, scripts/poc-faults.ts, D-27)
  *
  * .env
@@ -15,7 +16,7 @@
  *   HARNESS_WS_TLS_CERT / HARNESS_WS_TLS_KEY (선택, PEM 파일 경로 → wss://)
  *   HARNESS_WS_VIEWER_TOKEN (선택, 16자 이상 — 웹 화면용 구독 전용 토큰. pipeline 토큰과 달라야 함)
  *   GITHUB_TOKEN, EUREKA_API_KEY, EUREKA_BASE_URL, DESKPET_REQUIRED_CHECKS, DESKPET_STORE_PATH, LLM_* (기존과 같음)
- * 비밀값은 출력하지 않는다. 쓰기는 옵션을 준 경우에만 보낸다. 서버 콘솔 yes 확인은 없앴다 (사용자 결정 2026-10-24, D-22).
+ * 비밀값은 출력하지 않는다. 쓰기는 기본으로 켜져 있고 사용자 확인 답변으로만 보낸다. 서버 콘솔 yes 확인은 없앴다 (사용자 결정 2026-10-24, D-22).
  */
 import { readFileSync } from 'node:fs';
 import { pocSetup } from './poc-faults.js';
@@ -33,8 +34,11 @@ try {
   console.log('! .env 파일을 찾지 못했어요. app 폴더에서 실행했는지 확인하세요.');
 }
 const env = process.env;
-const allowGithubWrites = process.argv.includes('--allow-github-writes');
-const allowEurekaWrites = process.argv.includes('--allow-eureka-writes');
+// 쓰기 허용이 기본 (사용자 결정 2026-11-09, D-38). --read-only·--no-*-writes로 끈다
+const readOnly = process.argv.includes('--read-only');
+let allowGithubWrites = !readOnly && !process.argv.includes('--no-github-writes');
+let allowEurekaWrites = !readOnly && !process.argv.includes('--no-eureka-writes');
+const writeWarnings: string[] = [];
 const fail = (msg: string): never => {
   console.log(`✗ ${msg}`);
   process.exit(1);
@@ -106,13 +110,19 @@ const storeOpts = {
 };
 const storePath = env['DESKPET_STORE_PATH']?.trim();
 // 쓰기 모드는 영속 저장소가 있어야 한다: 메모리 저장소는 재시작 뒤 '보냈을 수 있는' 승인을 기억하지 못해 중복 전송을 막지 못한다 (감사 F-04)
-if (allowGithubWrites && !storePath) fail('--allow-github-writes는 DESKPET_STORE_PATH(영속 저장소)가 있어야 켤 수 있어요');
-if (allowEurekaWrites && !storePath) fail('--allow-eureka-writes는 DESKPET_STORE_PATH(영속 저장소)가 있어야 켤 수 있어요');
+if ((allowGithubWrites || allowEurekaWrites) && !storePath) {
+  allowGithubWrites = false;
+  allowEurekaWrites = false;
+  writeWarnings.push('DESKPET_STORE_PATH(영속 저장소)가 없어 GitHub·Eureka 쓰기를 끄고 시작해요. .env에 DESKPET_STORE_PATH=.deskpet/harness.db 를 넣으세요');
+}
 // Eureka 쓰기는 개발판(flw-d1)과 운영판(flw-v1)에서 허용한다. 운영판도 배포 전 닫힌 시험 환경이다 (사용자 결정 2026-11-03, D-20 갱신)
 // 그 밖의 주소(오타·다른 서버)에는 쓰지 않는다
 const eurekaBase = env['EUREKA_BASE_URL']?.trim() || 'https://api.eureka.codes/flw-d1';
 const eurekaEnv = /\/flw-d1\/?$/.test(eurekaBase) ? '개발판 flw-d1' : /\/flw-v1\/?$/.test(eurekaBase) ? '운영판 flw-v1' : undefined;
-if (allowEurekaWrites && !eurekaEnv) fail(`--allow-eureka-writes는 Eureka 개발판(flw-d1)·운영판(flw-v1) 주소에서만 켤 수 있어요 (지금: ${eurekaBase})`);
+if (allowEurekaWrites && !eurekaEnv) {
+  allowEurekaWrites = false;
+  writeWarnings.push(`Eureka 쓰기는 개발판(flw-d1)·운영판(flw-v1) 주소에서만 켜요. 지금 주소(${eurekaBase})라 Eureka 쓰기를 끄고 시작해요`);
+}
 const openStore = (): InMemoryOperationStore => {
   try {
     return storePath ? InMemoryOperationStore.openDurable(storePath, storeOpts) : new InMemoryOperationStore(storeOpts);
@@ -201,7 +211,8 @@ async function main() {
   console.log(`쓰기 입력 신뢰도 기준: STT ${config.minSttConfidenceForWrite}${minStt !== undefined ? ' (.env로 바꿈)' : ''}, 라우터 ${config.minRouteConfidenceForWrite}${minRoute !== undefined ? ' (.env로 바꿈)' : ''}`);
   console.log(`2차 의도 확인(D-29): ${intentRecheck ? (llm.guideClient ? '켜짐 — llm·unclear 요청을 LLM이 다시 보고 PR 리뷰·승인이면 규칙 경로로' : '켜져 있지만 LLM 없음 (동작 안 함)') : '꺼짐 (DESKPET_INTENT_RECHECK=off)'}`);
   console.log(`완료 근거 기록(D-28): ${evidenceNote ? `켜짐 — 단계 완료 확인에 함께 묻고 단계 기록에 PR 주소를 남김${env['EUREKA_NOTE_ACTOR_ID']?.trim() ? ' (작성자 actorId 지정)' : ' (작성자 actorId 없음)'}` : '꺼짐 (EUREKA_EVIDENCE_NOTE=off)'}`);
-  console.log(`GitHub 쓰기: ${allowGithubWrites ? '허용 (사용자 확인 답변만으로 보냄)' : '꺼짐'}  /  Eureka 쓰기: ${allowEurekaWrites ? `허용 — ${eurekaEnv} ${eurekaBase} (사용자 확인 답변만으로 보냄)` : '꺼짐'}`);
+  console.log(`GitHub 쓰기: ${allowGithubWrites ? '허용 (사용자 확인 답변만으로 보냄)' : '꺼짐'}  /  Eureka 쓰기: ${allowEurekaWrites ? `허용 — ${eurekaEnv} ${eurekaBase} (사용자 확인 답변만으로 보냄)` : '꺼짐'}${readOnly ? '  (--read-only)' : ''}`);
+  for (const w of writeWarnings) console.log(`! ${w}`);
   console.log(llm.enabled ? `LLM: ${llm.provider} / ${llm.model} (동시 ${llm.limiter?.stats().max ?? '-'}건)` : `LLM 꺼짐 (${llm.reason})`);
   console.log(`동시 호출 상한: GitHub ${githubLimiter.stats().max} / Eureka ${eurekaLimiter.stats().max} (D-24)`);
   if (lan) {

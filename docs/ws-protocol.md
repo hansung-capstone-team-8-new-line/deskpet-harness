@@ -94,10 +94,10 @@
 ## 쓰기
 
 - 기본은 쓰기 비활성.
-- `pnpm harness --allow-github-writes`일 때만 GitHub 승인 전송 가능. `DESKPET_STORE_PATH`(영속 저장소)가 없으면 시작하지 않는다.
+- GitHub 승인 전송은 기본으로 켜져 있다(D-38). `--read-only`·`--no-github-writes`로 끈다. `DESKPET_STORE_PATH`(영속 저장소)가 없으면 쓰기를 끄고 시작한다.
 - 승인은 요청 쪽 사용자 확인(질문 전달 보고 + 승인 답변)만으로 받는다. 서버 콘솔 `yes` 확인은 없앴다 (D-22).
 - 보내기 직전 head SHA·PR 상태·권한·필수 검사를 다시 확인한 다음에만 보낸다 (DurableAck 전).
-- Eureka 쓰기는 `pnpm harness --allow-eureka-writes`일 때만, 개발 환경(flw-d1)에서만 (D-20).
+- Eureka 쓰기도 기본으로 켜져 있다(D-38, `--no-eureka-writes`로 끔). 개발판(flw-d1)·운영판(flw-v1) 주소에서만 (D-20).
 
 ## 문서와 다른 점 (C-14)
 
@@ -107,7 +107,7 @@
 
 ```
 # 터미널 1
-pnpm harness                  # 또는 pnpm harness --allow-github-writes
+pnpm harness                  # 쓰기 허용이 기본. 조회만: pnpm harness --read-only
 # 터미널 2
 pnpm demo 12                 # 기존 데모와 같은 입력·출력
 pnpm demo 12 --ask "이 PR 뭐가 바뀌었어?"

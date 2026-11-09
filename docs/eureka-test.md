@@ -14,7 +14,7 @@
 ## 1. 서버 켜기 (터미널 1)
 
 ```powershell
-pnpm harness --allow-eureka-writes
+pnpm harness                     # 쓰기 허용이 기본 (D-38)
 ```
 
 시작 줄에 `Eureka 쓰기: 허용 — 운영판 flw-v1`과 `직접 Eureka 요청(eureka.*): 이 서버에서 받음`이 보여야 한다.
@@ -64,7 +64,7 @@ pnpm harness --allow-eureka-writes
 터미널 1을 끄고:
 
 ```powershell
-pnpm eureka:server --allow-eureka-writes   # EUREKA_STORE_PATH 필요 (DESKPET_STORE_PATH와 다른 파일)
+pnpm eureka:server               # 쓰기 허용이 기본. EUREKA_STORE_PATH 필요 (DESKPET_STORE_PATH와 다른 파일)
 ```
 
 | # | 명령 | 기대 |

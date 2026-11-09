@@ -11,7 +11,7 @@
  *   pnpm demo 12 --ask "이 PR 뭐가 바뀌었어?" [--intent pr.summary]
  *   pnpm demo --item 1000020          # Eureka 업무 단계 기록의 PR 주소로 대상 PR·완료할 단계를 찾는다 (G-01 시작부)
  *
- * GitHub·Eureka 쓰기 허용은 서버 옵션이다 (pnpm harness --allow-github-writes --allow-eureka-writes). 승인은 이 데모의 답변만으로 받는다 (D-22).
+ * GitHub·Eureka 쓰기는 서버에서 기본으로 켜져 있다 (D-38, 끄려면 pnpm harness --read-only). 승인은 이 데모의 답변만으로 받는다 (D-22).
  * .env: HARNESS_WS_URL(기본 ws://127.0.0.1:8787), HARNESS_WS_TOKEN, GITHUB_TEST_REPO, GITHUB_TEST_PR,
  *       DEMO_EUREKA_ITEM_ID, DEMO_EUREKA_STAGE_ID (선택)
  */
@@ -40,7 +40,7 @@ const fail = (msg: string): never => {
   console.log(`✗ ${msg}`);
   process.exit(1);
 };
-if (args.includes('--allow-github-writes')) console.log('! --allow-github-writes는 서버 옵션으로 옮겨졌어요: pnpm harness --allow-github-writes');
+if (args.includes('--allow-github-writes')) console.log('! 쓰기는 서버에서 기본으로 켜져 있어요 (D-38). 끄려면 pnpm harness --read-only');
 
 const token = env['HARNESS_WS_TOKEN']?.trim() || fail('HARNESS_WS_TOKEN이 비어 있어요 (서버와 같은 값)');
 let [owner, name] = (env['GITHUB_TEST_REPO'] ?? '').split('/');

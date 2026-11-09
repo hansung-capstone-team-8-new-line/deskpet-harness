@@ -76,7 +76,7 @@ Eureka 쓰기는 서버에서 계속 꺼져 있다 (`allowWrites=false`). 승인
 
 시험: `tests/e2e/eurekaBridge.test.ts`, `tests/e2e/prLinks.test.ts`(기록 → PR → 승인 → 그 단계 완료).
 
-Eureka 쓰기는 이후 `pnpm harness --allow-eureka-writes`로 개발 환경에서만 켤 수 있다 (D-20).
+Eureka 쓰기는 기본으로 켜져 있고(D-38) 개발판(flw-d1)·운영판(flw-v1) 주소에서만 보낸다 (D-20). 끄려면 `pnpm harness --no-eureka-writes`.
 
 ## 흐름 예 (G-01)
 

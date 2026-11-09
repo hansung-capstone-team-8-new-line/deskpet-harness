@@ -2,7 +2,7 @@
 /**
  * POC용 장애 주입 (D-27). 실제 GitHub·Eureka에 붙은 상태에서 드문 실패를 일부러 만든다. 운영 코드(packages/)에는 넣지 않는다.
  *
- *   pnpm harness --allow-github-writes --allow-eureka-writes --poc
+ *   pnpm harness --poc
  *   .env  DESKPET_POC_FAULTS=eureka_stage_slow,eureka_stage_fail_once,github_approve_drop_once,sensor_fail_once
  *
  * 켜는 조건: --poc 플래그 + DESKPET_POC_FAULTS + Eureka 개발판(flw-d1)·운영판(flw-v1). 하나라도 없으면 아무것도 주입하지 않는다.

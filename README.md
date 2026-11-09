@@ -58,8 +58,8 @@ pnpm web:dev             # 터미널 3: 웹 화면 http://127.0.0.1:5173 (보기
 | --- | --- |
 | `pnpm test` / `pnpm typecheck` / `pnpm lint` / `pnpm check` | vitest / tsc(패키지 + 웹) / eslint / 셋 다 |
 | `pnpm smoke [eureka\|github\|llm]` | 연결 테스트. Eureka·GitHub는 읽기만, llm은 작은 호출 2번 |
-| `pnpm harness [--allow-github-writes]` | Harness 서버. 시작 시 보존 정리·결과 불명 쓰기 읽기 확인, Ctrl+C 시 처리 중 요청을 마치고 종료 |
-| `pnpm eureka:server [--allow-eureka-writes]` | Eureka 내부 API 서버 (D-31, 기본 ws://127.0.0.1:8789). 직접 Eureka 요청(`eureka.*`)만 별도 프로세스에서 받는다. Harness 서버는 `DESKPET_EUREKA_BRIDGE=external`로 켠다 |
+| `pnpm harness [--read-only]` | Harness 서버. 시작 시 보존 정리·결과 불명 쓰기 읽기 확인, Ctrl+C 시 처리 중 요청을 마치고 종료 |
+| `pnpm eureka:server [--read-only]` | Eureka 내부 API 서버 (D-31, 기본 ws://127.0.0.1:8789). 직접 Eureka 요청(`eureka.*`)만 별도 프로세스에서 받는다. Harness 서버는 `DESKPET_EUREKA_BRIDGE=external`로 켠다 |
 | `pnpm demo:adapter [--fixture] <명령>` | 파이프라인 문서 형식(adapter) 시험 클라이언트: `reminders`, `reminder <itemId>`, `eureka list`, `eureka status "업무"`, `eureka postpone "업무" <ISO+09:00> [--approve]`, `links <itemId>`, `harness [PR] [--item <itemId>]`. `--fixture`는 `pnpm web:fixture` 서버(가짜 GitHub·Eureka)에 붙음 |
 | `pnpm demo --ask "Eureka 다시 반영해줘" --intent eureka.retry` | 실패한 Eureka 반영 다시 하기 (D-23) |
 | `pnpm demo --item <itemId>` | 데모를 Eureka 업무에서 시작: 단계 기록의 PR 주소로 대상 PR과 완료할 단계를 찾는다 (`.env` `DEMO_EUREKA_*`·PR 번호 불필요) |
@@ -89,12 +89,12 @@ pnpm web:dev             # 터미널 3: 웹 화면 http://127.0.0.1:5173 (보기
 ## 쓰기 안전장치
 
 - 기본은 모든 쓰기 비활성. 승인 단계는 "쓰기가 꺼져 있어서 보내지 않았어요"로 끝나고 DurableAck도 요청하지 않는다.
-- `pnpm harness --allow-github-writes`일 때만 GitHub 승인을 보낼 수 있다. 승인은 **요청 쪽 사용자 확인**(확인 질문 전달 + 승인 답변)만으로 받는다. 서버 콘솔 `yes` 확인은 없앴다 (D-22).
+- GitHub 승인 쓰기는 기본으로 켜져 있다(D-38, `--read-only`·`--no-github-writes`로 끔). 승인은 **요청 쪽 사용자 확인**(확인 질문 전달 + 승인 답변)만으로 받는다. 서버 콘솔 `yes` 확인은 없앴다 (D-22).
   - 쓰기 모드는 `DESKPET_STORE_PATH`(영속 저장소)가 있어야 시작하고, 같은 DB는 한 프로세스만 연다 (`<DB>.lock`).
   - 보내기 직전 Gateway가 PR 상태·head SHA·권한·필수 검사를 다시 확인하고, 어긋나면 보내지 않는다.
 - 확인 질문의 답은 **실제로 전달한 문장**이 저장된 범위(저장소·PR·커밋·행위)와 맞을 때만 받는다. 출력 모델은 이 범위 문구를 바꿀 수 없고, 성공하지 않은 쓰기 결과는 모델 문장 없이 고정 문장으로만 알린다.
 - 봉투 deadline이 지났거나 봉투·payload의 요청 ID가 다르면 실행하지 않는다.
-- Eureka 쓰기는 `pnpm harness --allow-eureka-writes`일 때만, 개발판(flw-d1)·운영판(flw-v1) 주소에서만 보낼 수 있다 (D-20, 2026-11-03 운영판 추가). 보내기 직전 단계 상태(이미 완료·보류)를 다시 확인한다.
+- Eureka 쓰기는 기본으로 켜져 있고(D-38, `--read-only`·`--no-eureka-writes`로 끔), 개발판(flw-d1)·운영판(flw-v1) 주소에서만 보낼 수 있다 (D-20, 2026-11-03 운영판 추가). 보내기 직전 단계 상태(이미 완료·보류)를 다시 확인한다.
 - 본인이 연 PR은 GitHub 규칙상 승인할 수 없어 확인 질문 전에 막힌다.
 
 ## 실제 연결 기록
@@ -145,6 +145,7 @@ pnpm web:dev             # 터미널 3: 웹 화면 http://127.0.0.1:5173 (보기
 | D-35 | **쓰기 입력 기준·승인 단어 (2026-11-08 사용자 결정)**: ① 라우터 통합 신뢰도(`routeDecision.overallConfidence`) 기본 기준 0.8 → **0.53** (실증값이 나오면 다시 조정, `DESKPET_MIN_ROUTE_CONFIDENCE`로 바꿀 수 있음). STT 기준 0.85는 그대로 ② 확인 답변 승인 단어에 **"반영해"** 추가 (거절 단어가 있으면 거절 우선, "반영하지 마"는 거절) ③ C-06은 Liability대로 Eureka 반영 전 별도 확인을 유지 | 사용자 결정 2026-11-08 |
 | D-36 | **허용 저장소 목록 (D-21 보안 보류분)**: `DESKPET_ALLOWED_REPOS=owner/name,…`(대소문자 무시). 목록 밖 저장소 PR은 리뷰(읽기)는 하지만 승인 전 확인에서 `repository_not_allowed`로 막아 승인 질문을 만들지 않는다. `eureka.links`는 목록 밖 PR 주소를 후보에서 빼고 `excludedCount`로 알린다. 승인 뒤 단계 자동 찾기도 목록 안 PR만. 비우면 지금처럼 제한 없음. 형식이 틀리면 서버가 시작하지 않는다 | 사용자 결정 2026-11-08 |
 | D-37 | **확인 답변 판정 강화 (2026-11-09 실제 시험 사고)**: 시험 클라이언트가 "거절"·영문 자판 오타("rjwjf")를 승인으로 보내 GitHub 승인과 Eureka 단계 완료가 실제로 실행됐다. ① 거절 말에 거절·거부·안 해·하지 말·reject 추가 ② 라우터가 `confirm.approve`라고 해도 문장에 승인 말이 없으면 unclear(다시 묻기) — 승인은 승인 말이 있어야만 ③ 시험 클라이언트(`demo:adapter`)도 같은 말 목록으로 승인/거절/unclear를 정하고, unclear면 `mutationApproved=false` | 2026-11-09 |
+| D-38 | **승인 말 확장·쓰기 기본 허용 (2026-11-09 사용자 결정)**: ① 확인 답변에서 짧은 긍정(어·엉·넹·네네·ㅇㅋ·콜·sure…)과 동의·실행 요청(알겠어·오케이·당연·해줘·해 주세요·부탁해·진행·처리해·go ahead…)을 모두 같은 승인으로 본다. 거절 말(아니·취소·보류·거절·않·별로·그만…)이 있으면 거절 우선, 되묻는 말(…까?, …?)은 승인이 아니다(다시 묻기). 중복 실행은 라우터·DurableAck·작업 번호가 막는다 ② `pnpm harness`·`pnpm eureka:server`는 **쓰기 허용이 기본**. `--read-only`(모두 끔)·`--no-github-writes`·`--no-eureka-writes`로 끈다. 예전 `--allow-*-writes`는 받기만 하고 효과 없음. 영속 저장소가 없거나 Eureka 주소가 flw-d1·flw-v1이 아니면 그 쓰기를 끄고 경고와 함께 시작한다(D-18·D-20 대체) | 사용자 결정 2026-11-09 |
 | D-33 | **라우터 헤드 의미 (wiki interface-contracts 2026-11-01)**: 새 형식(`modelIntention` 헤드가 있음)에서 `target` = 업무 이름 원문, `name` = 단계 이름 원문, `task` = 새 업무 이름·요약, `note` = 기록 내용. 업무는 `target`(또는 `resolvedTarget`)으로 찾고, 단계 기록 추가의 단계는 `name`, 등록할 업무 이름은 `task`(없으면 `target`)로 정한다. 업무 유형은 `EUREKA_DEFAULT_PROCESS_ID`만 쓴다. 구형 형식(`modelIntention` 없음)은 지금처럼 `name` = 업무 이름. 라우터 24개 라벨 중 아직 실행하지 않는 동작은 `EUREKA_OPERATION_NOT_IMPLEMENTED`(목록에 없는 값은 `POLICY_BLOCKED`) | 구현 2026-11-03 |
 | D-32 | **wiki 정렬 (2026-11-03)**: ① 출력 감정은 `neutral`·`happy`·`sad`만 쓰고(모델이 다른 이름을 내면 정규화), 업무 결과는 `OutputContent.actionStatus`(마지막 쓰기 작업의 succeeded·failed·unknown, 조회만 했으면 없음)로 따로 준다. 결과가 있으면 감정을 결과에 맞춘다(성공 happy, 실패 sad, 미확인 neutral) — wiki deskpet-display-interface ② 실행된 검사가 없으면 "모든 검사가 통과"라고 하지 않는다 ③ 미지원 요청은 "실행하지 않음 → 지원 범위 → 대안" 순서로 답한다 — wiki deskpet-operation-policies §3 ④ EurekaBridge는 라우터 형식(intention=`eureka` + operation 24개 라벨)을 받는다. 지원: query(대상 있으면 상태, 없으면 목록)·create·complete·postpone·add_note(단계 기록 추가, 확인 후)·query_processes. 나머지 라벨은 실행하지 않고 무엇을 안 했는지·지원 범위를 말한다 — wiki small-router-model | 구현 2026-11-03 |
 | D-31 | **Eureka 내부 API 분리**: `pnpm eureka:server`가 직접 Eureka 요청(`eureka.execute·reconcile·reminders·reminder·links`)만 별도 프로세스·포트(기본 8789)에서 받는다. 메시지 형식은 Harness 서버와 같아 파이프라인은 주소만 바꾼다. 작업 기록은 따로(`EUREKA_STORE_PATH`, Harness 저장소와 다른 파일). Harness 서버는 `DESKPET_EUREKA_BRIDGE=external`이면 `eureka.*`를 받지 않는다(기본 internal: 지금처럼 함께). G-01의 단계 완료는 계속 Harness가 직접 쓴다 — wiki deskpet-pipeline §4 | 구현 2026-11-03 |

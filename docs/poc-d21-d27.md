@@ -8,7 +8,7 @@
 - 부계정이 연 **열린 PR** 하나 (같은 커밋을 이미 승인했으면 새 커밋 push)
 - Eureka 시험 업무 하나. 완료할 단계의 **기록**에 `PR: https://github.com/<owner>/<repo>/pull/<번호>` (앞 단계는 완료 상태)
 - `.env`: `DESKPET_STORE_PATH` (영속 저장소), 아래 시나리오별 `DESKPET_POC_FAULTS`
-- 터미널 3개: ① `pnpm harness --allow-github-writes --allow-eureka-writes [--poc]` ② `pnpm demo --item <업무>` ③ `pnpm web:dev` (화면 확인)
+- 터미널 3개: ① `pnpm harness [--poc]` (쓰기 허용이 기본, D-38) ② `pnpm demo --item <업무>` ③ `pnpm web:dev` (화면 확인)
 - 서버 콘솔의 `[timing]` 줄(D-26)을 결과에 같이 남긴다
 
 ## 시나리오
