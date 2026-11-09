@@ -31,9 +31,9 @@ describe('input policy', () => {
 
   it('승인 말 확장 (D-38): 동의·실행 요청은 같은 승인. 거절 우선, 되묻는 말은 승인 아님', () => {
     const v = (t: string) => classifyAnswer(voiceTurn('t', t), DEFAULT_POLICY).verdict;
-    for (const t of ['어', '엉 해줘', '넹', '네네', '알겠어', '알겠습니다', '오케이', 'ㅇㅋ', '콜', '당연하지', '그렇게 해줘', '해 주세요', '부탁해', '진행해 줘', '승인해줘요', '반영해줘', '처리해', 'sure', 'yeah', 'go ahead', '좋습니다'])
+    for (const t of ['어', '엉 해줘', '넹', '네네', '알겠어', '알겠습니다', '오케이', 'ㅇㅋ', '콜', '당연하지', '그렇게 해줘', '해 주세요', '부탁해', '진행해 줘', '승인해줘요', '반영해줘', '처리해', 'sure', 'yeah', 'go ahead', '좋습니다', '반영해', '추가해', '추가해 줘', '응 반영하고 추가해'])
       expect([t, v(t)]).toEqual([t, 'approved']);
-    for (const t of ['승인하지 마', '좋지 않아', '별로야', '그만', '안 할래', 'no thanks', '취소해줘'])
+    for (const t of ['승인하지 마', '좋지 않아', '별로야', '그만', '안 할래', 'no thanks', '취소해줘', '추가하지 마', '반영 안 해'])
       expect([t, v(t)]).toEqual([t, 'rejected']);
     for (const t of ['승인할까?', '그래?', '진행해도 되나요', '네가 판단해', '어디 PR이야', '예약해', '음', '글쎄'])
       expect([t, v(t)]).toEqual([t, 'unclear']);

@@ -75,6 +75,16 @@ export class RuleBasedGuide implements Guide {
           },
         };
       }
+      // D-41: 리뷰 뒤 승인 조건이 맞으면 확인 질문을 바로 붙인다 (답변 단계 규칙은 그대로 엄격). 안 맞으면 출력이 이유를 한 문장 붙인다
+      const rv = facts.review;
+      if (this.cfg.offerApprovalAfterReview && rv.headSha && rv.approvalBlockers.length === 0) {
+        return {
+          ...base,
+          kind: 'ask_user',
+          reasonRefs: ['review_collected', 'approval_offered'],
+          payload: { purpose: 'confirm_pr_approval', questionKind: 'confirmation', requiredSlots: [], targetActionVersion: { action: 'submit_approval', target: pr, headSha: rv.headSha } },
+        };
+      }
       return { ...base, kind: 'finish', payload: { reason: 'review_collected', outputFactRefs: ['review'] } };
     }
 

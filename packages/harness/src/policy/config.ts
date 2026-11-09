@@ -59,6 +59,11 @@ export interface PolicyConfig {
    * STT 정확도가 높아지면 strict로 되돌린다
    */
   approvalRequestInput: 'loose' | 'strict';
+  /**
+   * 리뷰 뒤 다음 질문 (D-41, 2026-11-10). 켜면 리뷰 결과 끝에 승인 조건이 맞으면 확인 질문("…을 승인할까요?")을 붙이고,
+   * 승인할 수 없는 PR이면 그 이유를 한 문장 붙인다. 기본 false(라이브러리). 서버는 DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off가 아니면 켠다
+   */
+  offerApprovalAfterReview: boolean;
 }
 
 export const DEFAULT_POLICY: PolicyConfig = {
@@ -82,4 +87,5 @@ export const DEFAULT_POLICY: PolicyConfig = {
   intentRecheck: false,
   prChecks: 'enforce',
   approvalRequestInput: 'loose',
+  offerApprovalAfterReview: false,
 };

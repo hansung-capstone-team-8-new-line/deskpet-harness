@@ -781,7 +781,8 @@ export class HarnessService {
             delete facts.wikiExcerpts;
             return this.result(meta, 'completed', actionResults, { ...exportFacts(facts), backgroundNotFound: true }, { sources });
           }
-          return this.result(meta, 'completed', actionResults, exportFacts(facts), { sources });
+          // D-41: 리뷰만 했을 때 승인할 수 없는 이유를 출력이 붙이도록 표시
+          return this.result(meta, 'completed', actionResults, { ...exportFacts(facts), ...(this.cfg.offerApprovalAfterReview && meta.intent === 'pr.review' ? { offerApprovalAfterReview: true } : {}) }, { sources });
       }
     }
     return this.result(meta, 'failed', actionResults, exportFacts(facts), { errors: [errorInfo('harness.guide', 'GUIDE_ERROR', 'max guide steps reached', 'none')], sources });
@@ -816,7 +817,7 @@ export class HarnessService {
       { repository: a.repository, prNumber: a.prNumber, requestedSections: a.requestedSections, ...(a.expectedHeadSha ? { expectedHeadSha: a.expectedHeadSha } : {}), deadlineAt: constraints.deadlineAt },
       { deadlineAt: constraints.deadlineAt, signal: meta.abort.signal },
     );
-    const facts = ctx.prBasics ? reviewFacts(ctx, purpose === 'approval_precheck' ? (a.expectedHeadSha ?? ctx.initialHeadSha) : undefined, { ignoreChecks: this.cfg.prChecks === 'skip', repositoryAllowed: isRepositoryAllowed(this.cfg.allowedRepositories, a.repository.owner, a.repository.name) }) : undefined;
+    const facts = ctx.prBasics ? reviewFacts(ctx, purpose === 'approval_precheck' || this.cfg.offerApprovalAfterReview ? (a.expectedHeadSha ?? ctx.initialHeadSha) : undefined, { ignoreChecks: this.cfg.prChecks === 'skip', repositoryAllowed: isRepositoryAllowed(this.cfg.allowedRepositories, a.repository.owner, a.repository.name) }) : undefined;
     const g: GatewayResult = {
       mode: 'read',
       dispatchState: 'sent',

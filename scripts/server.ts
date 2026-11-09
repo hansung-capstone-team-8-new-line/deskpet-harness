@@ -95,6 +95,8 @@ const config = {
   evidenceNote,
   intentRecheck,
   prChecks: 'enforce' as 'enforce' | 'skip',
+  // D-41: 리뷰 뒤 승인 조건이 맞으면 확인 질문을 붙임 (DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off로 끔)
+  offerApprovalAfterReview: (env['DESKPET_OFFER_APPROVAL_AFTER_REVIEW'] ?? 'on').trim().toLowerCase() !== 'off',
   // D-39: 승인 요청 단계 입력 검사. 기본 loose (STT 정확도가 오르면 DESKPET_APPROVAL_REQUEST_INPUT=strict)
   approvalRequestInput: (env['DESKPET_APPROVAL_REQUEST_INPUT']?.trim() === 'strict' ? 'strict' : 'loose') as 'loose' | 'strict',
   ...(allowed.repos.length ? { allowedRepositories: allowed.repos } : {}),
@@ -210,6 +212,7 @@ async function main() {
   console.log(`직접 Eureka 요청(eureka.*): ${eurekaBridgeMode === 'internal' ? '이 서버에서 받음' : '받지 않음 — Eureka 내부 API 서버(pnpm eureka:server)로 (DESKPET_EUREKA_BRIDGE=external)'}`);
   console.log(`PR 검사(D-30): ${prChecks === 'skip' ? '조회하지 않음 — 승인 조건에서도 제외 (DESKPET_PR_CHECKS=enforce로 되돌림)' : '조회·필수 검사 확인'}`);
   console.log(`승인 허용 저장소(D-36): ${allowed.repos.length ? allowed.repos.join(', ') : '제한 없음 (DESKPET_ALLOWED_REPOS 비어 있음)'}`);
+  console.log(`리뷰 뒤 승인 질문(D-41): ${config.offerApprovalAfterReview ? '켜짐 — 승인 가능하면 "…승인할까요?"를 붙이고, 아니면 이유를 한 문장 (DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off)' : '꺼짐'}`);
   console.log(`승인 요청 입력(D-39): ${config.approvalRequestInput === 'strict' ? '엄격 — 요청부터 신뢰도 기준 적용' : '느슨 — 요청은 신뢰도로 막지 않고 확인 질문까지, 확인 답변에만 기준 적용 (DESKPET_APPROVAL_REQUEST_INPUT=strict로 되돌림)'}`);
   console.log(`쓰기 입력 신뢰도 기준: STT ${config.minSttConfidenceForWrite}${minStt !== undefined ? ' (.env로 바꿈)' : ''}, 라우터 ${config.minRouteConfidenceForWrite}${minRoute !== undefined ? ' (.env로 바꿈)' : ''}`);
   console.log(`2차 의도 확인(D-29): ${intentRecheck ? (llm.guideClient ? '켜짐 — llm·unclear 요청을 LLM이 다시 보고 PR 리뷰·승인이면 규칙 경로로' : '켜져 있지만 LLM 없음 (동작 안 함)') : '꺼짐 (DESKPET_INTENT_RECHECK=off)'}`);
