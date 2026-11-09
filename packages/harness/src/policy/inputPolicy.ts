@@ -21,6 +21,24 @@ export function writeInputBlockers(turn: CurrentTurnInput, cfg: PolicyConfig): s
   return out;
 }
 
+/**
+ * 승인 '요청'(확인 질문을 띄우는 단계)의 입력 검사 (D-39). loose면 신뢰도 기준은 빼고 말이 끝났는지·STT 상태만 본다.
+ * 실제 쓰기는 확인 답변(classifyAnswer, 엄격)에서만 일어난다
+ */
+export function approvalRequestBlockers(turn: CurrentTurnInput, cfg: PolicyConfig): string[] {
+  const all = writeInputBlockers(turn, cfg);
+  return cfg.approvalRequestInput === 'strict' ? all : all.filter((b) => b !== 'stt_confidence_low' && b !== 'route_confidence_low');
+}
+
+/**
+ * 승인 요청으로 볼 말 (D-39). STT가 '승인'을 비슷한 소리로 잘못 듣는 경우(성인·생일 등)까지 받는다.
+ * 요청은 확인 질문만 띄우므로 느슨하게 받는다. 거절 말이 있으면 아니다
+ */
+const APPROVAL_REQUEST = /(승인|성인|송인|숭인|생인|싱인|승일|성일|생일)\s*(해|하자|할게|부탁|좀|ㄱ)/;
+export function looksLikeApprovalRequest(text: string): boolean {
+  return APPROVAL_REQUEST.test(text) && !REJECT_WORDS.test(text);
+}
+
 export type AnswerVerdict = 'approved' | 'rejected' | 'unclear';
 
 /**

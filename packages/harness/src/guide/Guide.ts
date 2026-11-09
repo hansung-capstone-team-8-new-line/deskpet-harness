@@ -1,5 +1,5 @@
 import type { GitHubPrTarget, GuideDecision, GuideInput } from '@deskpet/contracts';
-import { writeInputBlockers } from '../policy/inputPolicy.js';
+import { approvalRequestBlockers } from '../policy/inputPolicy.js';
 import type { PolicyConfig } from '../policy/config.js';
 import type { ReviewFacts } from '../facts.js';
 
@@ -79,7 +79,8 @@ export class RuleBasedGuide implements Guide {
     }
 
     // ---- pr.approve
-    const inputBlockers = writeInputBlockers(input.goal.currentTurn, this.cfg);
+    // D-39: 요청 단계는 느슨하게(loose 기본). 확인 답변 단계는 classifyAnswer가 엄격하게 본다
+    const inputBlockers = approvalRequestBlockers(input.goal.currentTurn, this.cfg);
     if (inputBlockers.length > 0) {
       // S-04: 낮은/확인 불가 신뢰도에서 승인 차단, 대상과 행위를 다시 말하도록 요청
       return {

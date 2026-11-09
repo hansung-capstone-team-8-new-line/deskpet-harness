@@ -24,11 +24,24 @@ const intent = (v: string) => ({ intent: v, reason: 'test' });
 const guideStep = (decision: string) => ({ decision, missingSlots: [], reason: 'test' });
 
 describe('2차 의도 확인 (D-29)', () => {
-  it('llm 의도의 "그 PR 승인해 줘" → pr.approve로 바꿔 확인 질문까지. 바로 승인하지 않는다', async () => {
+  it('승인 말이 있으면 LLM 없이 규칙으로 pr.approve (D-39). STT가 잘못 들은 "성인해줘"·"생일해줘"도', async () => {
+    const llm = script(intent('other'));
+    const w = createWorld({ llm, config: { intentRecheck: true } });
+    await review(w);
+    for (const text of ['좋아 그 PR 승인해 줘', '성인해줘', '생일해줘~']) {
+      const q = await ask(w, text, 'llm');
+      expect([text, q.facts['intentRecheck']]).toMatchObject([text, { from: 'llm', to: 'pr.approve', changed: true, by: 'rule' }]);
+      expect(q.pending?.purpose).toBe('confirm_pr_approval');
+    }
+    expect(llm.requests).toHaveLength(0);
+    expect(w.github.submitCount).toBe(0);
+  });
+
+  it('llm 의도의 "그거 통과시켜 줘" → LLM이 pr.approve로 바꿔 확인 질문까지. 바로 승인하지 않는다', async () => {
     const llm = script(intent('pr_approve'));
     const w = createWorld({ llm, config: { intentRecheck: true } });
     await review(w);
-    const q = await ask(w, '좋아 그 PR 승인해 줘', 'llm');
+    const q = await ask(w, '그거 통과시켜 줘', 'llm');
     expect(q.facts['intentRecheck']).toMatchObject({ from: 'llm', to: 'pr.approve', changed: true });
     expect(q.disposition).toBe('awaiting_user');
     expect(q.pending?.purpose).toBe('confirm_pr_approval');
@@ -63,18 +76,26 @@ describe('2차 의도 확인 (D-29)', () => {
   it('분류 LLM이 실패하면 원래 의도를 유지한다 (실행 없음)', async () => {
     const llm = script(new Error('down'), guideStep('unsupported'));
     const w = createWorld({ llm, config: { intentRecheck: true } });
-    const r = await ask(w, '그 PR 승인해 줘', 'llm');
+    const r = await ask(w, '그거 통과시켜 줘', 'llm');
     expect(r.facts['intentRecheck']).toMatchObject({ changed: false });
     expect(w.github.submitCount).toBe(0);
   });
 
-  it('승인으로 바뀌어도 쓰기 입력 신뢰도 기준은 그대로: STT가 낮으면 다시 말해 달라고 한다', async () => {
+  it('승인 요청은 느슨하게(D-39): STT 0.67이어도 확인 질문까지. 확인 답변은 그대로 엄격 (strict면 예전처럼 다시 말해 달라고 함)', async () => {
     const llm = script(intent('pr_approve'));
     const w = createWorld({ llm, config: { intentRecheck: true } });
     await review(w);
     const q = await ask(w, '좋아 그 PR 승인해 줘', 'llm', { stt: 0.67 });
-    expect(q.pending?.purpose).toBe('restate_write_command');
+    expect(q.pending?.purpose).toBe('confirm_pr_approval');
+    // 답변 STT가 낮으면 승인하지 않는다
+    const again = await answer(w, q, '응', { stt: 0.6 });
+    expect(again.pending?.purpose).toBe('confirm_pr_approval');
     expect(w.github.submitCount).toBe(0);
+
+    const w2 = createWorld({ llm: script(intent('pr_approve')), config: { intentRecheck: true, approvalRequestInput: 'strict' } });
+    await review(w2);
+    const q2 = await ask(w2, '좋아 그 PR 승인해 줘', 'llm', { stt: 0.67 });
+    expect(q2.pending?.purpose).toBe('restate_write_command');
   });
 
   it('꺼져 있으면 지금처럼 LLM Guide로만 간다', async () => {

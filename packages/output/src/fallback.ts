@@ -263,7 +263,7 @@ function blockedSentence(reasons: string[], pr?: number, review?: ReviewFactsLik
   return `조건이 맞지 않아 실행하지 않았어요 (${reasons.join(', ')}).`;
 }
 
-function questionSentence(q: { purpose: string; scope?: ConfirmationScope }, pr?: number): string {
+function questionSentence(q: { purpose: string; scope?: ConfirmationScope }, _pr?: number): string {
   switch (q.purpose) {
     case 'identify_pr':
       return '어느 저장소의 몇 번 PR을 확인할까요?';
@@ -272,7 +272,8 @@ function questionSentence(q: { purpose: string; scope?: ConfirmationScope }, pr?
     case 'clarify_request':
       return '무엇을 도와드릴지 조금 더 자세히 말해 주시겠어요?';
     case 'restate_write_command':
-      return `승인 명령을 정확히 듣지 못했어요. ${pr ? `PR ${pr}번을 승인하려면 '${pr}번 승인해'라고` : '대상과 함께'} 다시 말해 주세요.`;
+      // D-39: 번호는 요구하지 않는다 (PR이 여럿이 되면 그때 다시 넣는다)
+      return "승인 명령을 정확히 듣지 못했어요. 승인하려면 '승인해'라고 다시 말해 주세요.";
     // 대상·행위·버전은 고정 범위 문구로만 말한다 (contracts/confirmation.ts)
     case 'confirm_pr_approval':
       return `${confirmationTokens(q.scope!)[0]}을 승인할까요?`;

@@ -46,7 +46,7 @@ import { classifyIntent } from './guide/intentClassifier.js';
 import { LlmGuide, RuleFirstGuide } from './guide/LlmGuide.js';
 import { DEFAULT_POLICY, type PolicyConfig } from './policy/config.js';
 import { expectedOutcomeFor } from './policy/expectedOutcome.js';
-import { classifyAnswer, writeInputBlockers } from './policy/inputPolicy.js';
+import { classifyAnswer, looksLikeApprovalRequest, writeInputBlockers } from './policy/inputPolicy.js';
 import type { WikiReader } from './ports.js';
 import type { Clock, IdGen } from './runtime/clock.js';
 import { collectTimings, timedPort } from './runtime/timing.js';
@@ -277,8 +277,14 @@ export class HarnessService {
    * 실패하면 원래 의도를 유지한다. 결과는 facts.intentRecheck로 남긴다.
    */
   private async recheckIntent(meta: RequestMeta, turn: CurrentTurnInput, ctx: ContextPacket, deadlineAt: string): Promise<Record<string, unknown> | undefined> {
-    if (!this.cfg.intentRecheck || !this.d.llm || RULE_INTENTS.has(meta.intent) || meta.intent.startsWith('eureka.')) return undefined;
+    if (!this.cfg.intentRecheck || RULE_INTENTS.has(meta.intent) || meta.intent.startsWith('eureka.')) return undefined;
     const from = meta.intent;
+    // D-39: 대상 PR이 있고 '승인해'(또는 STT가 비슷하게 잘못 들은 말)면 LLM 없이 승인 요청으로 본다. 확인 질문이 대상을 다시 읽어 준다
+    if (ctx.target?.kind === 'github_pr' && looksLikeApprovalRequest(turn.rawText)) {
+      meta.intent = 'pr.approve';
+      return { from, to: 'pr.approve', changed: true, by: 'rule', reason: 'approval-like words' };
+    }
+    if (!this.d.llm) return undefined;
     const c = await classifyIntent(this.d.llm, { text: turn.rawText, routerIntent: from, hasPrTarget: ctx.target?.kind === 'github_pr', deadlineAt, timeoutMs: this.cfg.llmGuideTimeoutMs, now: this.d.clock.nowMs() });
     if ('error' in c) return { from, to: from, changed: false, error: c.error };
     if (c.intent === 'other') return { from, to: from, changed: false, reason: c.reason };
