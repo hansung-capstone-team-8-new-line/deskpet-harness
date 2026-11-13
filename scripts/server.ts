@@ -20,9 +20,9 @@
  * 비밀값은 출력하지 않는다. 쓰기는 기본으로 켜져 있고 사용자 확인 답변으로만 보낸다. 서버 콘솔 yes 확인은 없앴다 (사용자 결정 2026-10-24, D-22).
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isAbsolute, resolve } from 'node:path';
 import { pocSetup } from './poc-faults.js';
+import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
 import { networkInterfaces } from 'node:os';
 import { createEurekaRestGateway, GitHubReviewGateway, parseRequiredChecksFallback, RestGitHubTransport } from '@deskpet/gateways';
 import { DEFAULT_POLICY, FileWikiReader, HarnessService, InMemoryOperationStore, RecoveryWorker, summarizeTimings, type TimingEntry, StoreLockedError, randomIdGen, systemClock } from '@deskpet/harness';
@@ -77,7 +77,7 @@ const tls = tlsCert && tlsKey ? (() => {
 // ------------------------------------------------------ 웹 화면 서빙 (D-42)
 // 빌드한 웹(pnpm web:build → apps/web/dist)을 Harness 서버와 같은 주소·포트로 내보낸다. Jetson에서 브라우저로 http://<주소>:8787 만 열면 된다.
 // 상대경로는 실행 위치가 아니라 app 폴더 기준으로 해석한다
-const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const appRoot = APP_ROOT;
 const webEnabled = (env['HARNESS_WEB'] ?? 'on').trim().toLowerCase() !== 'off';
 const webDirRaw = env['HARNESS_WEB_DIR']?.trim() || 'apps/web/dist';
 const webDir = isAbsolute(webDirRaw) ? webDirRaw : resolve(appRoot, webDirRaw);
@@ -171,9 +171,9 @@ const github = new GitHubReviewGateway({
 config.prChecks = prChecks;
 const eureka = createEurekaRestGateway(env, poc.eurekaFetch, { allowWrites: allowEurekaWrites, limiter: eurekaLimiter });
 const llm = createLlmFromEnv(env);
-// LLM Wiki (D-19): vault 루트 경로. 없으면 Wiki 검색을 하지 않는다
-const wikiDir = env['DESKPET_WIKI_DIR']?.trim();
-const wiki = wikiDir ? new FileWikiReader({ root: wikiDir }) : undefined;
+// LLM Wiki (D-19, D-43): vault 루트 경로. 비우면 app 폴더 옆 ../knowledge, 상대경로는 app 폴더 기준. 없으면 Wiki 검색을 하지 않는다
+const wikiDir = resolveWikiDir(env['DESKPET_WIKI_DIR']);
+const wiki = wikiDir.enabled ? new FileWikiReader({ root: wikiDir.dir }) : undefined;
 // 요청이 끝난 뒤 확정된 결과(늦게 끝난 Eureka 반영, 주기 복구)는 pipeline 연결에 notice로 알린다 (D-23)
 let notify: (n: FollowUpNotice) => void = () => undefined;
 const harness = new HarnessService({ store, github, eureka, clock: systemClock, ids: randomIdGen, config, holderId: `server-${process.pid}`, ...(llm.guideClient ? { llm: llm.guideClient } : {}), ...(wiki ? { wiki } : {}), ...(poc.sensor ? { sensor: poc.sensor } : {}), onFollowUp: (n) => notify(n) });
@@ -255,7 +255,7 @@ async function main() {
       ? `웹 화면 접속: 보기 전용 토큰 설정됨${webEnabled ? ' — 이 서버가 내보낸 화면은 Origin 설정 없이 접속' : ''}${origins.length ? `, 추가 허용 Origin ${origins.join(', ')}` : webEnabled ? '' : ', 허용 Origin 없음 → 브라우저 접속 거부 (HARNESS_WS_ALLOWED_ORIGINS 필요)'}`
       : '웹 화면 접속: 꺼짐 (HARNESS_WS_VIEWER_TOKEN 미설정 — 화면은 열리지만 연결할 수 없어요)',
   );
-  console.log(wikiDir ? `Wiki: ${wikiDir} (wiki/ + projects/ README, Guide 참고용)` : 'Wiki 꺼짐 (DESKPET_WIKI_DIR 미설정)');
+  console.log(wikiDir.enabled ? `Wiki: ${wikiDir.raw}${wikiDir.source === 'default' ? ' (기본값)' : ''} → ${wikiDir.dir} (wiki/ + projects/ README, Guide 참고용)` : `Wiki 꺼짐 — ${wikiDir.reason}`);
   if (storePath) {
     const cleaned = await store.maintain();
     const all = await store.listOperations();
