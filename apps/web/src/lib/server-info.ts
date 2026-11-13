@@ -45,7 +45,6 @@ export interface ServerInfo {
   admin?: boolean;
   history?: { persistent: boolean } | null;
   supervised?: boolean;
-  writes?: { github: boolean; eureka: boolean };
 }
 
 export const HISTORY_STATUS_LABEL: Record<HistoryStatus, string> = {

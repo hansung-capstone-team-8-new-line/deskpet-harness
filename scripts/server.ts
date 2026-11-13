@@ -252,7 +252,6 @@ function serverInfo() {
     admin: !!adminToken,
     history: history ? { persistent: !!historyPath } : null,
     supervised,
-    writes: { github: allowGithubWrites, eureka: allowEurekaWrites },
   };
 }
 

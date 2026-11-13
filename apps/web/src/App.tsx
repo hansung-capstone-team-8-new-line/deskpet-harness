@@ -75,7 +75,7 @@ const TAB_LABEL: Record<Tab, string> = { tasks: '작업', history: '기록', set
 function Dashboard({ conn, saved, onReconnect, onDisconnect }: { conn: HarnessConnection; saved: SavedConnection; onReconnect: (c: SavedConnection) => void; onDisconnect: (error?: string) => void }) {
   const view = useSyncExternalStore(conn.subscribe, conn.getView);
   const [settings, setSettings] = useSettings();
-  const [tab, setTab] = useState<Tab>(settings.startTab);
+  const [tab, setTab] = useState<Tab>('tasks');
   const [adminToken, setAdminToken] = useState(loadAdminToken);
   const [applyMsg, setApplyMsg] = useState<string>();
   const updatedHere = useRef(false);

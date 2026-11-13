@@ -7,13 +7,11 @@ import { useCallback, useState } from 'react';
 export interface Settings {
   /** 작업 목록에서 완료·취소 작업 숨기기 */
   hideFinished: boolean;
-  /** 처음 보이는 화면 */
-  startTab: 'tasks' | 'history';
   /** 웹에서 업데이트한 뒤 서버가 새 버전으로 다시 켜지면 화면도 자동으로 새로 고침 */
   autoReload: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { hideFinished: false, startTab: 'tasks', autoReload: true };
+export const DEFAULT_SETTINGS: Settings = { hideFinished: false, autoReload: true };
 const KEY = 'deskpet.settings';
 
 export function loadSettings(): Settings {
@@ -23,7 +21,6 @@ export function loadSettings(): Settings {
     const s = JSON.parse(raw) as Partial<Settings>;
     return {
       hideFinished: typeof s.hideFinished === 'boolean' ? s.hideFinished : DEFAULT_SETTINGS.hideFinished,
-      startTab: s.startTab === 'history' ? 'history' : 'tasks',
       autoReload: typeof s.autoReload === 'boolean' ? s.autoReload : DEFAULT_SETTINGS.autoReload,
     };
   } catch {

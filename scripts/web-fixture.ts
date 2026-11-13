@@ -69,7 +69,7 @@ let update: Record<string, unknown> = {
   ],
   checkedAt: new Date().toISOString(),
 };
-const info = () => ({ startedAt: history.sessionId, version: update['current'], update, admin: true, history: { persistent: false }, supervised: false, writes: { github: false, eureka: false } });
+const info = () => ({ startedAt: history.sessionId, version: update['current'], update, admin: true, history: { persistent: false }, supervised: false });
 
 const server = new HarnessWsServer({
   history,

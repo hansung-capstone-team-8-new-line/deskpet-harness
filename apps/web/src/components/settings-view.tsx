@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { ConnView, HarnessConnection } from '@/lib/connection';
 import { formatDateTime } from '@/lib/server-info';
 import type { SavedConnection, Settings } from '@/lib/settings';
@@ -30,7 +29,7 @@ export function adminMessage(m: string): string {
   return ADMIN_MESSAGE[m] ?? m;
 }
 
-/** 설정 (D-48): 연결, 표시, 관리 토큰, 서버 정보 */
+/** 설정 (D-48): 연결(서버 주소·관리 토큰), 표시, 서버 정보 */
 export function SettingsView({
   conn,
   view,
@@ -51,35 +50,68 @@ export function SettingsView({
   onAdminToken: (t: string) => void;
 }) {
   const [url, setUrl] = useState(connection.url);
-  const [token, setToken] = useState(connection.token);
-  const [remember, setRemember] = useState(!!connection.remember);
   const [admin, setAdmin] = useState(adminToken);
-  const [adminMsg, setAdminMsg] = useState<string>();
+  const [msg, setMsg] = useState<string>();
   const [checking, setChecking] = useState(false);
   const info = view.info;
   const u = info?.update;
-  const connChanged = url.trim() !== connection.url || token.trim() !== connection.token || remember !== !!connection.remember;
+  const urlChanged = url.trim() !== connection.url;
+  const changed = urlChanged || admin.trim() !== adminToken;
 
   return (
     <div className="mt-5 grid max-w-3xl gap-6">
-      <Section title="연결" desc="서버 주소와 보기 전용 토큰. 바꾸면 다시 연결합니다.">
+      <Section title="연결" desc="서버 주소와 관리 토큰. 주소를 바꾸면 다시 연결합니다.">
         <form
           className="space-y-3"
           onSubmit={(e) => {
             e.preventDefault();
-            if (url.trim()) onReconnect({ url: url.trim(), token: token.trim(), remember });
+            if (!url.trim()) return;
+            onAdminToken(admin.trim());
+            setMsg(admin.trim() !== adminToken ? (admin.trim() ? '관리 토큰을 넣었어요.' : '관리 토큰을 지웠어요.') : undefined);
+            // 보기 전용 토큰(서버가 요구할 때 연결 화면에서 넣은 값)은 그대로 둔다
+            if (urlChanged) onReconnect({ ...connection, url: url.trim() });
           }}
         >
           <Field id="set-url" label="서버 주소">
             <Input id="set-url" value={url} onChange={(e) => setUrl(e.target.value)} autoComplete="off" spellCheck={false} />
           </Field>
-          <Field id="set-token" label="보기 전용 토큰" help="서버에 HARNESS_WS_VIEWER_TOKEN이 있을 때만. 비우면 토큰 없이 연결합니다.">
-            <Input id="set-token" type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
+          <Field
+            id="set-admin"
+            label="관리 토큰"
+            help={info?.admin ? '서버 .env의 HARNESS_WEB_ADMIN_TOKEN과 같은 값을 넣으면 업데이트 버튼을 쓸 수 있어요. 이 탭에만 두고, 탭을 닫으면 지워집니다.' : '이 서버는 관리 토큰(HARNESS_WEB_ADMIN_TOKEN)이 설정되지 않아 웹에서 업데이트할 수 없어요. 새 버전 알림만 보여요.'}
+          >
+            <Input id="set-admin" type="password" value={admin} onChange={(e) => setAdmin(e.target.value)} autoComplete="off" disabled={!info?.admin} />
           </Field>
-          <Check id="set-remember" checked={remember} onChange={setRemember} label="이 브라우저에 연결 정보 기억" help="끄면 탭을 닫을 때 지워집니다. 여러 사람이 쓰는 컴퓨터에서는 끄세요." />
-          <Button type="submit" size="sm" disabled={!url.trim() || !connChanged}>
-            저장하고 다시 연결
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="submit" size="sm" disabled={!url.trim() || !changed}>
+              {urlChanged ? '저장하고 다시 연결' : '저장'}
+            </Button>
+            {info?.admin && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!admin.trim() || checking || view.state !== 'connected'}
+                onClick={() => {
+                  // 입력한 값을 저장하고 그 값으로 확인한다 (토큰이 맞는지도 함께 확인됨)
+                  const t = admin.trim();
+                  onAdminToken(t);
+                  setChecking(true);
+                  void conn
+                    .admin(t, 'update.check')
+                    .then((r) => setMsg(r.ok ? '관리 토큰이 맞아요. 새 버전도 확인했어요.' : adminMessage(r.message)))
+                    .finally(() => setChecking(false));
+                }}
+              >
+                {checking ? '확인 중' : '지금 새 버전 확인'}
+              </Button>
+            )}
+          </div>
+          {msg && (
+            <p role="status" className="text-sm text-muted-foreground">
+              {msg}
+            </p>
+          )}
         </form>
       </Section>
 
@@ -87,65 +119,7 @@ export function SettingsView({
         <div className="space-y-3">
           <Check id="set-hide" checked={settings.hideFinished} onChange={(v) => onSettings({ hideFinished: v })} label="작업 목록에서 완료·취소된 작업 숨기기" />
           <Check id="set-reload" checked={settings.autoReload} onChange={(v) => onSettings({ autoReload: v })} label="웹에서 업데이트한 뒤 화면 자동 새로 고침" />
-          <Field id="set-start" label="처음 보이는 화면">
-            <Select value={settings.startTab} onValueChange={(v) => onSettings({ startTab: v as Settings['startTab'] })}>
-              <SelectTrigger id="set-start" className="w-40">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="tasks">작업</SelectItem>
-                <SelectItem value="history">기록</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
         </div>
-      </Section>
-
-      <Section title="관리" desc="웹에서 업데이트하려면 서버 .env의 HARNESS_WEB_ADMIN_TOKEN과 같은 값을 넣습니다. 이 탭에만 두고, 탭을 닫으면 지워집니다.">
-        {!info?.admin ? (
-          <p className="text-sm text-muted-foreground">이 서버는 관리 토큰이 설정되지 않아 웹에서 업데이트할 수 없어요. 새 버전 알림만 보여요.</p>
-        ) : (
-          <form
-            className="space-y-3"
-            onSubmit={(e) => {
-              e.preventDefault();
-              onAdminToken(admin.trim());
-              setAdminMsg(admin.trim() ? '관리 토큰을 넣었어요. "지금 확인"으로 맞는지 확인할 수 있어요.' : '관리 토큰을 지웠어요.');
-            }}
-          >
-            <Field id="set-admin" label="관리 토큰">
-              <Input id="set-admin" type="password" value={admin} onChange={(e) => setAdmin(e.target.value)} autoComplete="off" />
-            </Field>
-            <div className="flex flex-wrap gap-2">
-              <Button type="submit" size="sm" variant="outline">
-                저장
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={!admin.trim() || checking || view.state !== 'connected'}
-                onClick={() => {
-                  // 입력한 값을 저장하고 그 값으로 확인한다
-                  const t = admin.trim();
-                  onAdminToken(t);
-                  setChecking(true);
-                  void conn
-                    .admin(t, 'update.check')
-                    .then((r) => setAdminMsg(r.ok ? '새 버전을 확인했어요.' : adminMessage(r.message)))
-                    .finally(() => setChecking(false));
-                }}
-              >
-                {checking ? '확인 중' : '지금 새 버전 확인'}
-              </Button>
-            </div>
-            {adminMsg && (
-              <p role="status" className="text-sm text-muted-foreground">
-                {adminMsg}
-              </p>
-            )}
-          </form>
-        )}
       </Section>
 
       <Section title="서버 정보">
@@ -159,7 +133,6 @@ export function SettingsView({
           </Row>
           <Row label="자동 재시작">{info ? (info.supervised ? '켜짐 (pnpm start)' : '꺼짐 — 업데이트 뒤 직접 다시 실행') : '-'}</Row>
           <Row label="세션 기록">{info ? (info.history ? (info.history.persistent ? '파일에 저장' : '메모리 (서버를 끄면 사라짐)') : '꺼짐') : '-'}</Row>
-          <Row label="쓰기">{info?.writes ? `GitHub ${info.writes.github ? '허용' : '꺼짐'} · Eureka ${info.writes.eureka ? '허용' : '꺼짐'}` : '-'}</Row>
         </dl>
       </Section>
     </div>
