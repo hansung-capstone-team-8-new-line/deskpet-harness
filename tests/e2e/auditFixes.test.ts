@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { askApproval, answer, review } from '../support/flows.js';
 import { createWorld } from '../support/world.js';
-import { ConsoleOperatorConfirm } from '@deskpet/server';
 import { SHA_A, SHA_B } from '../support/builders.js';
 
 /**
@@ -90,14 +89,6 @@ describe('감사 F-03: 운영자 확인은 DurableAck 전, 대기는 deadline �
     const r = await answer(w, q, '응, 승인해.');
     expect(r.actionResults.find((x) => x.action === 'submit_approval')).toMatchObject({ status: 'cancelled', dispatchState: 'not_sent' });
     expect(w.github.submitCount).toBe(0);
-  });
-
-  it('콘솔 확인은 입력이 없으면 deadline에 맞춰 timeout으로 끝난다', async () => {
-    const gate = new ConsoleOperatorConfirm({ prompt: () => new Promise<string>(() => undefined), maxWaitMs: 5_000 });
-    const t0 = Date.now();
-    const v = await gate.confirm({ repository: { owner: 'o', name: 'r' }, prNumber: 1, commitId: SHA_A, event: 'APPROVE' }, { deadlineAt: new Date(Date.now() + 80).toISOString() });
-    expect(v).toBe('timeout');
-    expect(Date.now() - t0).toBeLessThan(2_000);
   });
 });
 

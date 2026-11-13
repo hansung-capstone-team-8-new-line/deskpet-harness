@@ -70,7 +70,7 @@ async function eureka() {
   ok(`업무 ${items.length}건 (total=${t.data!.total ?? '?'}, completeness=${t.data!.completeness})`);
   for (const i of items.slice(0, 5)) {
     console.log(`      · [${i.itemId}] ${i.name} — ${i.computedState}${i.dueAt ? `, due ${i.dueAt}` : ''}`);
-    // 단계마다 ID를 함께 표시한다 (pnpm demo의 DEMO_EUREKA_STAGE_ID에 넣는 값)
+    // 단계마다 ID를 함께 표시한다
     for (const st of i.stages) console.log(`          - stage ${st.stageId}: ${st.name || '(이름 없음)'} [${st.status}]`);
   }
   const withDescription = items.filter((i) => i.description !== undefined).length;

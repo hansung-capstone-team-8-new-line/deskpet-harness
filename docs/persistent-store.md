@@ -32,7 +32,7 @@ const store = InMemoryOperationStore.openDurable('.deskpet/harness.db', { clock,
 store.close();
 ```
 
-- 데모: `.env`에 `DESKPET_STORE_PATH=.deskpet/harness.db` → `pnpm demo ...`. 시작할 때 결과 확인이 필요한 쓰기를 읽기로만 확인한다.
+- 데모: `.env`에 `DESKPET_STORE_PATH=.deskpet/harness.db` → `pnpm harness` + `pnpm demo:adapter ...`. 시작할 때 결과 확인이 필요한 쓰기를 읽기로만 확인한다.
 - `.deskpet/`, `*.db*`는 `.gitignore` 대상.
 
 ### 저장된 값 조회 (`pnpm db`, 읽기 전용)

@@ -6,8 +6,6 @@
  *                                         # 쓰기에는 DESKPET_STORE_PATH(영속 저장소)가 필요하다. 없으면 쓰기를 끄고 시작한다
  *   pnpm harness --read-only              # 쓰기 모두 끔 (조회만)
  *   pnpm harness --no-github-writes       # GitHub 승인만 끔 / --no-eureka-writes: Eureka 쓰기만 끔
- *                                         # 예전 옵션 --allow-github-writes·--allow-eureka-writes는 그대로 받지만 아무 효과 없음
- *   pnpm harness … --poc                  # POC 장애 주입 (DESKPET_POC_FAULTS, scripts/poc-faults.ts, D-27)
  *
  * .env
  *   HARNESS_WS_TOKEN (필수, 16자 이상 — 클라이언트 hello 인증), HARNESS_WS_HOST(기본 127.0.0.1), HARNESS_WS_PORT(기본 8787),
@@ -21,7 +19,6 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
-import { pocSetup } from './poc-faults.js';
 import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
 import { networkInterfaces } from 'node:os';
 import { createEurekaRestGateway, GitHubReviewGateway, parseRequiredChecksFallback, RestGitHubTransport } from '@deskpet/gateways';
@@ -152,31 +149,23 @@ const store = openStore();
 // 자원별 동시 호출 상한 (D-24). 자리가 없으면 그 호출의 남은 시간 안에서 기다리고, 그래도 없으면 보내지 않음(not_sent)
 const githubLimiter = new ConcurrencyLimiter('github', positive(env['GITHUB_MAX_CONCURRENT'], 4));
 const eurekaLimiter = new ConcurrencyLimiter('eureka', positive(env['EUREKA_MAX_CONCURRENT'], 4));
-// POC 장애 주입 (D-27): --poc 플래그 + DESKPET_POC_FAULTS + flw-d1·flw-v1일 때만 (scripts/poc-faults.ts)
-const poc = (() => {
-  try {
-    return pocSetup(env, process.argv, (l) => console.log(l));
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
-  }
-})();
 // PR CI 검사 (D-30): 기본은 조회하지 않고 승인 조건에서도 뺀다 (사용자 결정 2026-11-03). enforce로 되돌린다
 const prChecks: 'enforce' | 'skip' = (env['DESKPET_PR_CHECKS'] ?? 'skip').trim().toLowerCase() === 'enforce' ? 'enforce' : 'skip';
 const github = new GitHubReviewGateway({
-  transport: new RestGitHubTransport({ token: githubToken, allowWrites: allowGithubWrites, limiter: githubLimiter, ...(poc.githubFetch ? { fetchImpl: poc.githubFetch } : {}) }),
+  transport: new RestGitHubTransport({ token: githubToken, allowWrites: allowGithubWrites, limiter: githubLimiter }),
   now: () => Date.now(),
   requiredChecksFallback: parseRequiredChecksFallback(env['DESKPET_REQUIRED_CHECKS']),
   checksPolicy: prChecks,
 });
 config.prChecks = prChecks;
-const eureka = createEurekaRestGateway(env, poc.eurekaFetch, { allowWrites: allowEurekaWrites, limiter: eurekaLimiter });
+const eureka = createEurekaRestGateway(env, undefined, { allowWrites: allowEurekaWrites, limiter: eurekaLimiter });
 const llm = createLlmFromEnv(env);
 // LLM Wiki (D-19, D-43): vault 루트 경로. 비우면 app 폴더 옆 ../knowledge, 상대경로는 app 폴더 기준. 없으면 Wiki 검색을 하지 않는다
 const wikiDir = resolveWikiDir(env['DESKPET_WIKI_DIR']);
 const wiki = wikiDir.enabled ? new FileWikiReader({ root: wikiDir.dir }) : undefined;
 // 요청이 끝난 뒤 확정된 결과(늦게 끝난 Eureka 반영, 주기 복구)는 pipeline 연결에 notice로 알린다 (D-23)
 let notify: (n: FollowUpNotice) => void = () => undefined;
-const harness = new HarnessService({ store, github, eureka, clock: systemClock, ids: randomIdGen, config, holderId: `server-${process.pid}`, ...(llm.guideClient ? { llm: llm.guideClient } : {}), ...(wiki ? { wiki } : {}), ...(poc.sensor ? { sensor: poc.sensor } : {}), onFollowUp: (n) => notify(n) });
+const harness = new HarnessService({ store, github, eureka, clock: systemClock, ids: randomIdGen, config, holderId: `server-${process.pid}`, ...(llm.guideClient ? { llm: llm.guideClient } : {}), ...(wiki ? { wiki } : {}), onFollowUp: (n) => notify(n) });
 // 결과 불명·판정 대기 작업 주기 확인. 다시 보내지 않고 조회만 한다 (D-23). RECOVERY_INTERVAL_MS(기본 30초)
 const recovery = new RecoveryWorker({ harness, store, clock: systemClock, intervalMs: Number(env['RECOVERY_INTERVAL_MS']) || 30_000, log: (l) => console.log(`[recovery] ${l}`) });
 const output = new OutputService(llm.outputModel ? { model: llm.outputModel, ...(llm.outputTimeoutMs ? { modelTimeoutMs: llm.outputTimeoutMs } : {}) } : {});
@@ -221,7 +210,6 @@ notify = (n) => {
 
 async function main() {
   console.log('DeskPet Harness 서버');
-  for (const l of poc.banner) console.log(l);
   console.log(`직접 Eureka 요청(eureka.*): ${eurekaBridgeMode === 'internal' ? '이 서버에서 받음' : '받지 않음 — Eureka 내부 API 서버(pnpm eureka:server)로 (DESKPET_EUREKA_BRIDGE=external)'}`);
   console.log(`PR 검사(D-30): ${prChecks === 'skip' ? '조회하지 않음 — 승인 조건에서도 제외 (DESKPET_PR_CHECKS=enforce로 되돌림)' : '조회·필수 검사 확인'}`);
   console.log(`승인 허용 저장소(D-36): ${allowed.repos.length ? allowed.repos.join(', ') : '제한 없음 (DESKPET_ALLOWED_REPOS 비어 있음)'}`);

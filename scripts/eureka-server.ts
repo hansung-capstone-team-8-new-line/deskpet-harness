@@ -6,7 +6,7 @@
  *
  *   pnpm eureka:server                         # Eureka 쓰기 허용이 기본 (D-38). 확인 받은 요청(mutationApproved)만 보낸다
  *                                              # 쓰기에는 EUREKA_STORE_PATH가 필요하다. 없거나 flw-d1·flw-v1 주소가 아니면 쓰기를 끄고 시작한다
- *   pnpm eureka:server --read-only             # 읽기만 (예전 --allow-eureka-writes는 받지만 효과 없음)
+ *   pnpm eureka:server --read-only             # 읽기만
  *
  * 메시지·봉투는 Harness 서버와 같다 (deskpet.harness.v1). 파이프라인은 Eureka 연결부 주소만 이 서버로 바꾸면 된다.
  * Harness 서버를 DESKPET_EUREKA_BRIDGE=external로 켜면 그쪽은 eureka.*를 받지 않는다 (작업 기록 권위를 한 곳에만 둔다).
