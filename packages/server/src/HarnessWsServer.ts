@@ -32,6 +32,11 @@ export interface HarnessWsServerOptions {
   token: string;
   /** viewer 전용 토큰(선택): 구독만. 브라우저 화면에는 이 토큰만 넣는다 */
   viewerToken?: string;
+  /**
+   * 토큰 없는 보기 전용 접속 허용 (D-45). true면 viewer 역할은 토큰 없이 접속된다(구독만, 실행 불가).
+   * 접속 IP 허용 목록·Origin 검사는 그대로 적용된다. viewerToken과 함께 줄 수 없다
+   */
+  openViewer?: boolean;
   host?: string;
   port?: number;
   allowedOrigins?: string[];
@@ -117,6 +122,7 @@ export class HarnessWsServer {
   constructor(private readonly o: HarnessWsServerOptions) {
     if (!o.token || o.token.length < 16) throw new Error('server token must be at least 16 characters');
     this.tokenDigest = digest(o.token);
+    if (o.openViewer && o.viewerToken !== undefined) throw new Error('openViewer and viewerToken cannot be used together');
     if (o.viewerToken !== undefined) {
       if (o.viewerToken.length < 16) throw new Error('viewer token must be at least 16 characters');
       if (o.viewerToken === o.token) throw new Error('viewer token must differ from the pipeline token');
@@ -239,7 +245,7 @@ export class HarnessWsServer {
       // pipeline 토큰은 두 역할 모두, viewer 토큰은 viewer 역할만 허용한다 (역할은 토큰이 정한다)
       const d = digest(frame.token);
       const isPipeline = timingSafeEqual(d, this.tokenDigest);
-      const isViewer = !!this.viewerDigest && timingSafeEqual(d, this.viewerDigest);
+      const isViewer = (!!this.viewerDigest && timingSafeEqual(d, this.viewerDigest)) || (!!this.o.openViewer && frame.role === 'viewer');
       if (!isPipeline && !(isViewer && frame.role === 'viewer')) {
         this.log(`거부: 토큰 불일치 (#${conn.id})`);
         this.send(conn, { type: 'error', code: 'unauthorized', message: 'invalid token' });

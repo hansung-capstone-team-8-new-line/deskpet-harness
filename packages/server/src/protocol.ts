@@ -14,7 +14,7 @@ export type Role = z.infer<typeof Role>;
 // ------------------------------------------------------------ client → server
 export const ClientFrame = z.discriminatedUnion('type', [
   /** 첫 프레임. 토큰은 로그에 남기지 않는다 */
-  z.object({ type: z.literal('hello'), token: z.string().min(1).max(512), role: Role, client: z.string().max(100).optional() }),
+  z.object({ type: z.literal('hello'), token: z.string().max(512), role: Role, client: z.string().max(100).optional() }),
   /** 실행·조회 요청: Envelope (harness.request | harness.resume | pipeline.event | harness.cancel | output.from_result | output.request) */
   z.object({ type: z.literal('request'), envelope: z.unknown() }),
   /** 상태 구독: snapshot 한 번 → 이후 변경 이벤트 */

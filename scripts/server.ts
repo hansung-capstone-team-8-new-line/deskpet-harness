@@ -12,11 +12,14 @@
  *   HARNESS_WS_ALLOWED_ORIGINS (브라우저 Origin 허용 목록, 쉼표 구분. 비우면 브라우저 접속 거부)
  *   HARNESS_WS_ALLOWED_CLIENTS (다른 기기 접속 허용 IP·CIDR, 쉼표 구분. HARNESS_WS_HOST를 loopback이 아닌 값으로 줄 때 필수)
  *   HARNESS_WS_TLS_CERT / HARNESS_WS_TLS_KEY (선택, PEM 파일 경로 → wss://)
- *   HARNESS_WS_VIEWER_TOKEN (선택, 16자 이상 — 웹 화면용 구독 전용 토큰. pipeline 토큰과 달라야 함)
+ *   HARNESS_WS_VIEWER_TOKEN (선택, 16자 이상 — 웹 화면용 구독 전용 토큰. pipeline 토큰과 달라야 함.
+ *     비우면 웹 화면(보기 전용)은 토큰 없이 접속된다 (D-45). 접속 IP 허용 목록·Origin 검사는 그대로)
+ *   pnpm start -- --web / pnpm harness --web : 서버가 뜨면 이 기기의 기본 브라우저로 웹 화면을 연다 (D-46, 임시)
  *   HARNESS_WEB (기본 on — 빌드한 웹 화면을 같은 주소·포트로 내보냄, off로 끔), HARNESS_WEB_DIR (기본 apps/web/dist, 상대경로는 app 폴더 기준) (D-42)
  *   GITHUB_TOKEN, EUREKA_API_KEY, EUREKA_BASE_URL, DESKPET_REQUIRED_CHECKS, DESKPET_STORE_PATH, LLM_* (기존과 같음)
  * 비밀값은 출력하지 않는다. 쓰기는 기본으로 켜져 있고 사용자 확인 답변으로만 보낸다. 서버 콘솔 yes 확인은 없앴다 (사용자 결정 2026-10-24, D-22).
  */
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
@@ -185,7 +188,8 @@ const server = new HarnessWsServer({
   }),
   store,
   token,
-  ...(env['HARNESS_WS_VIEWER_TOKEN']?.trim() ? { viewerToken: env['HARNESS_WS_VIEWER_TOKEN'].trim() } : {}),
+  // D-45: 보기 전용 토큰을 비우면 웹 화면은 토큰 없이 접속 (구독만, 실행 불가)
+  ...(env['HARNESS_WS_VIEWER_TOKEN']?.trim() ? { viewerToken: env['HARNESS_WS_VIEWER_TOKEN'].trim() } : { openViewer: true }),
   host: wsHost,
   allowedClients,
   ...(tls ? { tls } : {}),
@@ -241,7 +245,7 @@ async function main() {
   console.log(
     env['HARNESS_WS_VIEWER_TOKEN']?.trim()
       ? `웹 화면 접속: 보기 전용 토큰 설정됨${webEnabled ? ' — 이 서버가 내보낸 화면은 Origin 설정 없이 접속' : ''}${origins.length ? `, 추가 허용 Origin ${origins.join(', ')}` : webEnabled ? '' : ', 허용 Origin 없음 → 브라우저 접속 거부 (HARNESS_WS_ALLOWED_ORIGINS 필요)'}`
-      : '웹 화면 접속: 꺼짐 (HARNESS_WS_VIEWER_TOKEN 미설정 — 화면은 열리지만 연결할 수 없어요)',
+      : `웹 화면 접속: 토큰 없이 보기 전용 (HARNESS_WS_VIEWER_TOKEN 비어 있음, D-45)${lan ? ` — 허용 IP(${allowedClients.join(', ')}) 안의 기기는 누구나 작업 목록을 볼 수 있어요. 공용 네트워크면 HARNESS_WS_VIEWER_TOKEN을 넣으세요` : ''}`,
   );
   console.log(wikiDir.enabled ? `Wiki: ${wikiDir.raw}${wikiDir.source === 'default' ? ' (기본값)' : ''} → ${wikiDir.dir} (wiki/ + projects/ README, Guide 참고용)` : `Wiki 꺼짐 — ${wikiDir.reason}`);
   if (storePath) {
@@ -257,7 +261,33 @@ async function main() {
   } else console.log('저장소: 메모리 (DESKPET_STORE_PATH 미설정 → 서버를 끄면 기록이 사라짐)');
   await server.start();
   recovery.start();
+  if (process.argv.includes('--web')) openBrowser();
   console.log('Ctrl+C로 종료하면 처리 중인 요청을 마친 뒤 닫습니다.');
+}
+
+/**
+ * --web (D-46, 임시): 서버가 뜨면 이 기기의 기본 브라우저로 웹 화면을 연다. 실패해도 서버는 그대로 둔다.
+ * 화면이 없는 곳(SSH만 연결)에서는 DISPLAY=:0(Jetson 데스크톱)으로 시도한다
+ */
+function openBrowser() {
+  const port = Number(env['HARNESS_WS_PORT']) || 8787;
+  const url = `${tls ? 'https' : 'http'}://127.0.0.1:${port}/`;
+  if (!webEnabled || !webBuilt) {
+    console.log(`! --web: 웹 화면이 ${!webEnabled ? '꺼져 있어서(HARNESS_WEB=off)' : '빌드되지 않아서(pnpm start로 실행하세요)'} 브라우저를 열지 않았어요`);
+    return;
+  }
+  const [cmd, args, extraEnv]: [string, string[], Record<string, string>] =
+    process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url], {}]
+    : process.platform === 'darwin' ? ['open', [url], {}]
+    : ['xdg-open', [url], env['DISPLAY'] || env['WAYLAND_DISPLAY'] ? {} : { DISPLAY: ':0' }];
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', env: { ...process.env, ...extraEnv } });
+    child.on('error', (e) => console.log(`! --web: 브라우저를 열지 못했어요 (${e.message}). 직접 ${url} 을 여세요`));
+    child.unref();
+    console.log(`--web: 브라우저로 ${url} 을 열었어요`);
+  } catch (e) {
+    console.log(`! --web: 브라우저를 열지 못했어요 (${e instanceof Error ? e.message : String(e)}). 직접 ${url} 을 여세요`);
+  }
 }
 
 let closing = false;

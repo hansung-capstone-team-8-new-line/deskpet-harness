@@ -13,7 +13,7 @@ export function ConnectForm({ initialUrl, error, onConnect }: { initialUrl: stri
         className="mt-8 space-y-4"
         onSubmit={(e) => {
           e.preventDefault();
-          if (url.trim() && token.trim()) onConnect(url.trim(), token.trim());
+          if (url.trim()) onConnect(url.trim(), token.trim());
         }}
       >
         <div className="space-y-1.5">
@@ -24,11 +24,11 @@ export function ConnectForm({ initialUrl, error, onConnect }: { initialUrl: stri
         </div>
         <div className="space-y-1.5">
           <label htmlFor="ws-token" className="text-sm font-medium">
-            보기 전용 토큰
+            보기 전용 토큰 <span className="font-normal text-muted-foreground">(서버에 설정된 경우만)</span>
           </label>
           <Input id="ws-token" type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" aria-describedby="ws-token-help" />
           <p id="ws-token-help" className="text-xs text-muted-foreground">
-            .env의 HARNESS_WS_VIEWER_TOKEN 값입니다. 이 탭을 닫으면 지워집니다.
+            서버 .env에 HARNESS_WS_VIEWER_TOKEN이 있을 때만 넣습니다. 비어 있으면 토큰 없이 연결됩니다. 이 탭을 닫으면 지워집니다.
           </p>
         </div>
         {error && (
@@ -36,7 +36,7 @@ export function ConnectForm({ initialUrl, error, onConnect }: { initialUrl: stri
             {error}
           </p>
         )}
-        <Button type="submit" disabled={!url.trim() || !token.trim()}>
+        <Button type="submit" disabled={!url.trim()}>
           연결
         </Button>
       </form>

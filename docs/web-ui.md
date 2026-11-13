@@ -27,9 +27,11 @@
 
 ```
 pnpm start          # = pnpm web:build + pnpm harness (옵션도 그대로: pnpm start --read-only)
+pnpm start -- --web # 서버가 뜨면 이 기기의 기본 브라우저로 화면을 연다 (D-46, 임시)
 ```
 
-- 브라우저에서 `http://<Harness 주소>:8787` → 서버 주소 칸은 자동으로 같은 주소(`ws://…:8787`), **보기 전용 토큰**만 넣고 연결.
+- 브라우저에서 `http://<Harness 주소>:8787` → 같은 주소(`ws://…:8787`)로 **바로 연결**된다. `HARNESS_WS_VIEWER_TOKEN`을 비워 두면 토큰 없이 보기 전용으로 접속(D-45), 설정해 두면 연결 화면에서 그 토큰을 넣는다.
+- 토큰 없이 쓰는 경우: 이 기기에서만 열었으면(기본 127.0.0.1) 다른 사람은 접속할 수 없다. 다른 기기 접속(`HARNESS_WS_ALLOWED_CLIENTS`)을 열었으면 허용 IP 안의 누구나 작업 목록을 볼 수 있으니, 학교 Wi-Fi 같은 공용 네트워크에서는 토큰을 넣는다. 실행(승인 등)은 어느 경우에도 웹에서 할 수 없다.
 - 이 서버가 내보낸 화면은 `HARNESS_WS_ALLOWED_ORIGINS`에 넣지 않아도 된다 (Origin이 같은 IP·localhost 주소일 때). `jetson.local`처럼 **도메인 이름**으로 열면 그 Origin(`http://jetson.local:8787`)을 목록에 넣어야 한다.
 - 다른 기기 브라우저에서 열 때는 그 기기 IP가 `HARNESS_WS_ALLOWED_CLIENTS`에 있어야 한다 (HTTP·WebSocket 같은 규칙, `remote-access.md`).
 - 화면 코드를 바꾸면 `pnpm web:build` 후 브라우저 새로고침 (서버 재시작 불필요. `index.html`은 캐시하지 않음).

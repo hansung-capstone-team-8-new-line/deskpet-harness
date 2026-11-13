@@ -28,7 +28,9 @@ function loadSaved(): { url: string; token: string } | null {
 export function App() {
   const [conn, setConn] = useState<HarnessConnection | null>(() => {
     const s = loadSaved();
-    return s ? new HarnessConnection(s.url, s.token) : null;
+    if (s) return new HarnessConnection(s.url, s.token);
+    // D-45: Harness 서버가 내보낸 화면이면 토큰 없이 바로 연결해 본다. 토큰이 필요한 서버면 연결 화면으로 돌아간다
+    return import.meta.env.DEV ? null : new HarnessConnection(DEFAULT_URL, '');
   });
   const [formError, setFormError] = useState<string>();
 
