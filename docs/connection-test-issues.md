@@ -47,7 +47,7 @@
 - 연결 테스트는 사용자 PC에서 실행한다. 키가 PC의 `.env`에만 있으므로 보안상으로도 이쪽이 맞다.
 
 **참고**
-- 사용자 PC에서도 Eureka 403이 나오면 그때는 키 오류이거나 base URL(`flw-d1` 개발 / `flw-v1` 운영)이 키와 맞지 않는 경우다.
+- 사용자 PC에서도 Eureka 403이 나오면 그때는 키 오류이거나 `EUREKA_BASE_URL`이 키와 맞지 않는 경우다.
 
 ---
 
@@ -247,7 +247,7 @@ gh api repos/ehgjs0866/personal_MCP_test/commits/293300b/check-runs --jq ".check
 ```
 
 **확인된 것**
-- 읽기(세션, 템플릿, 업무 목록, 업무 상태)는 개발 환경 `flw-d1`에서 정상 동작한다.
+- 읽기(세션, 템플릿, 업무 목록, 업무 상태)는 정상 동작한다.
 - 업무 응답에 `description` 필드가 없다. README C-08(리마인더용 description이 Eureka에 없음)이 실제로 확인됐다. 지금 코드는 description이 없으면 생략하고 업무 이름으로 대신하지 않는다.
 
 **확인이 필요한 것**
@@ -352,9 +352,9 @@ gh api repos/ehgjs0866/personal_MCP_test/commits/293300b/check-runs --jq ".check
 
 ## 18. 단계 기록 작성 API (2026-11-01)
 
-- 확인(웹 F12, 운영 flw-v1): `POST /_api_/stages/{stageId}/note`, 본문 `{content, actorId}` (actorId 형식 `1000011@10200`). 응답 `{id, createdAt, updatedAt, deletedAt:0, stereo:"comment", content, stageId, stage$, actorId, actor$, isResolved:false}`. 웹은 로그인 정보로 호출한다.
+- 확인(웹 F12): `POST /_api_/stages/{stageId}/note`, 본문 `{content, actorId}` (actorId 형식 `1000011@10200`). 응답 `{id, createdAt, updatedAt, deletedAt:0, stereo:"comment", content, stageId, stage$, actorId, actor$, isResolved:false}`. 웹은 로그인 정보로 호출한다.
 - 구현(D-28): `EurekaGateway.addStageNote`, 완료 근거 기록. Fake 서버에도 같은 경로를 넣었다.
-- 아직 모름: ① 우리 API 키(`x-api-key`)로 호출해도 되는지 ② actorId 없이 보내면 되는지, 아니면 누구로 남는지 ③ 개발판(flw-d1)에서도 같은지. 실제 시험은 개발판 단계 하나에서 1회로 확인한다 (허락 후).
+- 아직 모름: ① 우리 API 키(`x-api-key`)로 호출해도 되는지 ② actorId 없이 보내면 되는지, 아니면 누구로 남는지 실제 시험은 시험 업무의 단계 하나에서 1회로 확인한다 (허락 후).
 - 참고: #16의 "기록이 웹 화면에 안 보임"이 작성자(actorId) 없이 만든 기록이라 그런지도 같이 확인한다 (추정).
 
 ## 참고: 의도한 동작 (문제 아님)

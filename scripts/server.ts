@@ -33,7 +33,7 @@ import { Updater, type UpdateStatus } from './updater.js';
 import { RESTART_EXIT_CODE } from './restartCode.js';
 import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
 import { networkInterfaces } from 'node:os';
-import { createEurekaRestGateway, GitHubReviewGateway, parseRequiredChecksFallback, RestGitHubTransport } from '@deskpet/gateways';
+import { createEurekaRestGateway, EUREKA_DEFAULT_BASE_URL, GitHubReviewGateway, parseRequiredChecksFallback, RestGitHubTransport } from '@deskpet/gateways';
 import { DEFAULT_POLICY, FileWikiReader, HarnessService, InMemoryOperationStore, RecoveryWorker, summarizeTimings, type TimingEntry, StoreLockedError, randomIdGen, systemClock } from '@deskpet/harness';
 import { createLlmFromEnv } from '@deskpet/llm';
 import { OutputService, fallbackText, mapHarnessResult } from '@deskpet/output';
@@ -146,14 +146,8 @@ if ((allowGithubWrites || allowEurekaWrites) && !storePath) {
   allowEurekaWrites = false;
   writeWarnings.push('DESKPET_STORE_PATH(영속 저장소)가 없어 GitHub·Eureka 쓰기를 끄고 시작해요. .env에 DESKPET_STORE_PATH=.deskpet/harness.db 를 넣으세요');
 }
-// Eureka 쓰기는 개발판(flw-d1)과 운영판(flw-v1)에서 허용한다. 운영판도 배포 전 닫힌 시험 환경이다 (사용자 결정 2026-11-03, D-20 갱신)
-// 그 밖의 주소(오타·다른 서버)에는 쓰지 않는다
-const eurekaBase = env['EUREKA_BASE_URL']?.trim() || 'https://api.eureka.codes/flw-d1';
-const eurekaEnv = /\/flw-d1\/?$/.test(eurekaBase) ? '개발판 flw-d1' : /\/flw-v1\/?$/.test(eurekaBase) ? '운영판 flw-v1' : undefined;
-if (allowEurekaWrites && !eurekaEnv) {
-  allowEurekaWrites = false;
-  writeWarnings.push(`Eureka 쓰기는 개발판(flw-d1)·운영판(flw-v1) 주소에서만 켜요. 지금 주소(${eurekaBase})라 Eureka 쓰기를 끄고 시작해요`);
-}
+// Eureka 주소 (기본 EUREKA_DEFAULT_BASE_URL, .env EUREKA_BASE_URL로 바꿈). 주소로 쓰기를 구분하지 않는다 (2026-11-14 사용자 결정)
+const eurekaBase = env['EUREKA_BASE_URL']?.trim() || EUREKA_DEFAULT_BASE_URL;
 const openStore = (): InMemoryOperationStore => {
   try {
     return storePath ? InMemoryOperationStore.openDurable(storePath, storeOpts) : new InMemoryOperationStore(storeOpts);
@@ -296,6 +290,9 @@ async function main() {
   const on = (b: boolean) => (b ? '켜짐' : '꺼짐');
 
   const warnings = [...writeWarnings];
+  // 쓰기는 기본 허용이라 표에는 넣지 않고, 꺼졌을 때만 알린다
+  if (readOnly) warnings.push('읽기 전용(--read-only): GitHub 승인·Eureka 반영을 보내지 않아요');
+  else if (!writeWarnings.length && (!allowGithubWrites || !allowEurekaWrites)) warnings.push(`쓰기 꺼짐: ${[!allowGithubWrites && 'GitHub', !allowEurekaWrites && 'Eureka'].filter(Boolean).join('·')}`);
   if (lan && !tls) warnings.push('TLS 없이 다른 기기 접속을 열었어요. 토큰이 암호화 없이 오가니 믿을 수 있는 네트워크에서만 쓰세요');
   if (lan && !viewerToken) warnings.push(`웹 화면에 토큰이 없어요. 허용 IP(${allowedClients.join(', ')}) 안의 누구나 작업·기록을 볼 수 있어요 (HARNESS_WS_VIEWER_TOKEN)`);
   if (intentRecheck && !llm.guideClient) warnings.push('2차 의도 확인이 켜져 있지만 LLM이 없어 동작하지 않아요');
@@ -308,13 +305,6 @@ async function main() {
         ['웹 화면', !webEnabled ? '꺼짐 (HARNESS_WEB=off)' : !webBuilt ? '빌드 없음' : `${webUrls.join(', ')}  ${viewerToken ? '(보기 전용 토큰 필요)' : '(토큰 없이 보기 전용)'}`],
         ['다른 기기', lan ? `허용 ${allowedClients.join(', ')}${tls ? ' · TLS' : ''}` : '꺼짐 (이 기기에서만)'],
         ...(eurekaBridgeMode === 'external' ? ([['Eureka 요청', '받지 않음 → pnpm eureka:server']] as BannerRow[]) : []),
-      ],
-    },
-    {
-      title: '쓰기',
-      rows: [
-        ['GitHub', allowGithubWrites ? '허용 (확인 답변으로만)' : `꺼짐${readOnly ? ' (--read-only)' : ''}`],
-        ['Eureka', allowEurekaWrites ? `허용 (확인 답변으로만) · ${eurekaEnv}` : `꺼짐${readOnly ? ' (--read-only)' : ''}`],
       ],
     },
     { title: 'LLM', rows: [['', llm.enabled ? `${llm.provider} / ${llm.model} · 동시 ${llm.limiter?.stats().max ?? '-'}건` : `꺼짐 (${llm.reason})`]] },

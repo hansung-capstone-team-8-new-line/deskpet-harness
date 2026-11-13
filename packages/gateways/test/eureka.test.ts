@@ -195,7 +195,7 @@ describe('FetchHttpClient', () => {
       seen = new Headers(init.headers);
       throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
     }) as unknown as typeof fetch;
-    const http = new FetchHttpClient('https://api.eureka.codes/flw-d1', () => ({ 'x-api-key': 'SECRET-KEY' }), fakeFetch);
+    const http = new FetchHttpClient('https://api.eureka.codes/flw-v1', () => ({ 'x-api-key': 'SECRET-KEY' }), fakeFetch);
     const e = await http.request({ method: 'GET', path: '/_api_/session', timeoutMs: 1000 }).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(HttpTransportError);
     expect((e as HttpTransportError).failure).toEqual({ kind: 'not_sent', proof: 'transport:ECONNREFUSED' });
@@ -212,7 +212,7 @@ describe('FetchHttpClient', () => {
     expect(e.failure.kind).toBe('no_response');
   });
 
-  it('createEurekaRestGateway requires a key and defaults to flw-d1', async () => {
+  it('createEurekaRestGateway requires a key and uses the default Eureka address', async () => {
     expect(() => createEurekaRestGateway({})).toThrow(/EUREKA_API_KEY/);
     let url = '';
     const fakeFetch = (async (u: URL) => {
@@ -221,7 +221,7 @@ describe('FetchHttpClient', () => {
     }) as unknown as typeof fetch;
     const gw = createEurekaRestGateway({ EUREKA_API_KEY: 'k' }, fakeFetch);
     await gw.listTasks({}, { deadlineAt: new Date(Date.now() + 60_000).toISOString() });
-    expect(url).toMatch(/^https:\/\/api\.eureka\.codes\/flw-d1\/_api_\/items\/0\/list\?sites=&detail=true&limit=100$/);
+    expect(url).toMatch(/^https:\/\/api\.eureka\.codes\/flw-v1\/_api_\/items\/0\/list\?sites=&detail=true&limit=100$/);
   });
 });
 

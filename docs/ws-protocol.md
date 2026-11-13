@@ -96,7 +96,7 @@
 - GitHub 승인 전송은 기본으로 켜져 있다(D-38). `--read-only`·`--no-github-writes`로 끈다. `DESKPET_STORE_PATH`(영속 저장소)가 없으면 쓰기를 끄고 시작한다.
 - 승인은 요청 쪽 사용자 확인(질문 전달 보고 + 승인 답변)만으로 받는다. 서버 콘솔 `yes` 확인은 없앴다 (D-22).
 - 보내기 직전 head SHA·PR 상태·권한·필수 검사를 다시 확인한 다음에만 보낸다 (DurableAck 전).
-- Eureka 쓰기도 기본으로 켜져 있다(D-38, `--no-eureka-writes`로 끔). 개발판(flw-d1)·운영판(flw-v1) 주소에서만 (D-20).
+- Eureka 쓰기도 기본으로 켜져 있다(D-38, `--no-eureka-writes`로 끔).
 
 ## 문서와 다른 점 (C-14)
 

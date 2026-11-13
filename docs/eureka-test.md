@@ -5,7 +5,7 @@
 
 ## 0. 준비
 
-- `.env`: `EUREKA_API_KEY`, `EUREKA_BASE_URL`(지금 운영판 flw-v1), `EUREKA_DEFAULT_PROCESS_ID`(업무 등록용, 예: `general-work-v1@10200`), `HARNESS_WS_TOKEN`, `DESKPET_STORE_PATH`
+- `.env`: `EUREKA_API_KEY`, `EUREKA_BASE_URL`(선택), `EUREKA_DEFAULT_PROCESS_ID`(업무 등록용, 예: `general-work-v1@10200`), `HARNESS_WS_TOKEN`, `DESKPET_STORE_PATH`
 - 조회·마감 변경·업무 연결·G-01(리뷰 → 승인 → 단계 완료)은 2026-11-09에 업무 1000014로 확인함. 이 문서는 그때 못 한 **등록·단계 기록·업무 완료·작업 번호·결과 조회**를 본다
 - 확인 답변은 승인 말(응·네·승인해 등)이 있어야 승인된다. 그 밖의 답은 실행하지 않는다 (D-37)
 - 자동 테스트: `pnpm check` → 모두 통과
@@ -17,7 +17,7 @@
 pnpm harness                     # 쓰기 허용이 기본 (D-38)
 ```
 
-시작 줄에 `Eureka 쓰기: 허용 — 운영판 flw-v1`과 `직접 Eureka 요청(eureka.*): 이 서버에서 받음`이 보여야 한다.
+시작 화면에 쓰기 꺼짐 경고(`!`)가 없어야 한다.
 
 ## 2. 읽기 (터미널 2)
 

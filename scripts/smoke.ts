@@ -7,11 +7,11 @@
  *   pnpm smoke github       # GitHub만
  *   pnpm smoke llm          # LLM만 (LLM_PROVIDER=gemini|openai일 때 작은 호출 2번: Guide 단계 1회, 출력 문장 1회)
  *
- * .env 값: EUREKA_API_KEY, EUREKA_BASE_URL(기본 flw-d1), EUREKA_TEST_ITEM_ID(선택),
+ * .env 값: EUREKA_API_KEY, EUREKA_BASE_URL(선택), EUREKA_TEST_ITEM_ID(선택),
  *          GITHUB_TOKEN, GITHUB_TEST_REPO(owner/name, 선택), GITHUB_TEST_PR(선택)
  * 키·토큰 값은 출력하지 않는다.
  */
-import { EurekaGateway, FetchHttpClient, GitHubReviewGateway, RestGitHubTransport, EUREKA_DEV_BASE_URL, parseRequiredChecksFallback } from '@deskpet/gateways';
+import { EurekaGateway, FetchHttpClient, GitHubReviewGateway, RestGitHubTransport, EUREKA_DEFAULT_BASE_URL, parseRequiredChecksFallback } from '@deskpet/gateways';
 import { GUIDE_INSTRUCTIONS, GUIDE_JSON_SCHEMA, InMemoryOperationStore, randomIdGen, reviewFacts, systemClock } from '@deskpet/harness';
 import { EurekaBridge } from '@deskpet/server';
 import { createLlmFromEnv } from '@deskpet/llm';
@@ -45,7 +45,7 @@ const deadline = () => ({ deadlineAt: new Date(Date.now() + 20_000).toISOString(
 async function eureka() {
   console.log('\n[Eureka]');
   const key = env['EUREKA_API_KEY'];
-  const baseUrl = env['EUREKA_BASE_URL'] || EUREKA_DEV_BASE_URL;
+  const baseUrl = env['EUREKA_BASE_URL']?.trim() || EUREKA_DEFAULT_BASE_URL;
   if (!key) return bad('EUREKA_API_KEY가 비어 있어요');
   console.log(`  base URL: ${baseUrl}  (키 길이 ${key.length})`);
   const gw = new EurekaGateway({ http: new FetchHttpClient(baseUrl, () => ({ 'x-api-key': key })), now: () => Date.now() });
@@ -55,7 +55,7 @@ async function eureka() {
     const code = s.result.error?.provisionalCode;
     return bad(
       `세션 확인 실패 — ${errText(s.result.error)}`,
-      code === 'EUREKA_AUTH_ERROR' ? '키가 틀렸거나 base URL(flw-d1 개발 / flw-v1 운영)이 키와 맞지 않을 수 있어요' : '네트워크 또는 base URL을 확인하세요',
+      code === 'EUREKA_AUTH_ERROR' ? '키가 틀렸거나 EUREKA_BASE_URL이 키와 맞지 않을 수 있어요' : '네트워크 또는 base URL을 확인하세요',
     );
   }
   ok(`세션 확인: workspace sid=${s.data!.sid}, roles=${s.data!.roles.join(',') || '-'}`);

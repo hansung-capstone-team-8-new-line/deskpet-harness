@@ -12,7 +12,7 @@
  */
 import { appendFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { EurekaGateway, FakeEurekaServer, createEurekaRestGateway } from '@deskpet/gateways';
+import { EUREKA_DEFAULT_BASE_URL, EurekaGateway, FakeEurekaServer, createEurekaRestGateway } from '@deskpet/gateways';
 import { DEFAULT_POLICY, InMemoryOperationStore, randomIdGen, systemClock } from '@deskpet/harness';
 import { EurekaBridge } from '@deskpet/server';
 
@@ -24,11 +24,7 @@ try {
 const env = process.env;
 const write = process.argv.includes('--write');
 const fake = process.argv.includes('--fake');
-const base = fake ? 'fake/flw-d1' : env['EUREKA_BASE_URL']?.trim() || 'https://api.eureka.codes/flw-d1';
-if (!/\/flw-[dv]1\/?$/.test(base)) {
-  console.log(`✗ Eureka 개발판(flw-d1)·운영판(flw-v1) 주소에서만 실행해요 (지금: ${base})`);
-  process.exit(1);
-}
+const base = fake ? 'fake' : env['EUREKA_BASE_URL']?.trim() || EUREKA_DEFAULT_BASE_URL;
 const processId = fake ? 'general-work-v1@10204' : env['EUREKA_DEFAULT_PROCESS_ID']?.trim();
 if (write && !processId) {
   console.log('✗ --write는 EUREKA_DEFAULT_PROCESS_ID가 있어야 해요 (업무 등록용)');
@@ -95,7 +91,7 @@ async function step(no: string, title: string, op: string, heads: Record<string,
 const isConfirm = (r: R) => r.status === 'needs_clarification' && r.facts['questionKind'] === 'confirmation';
 
 async function main() {
-  log(`Eureka 직접 요청 시험 — ${base.endsWith('v1') ? '운영판 flw-v1' : '개발판 flw-d1'} / 쓰기 ${write ? '함 (시험 업무에만)' : '안 함'} / ${new Date().toISOString()}`);
+  log(`Eureka 직접 요청 시험 — ${base} / 쓰기 ${write ? '함 (시험 업무에만)' : '안 함'} / ${new Date().toISOString()}`);
   log('');
   log('[읽기]');
   await step('R-1', '업무 유형', 'query_processes', {}, (r) => r.status === 'succeeded');

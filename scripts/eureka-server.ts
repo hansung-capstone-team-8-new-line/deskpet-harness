@@ -5,7 +5,7 @@
  * 긴 Harness 요청(LLM·GitHub)이 직접 Eureka 요청의 처리 용량·이벤트 루프·재시작을 함께 쓰지 않게 한다.
  *
  *   pnpm eureka:server                         # Eureka 쓰기 허용이 기본 (D-38). 확인 받은 요청(mutationApproved)만 보낸다
- *                                              # 쓰기에는 EUREKA_STORE_PATH가 필요하다. 없거나 flw-d1·flw-v1 주소가 아니면 쓰기를 끄고 시작한다
+ *                                              # 쓰기에는 EUREKA_STORE_PATH가 필요하다. 없으면 쓰기를 끄고 시작한다
  *   pnpm eureka:server --read-only             # 읽기만
  *
  * 메시지·봉투는 Harness 서버와 같다 (deskpet.harness.v1). 파이프라인은 Eureka 연결부 주소만 이 서버로 바꾸면 된다.
@@ -21,7 +21,7 @@
  */
 import { resolve } from 'node:path';
 import { ConcurrencyLimiter, parseAllowedRepositories } from '@deskpet/contracts';
-import { createEurekaRestGateway } from '@deskpet/gateways';
+import { EUREKA_DEFAULT_BASE_URL, createEurekaRestGateway } from '@deskpet/gateways';
 import { DEFAULT_POLICY, InMemoryOperationStore, StoreLockedError, randomIdGen, systemClock } from '@deskpet/harness';
 import { EurekaBridge, EurekaInbound, HarnessWsServer } from '@deskpet/server';
 
@@ -47,12 +47,7 @@ const allowedClients = (env['EUREKA_WS_ALLOWED_CLIENTS'] ?? '').split(',').map((
 if (lan && !allowedClients.length) fail(`EUREKA_WS_HOST=${host}로 다른 기기 접속을 열려면 EUREKA_WS_ALLOWED_CLIENTS가 필요해요`);
 if (lan && token.length < 24) fail('다른 기기 접속을 열 때는 토큰을 24자 이상으로 해 주세요');
 
-const base = env['EUREKA_BASE_URL']?.trim() || 'https://api.eureka.codes/flw-d1';
-const envName = /\/flw-d1\/?$/.test(base) ? '개발판 flw-d1' : /\/flw-v1\/?$/.test(base) ? '운영판 flw-v1' : undefined;
-if (allowWrites && !envName) {
-  allowWrites = false;
-  writeWarnings.push(`Eureka 쓰기는 개발판(flw-d1)·운영판(flw-v1) 주소에서만 켜요 (지금: ${base}) — 쓰기를 끄고 시작해요`);
-}
+const base = env['EUREKA_BASE_URL']?.trim() || EUREKA_DEFAULT_BASE_URL;
 
 const storePath = env['EUREKA_STORE_PATH']?.trim();
 if (allowWrites && !storePath) {
@@ -102,7 +97,7 @@ const server = new HarnessWsServer({
 
 async function main() {
   console.log('DeskPet Eureka 내부 API 서버 (D-31)');
-  console.log(`Eureka: ${envName ?? base} / 쓰기 ${allowWrites ? '허용 (확인 받은 요청만, mutationApproved)' : '꺼짐'} / 동시 호출 ${max}건`);
+  console.log(`Eureka: ${base} / 쓰기 ${allowWrites ? '허용 (확인 받은 요청만, mutationApproved)' : '꺼짐'} / 동시 호출 ${max}건`);
   for (const w of writeWarnings) console.log(`! ${w}`);
   console.log(`받는 요청: eureka.execute · eureka.reconcile · eureka.reminders · eureka.reminder · eureka.links`);
   console.log(storePath ? `저장소: ${storePath}` : '저장소: 메모리 (EUREKA_STORE_PATH 미설정 → 끄면 기록이 사라짐)');
