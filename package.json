@@ -19,6 +19,7 @@
     "wiki": "tsx scripts/wiki.ts",
     "db": "tsx scripts/store.ts",
     "harness": "tsx scripts/server.ts",
+    "start": "pnpm web:build && tsx scripts/server.ts",
     "eureka:server": "tsx scripts/eureka-server.ts",
     "web:dev": "pnpm --filter @deskpet/web dev",
     "web:build": "pnpm --filter @deskpet/web build",

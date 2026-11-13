@@ -15,10 +15,13 @@
  *   HARNESS_WS_ALLOWED_CLIENTS (다른 기기 접속 허용 IP·CIDR, 쉼표 구분. HARNESS_WS_HOST를 loopback이 아닌 값으로 줄 때 필수)
  *   HARNESS_WS_TLS_CERT / HARNESS_WS_TLS_KEY (선택, PEM 파일 경로 → wss://)
  *   HARNESS_WS_VIEWER_TOKEN (선택, 16자 이상 — 웹 화면용 구독 전용 토큰. pipeline 토큰과 달라야 함)
+ *   HARNESS_WEB (기본 on — 빌드한 웹 화면을 같은 주소·포트로 내보냄, off로 끔), HARNESS_WEB_DIR (기본 apps/web/dist, 상대경로는 app 폴더 기준) (D-42)
  *   GITHUB_TOKEN, EUREKA_API_KEY, EUREKA_BASE_URL, DESKPET_REQUIRED_CHECKS, DESKPET_STORE_PATH, LLM_* (기존과 같음)
  * 비밀값은 출력하지 않는다. 쓰기는 기본으로 켜져 있고 사용자 확인 답변으로만 보낸다. 서버 콘솔 yes 확인은 없앴다 (사용자 결정 2026-10-24, D-22).
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { pocSetup } from './poc-faults.js';
 import { networkInterfaces } from 'node:os';
 import { createEurekaRestGateway, GitHubReviewGateway, parseRequiredChecksFallback, RestGitHubTransport } from '@deskpet/gateways';
@@ -70,6 +73,15 @@ const tls = tlsCert && tlsKey ? (() => {
     return fail(`TLS 인증서·키를 읽지 못했어요: ${e instanceof Error ? e.message : String(e)}`);
   }
 })() : undefined;
+
+// ------------------------------------------------------ 웹 화면 서빙 (D-42)
+// 빌드한 웹(pnpm web:build → apps/web/dist)을 Harness 서버와 같은 주소·포트로 내보낸다. Jetson에서 브라우저로 http://<주소>:8787 만 열면 된다.
+// 상대경로는 실행 위치가 아니라 app 폴더 기준으로 해석한다
+const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const webEnabled = (env['HARNESS_WEB'] ?? 'on').trim().toLowerCase() !== 'off';
+const webDirRaw = env['HARNESS_WEB_DIR']?.trim() || 'apps/web/dist';
+const webDir = isAbsolute(webDirRaw) ? webDirRaw : resolve(appRoot, webDirRaw);
+const webBuilt = existsSync(resolve(webDir, 'index.html'));
 
 // ------------------------------------------------------------------ wiring
 // LLM Guide 호출 시간 상한은 .env LLM_GUIDE_TIMEOUT_MS로 바꿀 수 있다 (기본 8초)
@@ -188,6 +200,7 @@ const server = new HarnessWsServer({
   host: wsHost,
   allowedClients,
   ...(tls ? { tls } : {}),
+  ...(webEnabled ? { web: { root: webDir } } : {}),
   port: Number(env['HARNESS_WS_PORT']) || 8787,
   allowedOrigins: (env['HARNESS_WS_ALLOWED_ORIGINS'] ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   log: (l) => console.log(`[server] ${l}`),
@@ -229,10 +242,18 @@ async function main() {
   } else console.log('다른 기기 접속: 꺼짐 (이 기기에서만)');
   // 웹 화면 연결 준비 상태 (값은 출력하지 않는다)
   const origins = (env['HARNESS_WS_ALLOWED_ORIGINS'] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const port = Number(env['HARNESS_WS_PORT']) || 8787;
+  const scheme = tls ? 'https' : 'http';
+  if (!webEnabled) console.log('웹 화면 서빙: 꺼짐 (HARNESS_WEB=off) — pnpm web:dev로 따로 띄울 수 있어요');
+  else if (!webBuilt) console.log(`웹 화면 서빙: 빌드 없음 (${webDirRaw}) → pnpm web:build 후 다시 시작하세요 (또는 pnpm start)`);
+  else {
+    const hosts = lan ? Object.values(networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i!.address) : [];
+    console.log(`웹 화면 서빙: ${[...(lan ? [] : [wsHost]), ...hosts].map((h) => `${scheme}://${h}:${port}`).join(', ') || `${scheme}://${wsHost}:${port}`}${lan ? ` (이 기기는 ${scheme}://127.0.0.1:${port})` : ''}`);
+  }
   console.log(
     env['HARNESS_WS_VIEWER_TOKEN']?.trim()
-      ? `웹 화면: 보기 전용 토큰 설정됨, 허용 Origin ${origins.length ? origins.join(', ') : '없음 → 브라우저 접속 거부 (HARNESS_WS_ALLOWED_ORIGINS 필요)'}`
-      : '웹 화면: 꺼짐 (HARNESS_WS_VIEWER_TOKEN 미설정)',
+      ? `웹 화면 접속: 보기 전용 토큰 설정됨${webEnabled ? ' — 이 서버가 내보낸 화면은 Origin 설정 없이 접속' : ''}${origins.length ? `, 추가 허용 Origin ${origins.join(', ')}` : webEnabled ? '' : ', 허용 Origin 없음 → 브라우저 접속 거부 (HARNESS_WS_ALLOWED_ORIGINS 필요)'}`
+      : '웹 화면 접속: 꺼짐 (HARNESS_WS_VIEWER_TOKEN 미설정 — 화면은 열리지만 연결할 수 없어요)',
   );
   console.log(wikiDir ? `Wiki: ${wikiDir} (wiki/ + projects/ README, Guide 참고용)` : 'Wiki 꺼짐 (DESKPET_WIKI_DIR 미설정)');
   if (storePath) {

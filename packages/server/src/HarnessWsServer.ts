@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import type { IncomingMessage } from 'node:http';
-import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
+import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { clampPayloadDeadline, parseEnvelope, SUPPORTED_MAJOR, type Envelope } from '@deskpet/contracts';
 import type { OperationStore, StoreChange } from '@deskpet/harness';
@@ -9,6 +9,7 @@ import { fromStoreChange, snapshotFromHarness } from '@deskpet/projector';
 import type { HarnessInbound } from './inbound.js';
 import { UnsupportedKindError } from './inbound.js';
 import { CLOSE, ClientFrame, PROTOCOL, type ErrorCode, type Role, type ServerFrame } from './protocol.js';
+import { createStaticHandler, isSameOriginLiteral, WEB_SECURITY_HEADERS, type StaticHandler } from './staticWeb.js';
 
 /**
  * Harness 서비스 경계 (WebSocket). 근거: message-contracts §Envelope, §Output and Projection, Liability §Ownership.
@@ -41,6 +42,12 @@ export interface HarnessWsServerOptions {
   allowedClients?: string[];
   /** wss(TLS) 인증서·키 (PEM 문자열). 주면 wss://로 연다 (D-25) */
   tls?: { cert: string; key: string };
+  /**
+   * 웹 화면 서빙 (D-42). 빌드한 웹(apps/web/dist)을 같은 주소·포트의 HTTP로 내보낸다.
+   * 켜면 그 화면의 Origin(같은 IP·localhost 주소)은 allowedOrigins에 없어도 WebSocket 접속을 받는다.
+   * HTTP 요청도 WebSocket과 같은 클라이언트 주소 규칙(allowedClients)을 따른다.
+   */
+  web?: { root: string };
   maxPayloadBytes?: number;
   maxInFlightPerConnection?: number;
   maxBufferedBytes?: number;
@@ -93,7 +100,7 @@ interface CachedReply {
 
 export class HarnessWsServer {
   private wss?: WebSocketServer;
-  private https?: HttpsServer;
+  private http?: HttpServer;
   private readonly conns = new Set<Conn>();
   private readonly inFlight = new Set<Promise<unknown>>();
   private readonly laneInFlight: Record<Lane, number> = { work: 0, eureka: 0, control: 0 };
@@ -129,30 +136,41 @@ export class HarnessWsServer {
         return done(false, 403, 'client address not allowed');
       }
       const origin = info.origin;
-      if (origin && !allowed.has(origin)) {
+      // 이 서버가 내보낸 웹 화면(같은 IP·localhost 주소)은 Origin 목록 없이 받는다 (D-42)
+      const sameOrigin = !!this.o.web && !!origin && isSameOriginLiteral(origin, info.req.headers.host, !!this.o.tls);
+      if (origin && !allowed.has(origin) && !sameOrigin) {
         this.log(`거부: 허용되지 않은 Origin ${origin}`);
         return done(false, 403, 'origin not allowed');
       }
       done(true);
     };
     const common = { maxPayload: this.o.maxPayloadBytes ?? 256 * 1024, verifyClient };
-    if (this.o.tls) {
-      this.https = createHttpsServer({ cert: this.o.tls.cert, key: this.o.tls.key });
-      this.wss = new WebSocketServer({ ...common, server: this.https });
-      await new Promise<void>((resolve, reject) => {
-        this.https!.once('error', reject);
-        this.https!.listen(this.o.port ?? 8787, host, () => resolve());
+    const web: StaticHandler | undefined = this.o.web ? createStaticHandler(this.o.web) : undefined;
+    const onHttp = (req: IncomingMessage, res: ServerResponse) => {
+      const ip = normalizeIp(req.socket.remoteAddress ?? '');
+      if (!isLoopback(ip) && !clients.some((r) => r(ip))) {
+        this.log(`거부(HTTP): 허용되지 않은 클라이언트 주소 ${ip || '(알 수 없음)'}`);
+        res.writeHead(403, { ...WEB_SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' });
+        return void res.end('client address not allowed');
+      }
+      if (!web) {
+        res.writeHead(426, { ...WEB_SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8', Upgrade: 'websocket' });
+        return void res.end(`DeskPet Harness WebSocket server (${PROTOCOL})`);
+      }
+      web(req, res).catch(() => {
+        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end();
       });
-    } else {
-      this.wss = new WebSocketServer({ ...common, host, port: this.o.port ?? 8787 });
-      await new Promise<void>((resolve, reject) => {
-        this.wss!.once('listening', resolve);
-        this.wss!.once('error', reject);
-      });
-    }
+    };
+    this.http = this.o.tls ? createHttpsServer({ cert: this.o.tls.cert, key: this.o.tls.key }, onHttp) : createHttpServer(onHttp);
+    this.wss = new WebSocketServer({ ...common, server: this.http });
+    await new Promise<void>((resolve, reject) => {
+      this.http!.once('error', reject);
+      this.http!.listen(this.o.port ?? 8787, host, () => resolve());
+    });
     this.wss.on('connection', (ws) => this.onConnection(ws));
     this.unsubscribe = this.o.store.subscribe((c) => this.broadcast(c));
-    const addr = (this.https ? this.https.address() : this.wss.address()) as AddressInfo;
+    const addr = this.http.address() as AddressInfo;
     this.log(`Harness WebSocket 서버 ${this.o.tls ? 'wss' : 'ws'}://${host}:${addr.port} (protocol ${PROTOCOL}, epoch ${this.epoch})`);
     return { host, port: addr.port };
   }
@@ -167,7 +185,10 @@ export class HarnessWsServer {
     await Promise.race([drained, new Promise((r) => setTimeout(r, drainMs))]);
     for (const c of this.conns) c.ws.close(CLOSE.shuttingDown, 'server shutting down');
     await new Promise<void>((resolve) => wss.close(() => resolve()));
-    if (this.https) await new Promise<void>((resolve) => this.https!.close(() => resolve()));
+    if (this.http) {
+      this.http.closeAllConnections?.();
+      await new Promise<void>((resolve) => this.http!.close(() => resolve()));
+    }
     this.log('Harness WebSocket 서버 종료');
   }
 

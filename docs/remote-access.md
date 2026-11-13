@@ -26,7 +26,8 @@ HARNESS_WS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://<�
 
 - B에서 노트북이 Windows면 **방화벽 인바운드 규칙**으로 TCP 8787을 열어야 한다 (처음 실행 때 뜨는 허용 창에서 "개인 네트워크" 허용).
 - 접속하는 쪽 `.env`: `HARNESS_WS_URL=ws://<서버 IP>:8787`, `HARNESS_WS_TOKEN=<서버와 같은 값>`.
-- 웹 화면을 다른 기기에서 열려면 웹을 띄우는 기기에서 `pnpm web:dev:lan`(Vite를 0.0.0.0으로) → 브라우저 주소의 Origin(`http://<그 기기 IP>:5173`)을 서버 `HARNESS_WS_ALLOWED_ORIGINS`에 넣고, 그 브라우저 기기 IP를 `HARNESS_WS_ALLOWED_CLIENTS`에 넣는다.
+- 웹 화면을 다른 기기에서 열 때 (D-42): Harness 서버가 화면도 내보내므로(`pnpm start`) 브라우저에서 `http://<서버 IP>:8787`만 열면 된다. 그 브라우저 기기 IP를 `HARNESS_WS_ALLOWED_CLIENTS`에 넣는다. Origin 목록은 IP 주소로 열 때 필요 없다.
+- (개발 서버로 띄울 때) 웹 화면을 다른 기기에서 열려면 웹을 띄우는 기기에서 `pnpm web:dev:lan`(Vite를 0.0.0.0으로) → 브라우저 주소의 Origin(`http://<그 기기 IP>:5173`)을 서버 `HARNESS_WS_ALLOWED_ORIGINS`에 넣고, 그 브라우저 기기 IP를 `HARNESS_WS_ALLOWED_CLIENTS`에 넣는다.
 
 ## Jetson 준비
 

@@ -50,6 +50,7 @@ pnpm check               # typecheck + lint + test
 pnpm harness             # 터미널 1: Harness 서버 (ws://127.0.0.1:8787)
 pnpm demo 12             # 터미널 2: 데모 클라이언트로 G-01 흐름
 pnpm web:dev             # 터미널 3: 웹 화면 http://127.0.0.1:5173 (보기 전용 토큰 입력)
+# 또는 한 번에: pnpm start  → 웹 빌드 + Harness 서버, 브라우저에서 http://127.0.0.1:8787 (D-42)
 ```
 
 ## 명령
@@ -67,6 +68,7 @@ pnpm web:dev             # 터미널 3: 웹 화면 http://127.0.0.1:5173 (보기
 | `pnpm wiki "질의" [--dir <vault>]` | LLM Wiki 검색 확인 (읽기 전용). Guide에 넘길 발췌·출처를 그대로 보여 줌 |
 | `pnpm demo [PR] [--answer "…"] [--ask "…" --intent …]` | 데모 클라이언트 (서버가 켜져 있어야 함) |
 | `pnpm db [ops\|op <id>\|pending\|dedup\|turns\|raw …]` | 저장소 조회 (읽기 전용, 기록을 바꾸지 않음) |
+| `pnpm start [옵션]` | 웹 화면 빌드 + Harness 서버. 서버가 빌드한 화면을 같은 주소·포트(`http://<주소>:8787`)로 내보낸다 (D-42). 옵션은 `pnpm harness`와 같음 |
 | `pnpm web:dev` / `pnpm web:build` | 웹 화면 개발 서버 / 빌드 |
 | `pnpm web:dev:lan` | 웹 화면을 다른 기기 브라우저에서 열 때 (Vite를 0.0.0.0으로, D-25) |
 | `pnpm web:fixture` | 실제 API 없이 여러 상태를 만든 fixture 서버 (웹 화면 확인용) |
@@ -149,6 +151,7 @@ pnpm web:dev             # 터미널 3: 웹 화면 http://127.0.0.1:5173 (보기
 | D-39 | **승인 요청은 느슨하게 (2026-11-10 사용자 결정, Jetson 음성 시험 뒤)**: 이 STT는 신뢰도 점수가 정확도와 맞지 않았다(틀린 "생일해줘" 0.96, 맞는 "승인해줘" 0.67). ① 승인 '요청' 단계는 STT·라우터 신뢰도로 막지 않고 확인 질문까지 간다(질문이 저장소·PR·커밋을 다시 읽어 줌). 확인 답변 단계는 그대로 엄격(신뢰도·승인 말·거절 우선) ② 대상 PR이 있고 '승인해' 또는 STT가 비슷하게 잘못 듣는 말(성인·생일·승일 등 + 해)이면 LLM 없이 규칙으로 승인 요청(`facts.intentRecheck.by=rule`) ③ 다시 말해 달라는 문장에서 PR 번호 요구를 뺌(PR이 여럿이 되면 다시 넣음). `DESKPET_APPROVAL_REQUEST_INPUT=strict`로 예전 동작. STT 정확도가 오르면 다시 검토 | 사용자 결정 2026-11-10 |
 | D-40 | 확인 답변 승인 말에 **"추가"** 추가("추가해", "추가해 줘"). Eureka 단계 완료 확인 질문("…완료로 반영하고, …단계 기록에 추가할까요?")에 "반영해"·"추가해"로 답할 수 있게. "반영"은 D-38부터 있음. 거절 말 우선은 그대로("추가하지 마", "반영 안 해"는 거절). 파이프라인 승인 정규식에도 같은 말이 있어야 `mutationApproved=true`가 온다 | 사용자 결정 2026-11-10 |
 | D-41 | **리뷰 뒤 다음 질문 (2026-11-10 사용자 결정)**: 리뷰만 하고 끝나 승인 요청이 어색하던 문제. ① 승인 조건이 맞으면 리뷰 요약 끝에 확인 질문("…이 커밋을 승인할까요?")을 붙여 "응"만으로 승인까지 이어지게(답변 단계 규칙은 그대로 엄격) ② 본인 PR·권한 없음·초안·닫힘·병합·허용 저장소 밖·필수 검사 실패/진행 중이면 질문 없이 이유 한 문장 ③ Copilot 리뷰는 있을 때만 말함(없음·목록 못 읽음은 생략), 차단 수준 지적이 있으면 "그래도 …승인할까요?" ④ 변경 규모에 따른 질문은 나중에. 서버 기본 켜짐(`DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off`로 끔), 라이브러리 기본 꺼짐 | 사용자 결정 2026-11-10 |
+| D-42 | **웹 화면을 Harness 서버가 서빙 (2026-11-13 사용자 결정)**: Jetson에서 쓰기 위해 빌드한 웹(`apps/web/dist`)을 Harness 서버와 같은 주소·포트의 HTTP로 내보낸다(`HARNESS_WEB`, 기본 on / `HARNESS_WEB_DIR`, 상대경로는 app 폴더 기준). 이 서버가 내보낸 화면은 Origin이 같은 IP·localhost 주소면 `HARNESS_WS_ALLOWED_ORIGINS` 없이 WebSocket 접속을 받는다(도메인 이름은 DNS rebinding 때문에 제외 → 목록에 넣어야 함). HTTP 요청도 `HARNESS_WS_ALLOWED_CLIENTS` 규칙을 따른다. GET/HEAD만, root 밖 파일·심볼릭 링크 거부, 보안 헤더(CSP 등). 웹을 끄면 예전처럼 HTTP는 426. `pnpm web:dev`는 개발용으로 그대로 | 구현 2026-11-13 |
 | D-33 | **라우터 헤드 의미 (wiki interface-contracts 2026-11-01)**: 새 형식(`modelIntention` 헤드가 있음)에서 `target` = 업무 이름 원문, `name` = 단계 이름 원문, `task` = 새 업무 이름·요약, `note` = 기록 내용. 업무는 `target`(또는 `resolvedTarget`)으로 찾고, 단계 기록 추가의 단계는 `name`, 등록할 업무 이름은 `task`(없으면 `target`)로 정한다. 업무 유형은 `EUREKA_DEFAULT_PROCESS_ID`만 쓴다. 구형 형식(`modelIntention` 없음)은 지금처럼 `name` = 업무 이름. 라우터 24개 라벨 중 아직 실행하지 않는 동작은 `EUREKA_OPERATION_NOT_IMPLEMENTED`(목록에 없는 값은 `POLICY_BLOCKED`) | 구현 2026-11-03 |
 | D-32 | **wiki 정렬 (2026-11-03)**: ① 출력 감정은 `neutral`·`happy`·`sad`만 쓰고(모델이 다른 이름을 내면 정규화), 업무 결과는 `OutputContent.actionStatus`(마지막 쓰기 작업의 succeeded·failed·unknown, 조회만 했으면 없음)로 따로 준다. 결과가 있으면 감정을 결과에 맞춘다(성공 happy, 실패 sad, 미확인 neutral) — wiki deskpet-display-interface ② 실행된 검사가 없으면 "모든 검사가 통과"라고 하지 않는다 ③ 미지원 요청은 "실행하지 않음 → 지원 범위 → 대안" 순서로 답한다 — wiki deskpet-operation-policies §3 ④ EurekaBridge는 라우터 형식(intention=`eureka` + operation 24개 라벨)을 받는다. 지원: query(대상 있으면 상태, 없으면 목록)·create·complete·postpone·add_note(단계 기록 추가, 확인 후)·query_processes. 나머지 라벨은 실행하지 않고 무엇을 안 했는지·지원 범위를 말한다 — wiki small-router-model | 구현 2026-11-03 |
 | D-31 | **Eureka 내부 API 분리**: `pnpm eureka:server`가 직접 Eureka 요청(`eureka.execute·reconcile·reminders·reminder·links`)만 별도 프로세스·포트(기본 8789)에서 받는다. 메시지 형식은 Harness 서버와 같아 파이프라인은 주소만 바꾼다. 작업 기록은 따로(`EUREKA_STORE_PATH`, Harness 저장소와 다른 파일). Harness 서버는 `DESKPET_EUREKA_BRIDGE=external`이면 `eureka.*`를 받지 않는다(기본 internal: 지금처럼 함께). G-01의 단계 완료는 계속 Harness가 직접 쓴다 — wiki deskpet-pipeline §4 | 구현 2026-11-03 |

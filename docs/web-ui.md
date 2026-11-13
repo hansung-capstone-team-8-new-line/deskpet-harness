@@ -23,6 +23,21 @@
 
 ## 실행
 
+### Harness 서버가 화면도 내보내기 (기본, D-42 — Jetson용)
+
+```
+pnpm start          # = pnpm web:build + pnpm harness (옵션도 그대로: pnpm start --read-only)
+```
+
+- 브라우저에서 `http://<Harness 주소>:8787` → 서버 주소 칸은 자동으로 같은 주소(`ws://…:8787`), **보기 전용 토큰**만 넣고 연결.
+- 이 서버가 내보낸 화면은 `HARNESS_WS_ALLOWED_ORIGINS`에 넣지 않아도 된다 (Origin이 같은 IP·localhost 주소일 때). `jetson.local`처럼 **도메인 이름**으로 열면 그 Origin(`http://jetson.local:8787`)을 목록에 넣어야 한다.
+- 다른 기기 브라우저에서 열 때는 그 기기 IP가 `HARNESS_WS_ALLOWED_CLIENTS`에 있어야 한다 (HTTP·WebSocket 같은 규칙, `remote-access.md`).
+- 화면 코드를 바꾸면 `pnpm web:build` 후 브라우저 새로고침 (서버 재시작 불필요. `index.html`은 캐시하지 않음).
+- 끄기: `.env` `HARNESS_WEB=off`. 다른 폴더의 빌드: `HARNESS_WEB_DIR` (상대경로는 app 폴더 기준).
+- 시작 화면 줄: `웹 화면 서빙: http://…:8787` / 빌드가 없으면 `빌드 없음 → pnpm web:build` (그 상태로 열면 503 안내).
+
+### 개발 서버로 따로 띄우기
+
 ```
 # .env
 HARNESS_WS_VIEWER_TOKEN=<16자 이상, HARNESS_WS_TOKEN과 다른 값>
@@ -54,4 +69,5 @@ pnpm web:dev        # 터미널 2 → http://127.0.0.1:5173 에서 서버 주소
 
 - `apps/web/test/model.test.ts`: 원본 상태 → 표시 상태 매핑, 닫힌 질문 제외, 정렬, 검색·필터.
 - fixture 서버 + 브라우저(Chromium)로 연결, 목록, 키보드 선택, 오류 펼침, 상태 필터, 서버 종료 시 연결 끊김 알림을 확인했다.
+- 2026-11-13: `scripts/server.ts`가 빌드한 화면을 8787에서 내보내고, Chromium으로 열어 Origin 설정 없이 보기 전용 토큰으로 연결되는 것을 확인 (CSP 위반·콘솔 오류 없음). 자동 테스트: `tests/e2e/webServing.test.ts`.
 - 2026-10-24: **실제 서버 스크립트(`scripts/server.ts`)** + `pnpm web:dev` + Chromium으로 보기 전용 토큰 연결, `pnpm demo:adapter harness`가 만든 작업이 실시간으로 목록에 나타나는 것을 확인했다 (GitHub·Eureka 키는 가짜 값이라 작업은 '실패'로 표시됨).

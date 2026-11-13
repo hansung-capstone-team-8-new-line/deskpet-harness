@@ -9,7 +9,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { HarnessConnection, type ConnView } from '@/lib/connection';
 import { STATUS_LABEL, STATUS_ORDER, filterRows, toRows, type StatusKey } from '@/lib/model';
 
-const DEFAULT_URL = 'ws://127.0.0.1:8787';
+/**
+ * 기본 서버 주소. Harness 서버가 이 화면을 내보낸 경우(D-42) 같은 주소의 WebSocket으로,
+ * Vite 개발 서버(pnpm web:dev)에서 열었으면 이 기기의 Harness 기본 주소로.
+ */
+const DEFAULT_URL = import.meta.env.DEV ? 'ws://127.0.0.1:8787' : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 const KEY = 'deskpet.viewer';
 
 function loadSaved(): { url: string; token: string } | null {
