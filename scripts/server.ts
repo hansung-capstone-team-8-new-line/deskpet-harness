@@ -1,10 +1,12 @@
 /* eslint-disable no-console */
+import './quietWarnings.js';
 /**
  * Harness 서비스 서버 (WebSocket). 파이프라인·데모 클라이언트·웹 화면이 이 서버에 연결한다.
  *
  *   pnpm harness                          # GitHub·Eureka 쓰기 허용이 기본 (D-38, 2026-11-09). 쓰기는 사용자 확인 답변이 있어야만 보낸다 (D-22)
  *                                         # 쓰기에는 DESKPET_STORE_PATH(영속 저장소)가 필요하다. 없으면 쓰기를 끄고 시작한다
  *   pnpm harness --read-only              # 쓰기 모두 끔 (조회만)
+ *   pnpm harness --verbose               # 시작 화면에 설정마다 뜻과 .env 이름까지
  *   pnpm harness --no-github-writes       # GitHub 승인만 끔 / --no-eureka-writes: Eureka 쓰기만 끔
  *
  * .env
@@ -25,7 +27,8 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { renderBanner, type BannerRow, type BannerSection } from './banner.js';
 import { Updater, type UpdateStatus } from './updater.js';
 import { RESTART_EXIT_CODE } from './restartCode.js';
 import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
@@ -216,7 +219,11 @@ const server: HarnessWsServer = new HarnessWsServer({
   ...(webEnabled ? { web: { root: webDir } } : {}),
   port: Number(env['HARNESS_WS_PORT']) || 8787,
   allowedOrigins: (env['HARNESS_WS_ALLOWED_ORIGINS'] ?? '').split(',').map((s) => s.trim()).filter(Boolean),
-  log: (l) => console.log(`[server] ${l}`),
+  // 시작 줄(주소·epoch)은 시작 화면에 이미 나오므로 한 번만 숨긴다
+  log: (l) => {
+    if (quietStartLine && l.startsWith('Harness WebSocket 서버 ws')) return void (quietStartLine = false);
+    console.log(`[server] ${l}`);
+  },
   // 단계별 처리 시간 (NFR-01, D-26). DESKPET_TIMING_LOG=off면 끈다
   ...(env['DESKPET_TIMING_LOG']?.trim() === 'off' ? {} : { onCompleted: (i: { kind: string; requestId: string; ms: number; ok: boolean; payload?: unknown }) => console.log(`[timing] ${i.kind} ${i.requestId} ${i.ms}ms${i.ok ? '' : ' (거부·오류)'}${timingDetail(i.payload)}`) }),
 });
@@ -262,64 +269,114 @@ notify = (n) => {
 };
 
 const startedAt = new Date().toISOString();
+let quietStartLine = false;
 
 async function main() {
-  console.log('DeskPet Harness 서버');
-  console.log(`직접 Eureka 요청(eureka.*): ${eurekaBridgeMode === 'internal' ? '이 서버에서 받음' : '받지 않음 — Eureka 내부 API 서버(pnpm eureka:server)로 (DESKPET_EUREKA_BRIDGE=external)'}`);
-  console.log(`PR 검사(D-30): ${prChecks === 'skip' ? '조회하지 않음 — 승인 조건에서도 제외 (DESKPET_PR_CHECKS=enforce로 되돌림)' : '조회·필수 검사 확인'}`);
-  console.log(`승인 허용 저장소(D-36): ${allowed.repos.length ? allowed.repos.join(', ') : '제한 없음 (DESKPET_ALLOWED_REPOS 비어 있음)'}`);
-  console.log(`리뷰 뒤 승인 질문(D-41): ${config.offerApprovalAfterReview ? '켜짐 — 승인 가능하면 "…승인할까요?"를 붙이고, 아니면 이유를 한 문장 (DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off)' : '꺼짐'}`);
-  console.log(`승인 요청 입력(D-39): ${config.approvalRequestInput === 'strict' ? '엄격 — 요청부터 신뢰도 기준 적용' : '느슨 — 요청은 신뢰도로 막지 않고 확인 질문까지, 확인 답변에만 기준 적용 (DESKPET_APPROVAL_REQUEST_INPUT=strict로 되돌림)'}`);
-  console.log(`쓰기 입력 신뢰도 기준: STT ${config.minSttConfidenceForWrite}${minStt !== undefined ? ' (.env로 바꿈)' : ''}, 라우터 ${config.minRouteConfidenceForWrite}${minRoute !== undefined ? ' (.env로 바꿈)' : ''}`);
-  console.log(`2차 의도 확인(D-29): ${intentRecheck ? (llm.guideClient ? '켜짐 — llm·unclear 요청을 LLM이 다시 보고 PR 리뷰·승인이면 규칙 경로로' : '켜져 있지만 LLM 없음 (동작 안 함)') : '꺼짐 (DESKPET_INTENT_RECHECK=off)'}`);
-  console.log(`완료 근거 기록(D-28): ${evidenceNote ? `켜짐 — 단계 완료 확인에 함께 묻고 단계 기록에 PR 주소를 남김${env['EUREKA_NOTE_ACTOR_ID']?.trim() ? ' (작성자 actorId 지정)' : ' (작성자 actorId 없음)'}` : '꺼짐 (EUREKA_EVIDENCE_NOTE=off)'}`);
-  console.log(`GitHub 쓰기: ${allowGithubWrites ? '허용 (사용자 확인 답변만으로 보냄)' : '꺼짐'}  /  Eureka 쓰기: ${allowEurekaWrites ? `허용 — ${eurekaEnv} ${eurekaBase} (사용자 확인 답변만으로 보냄)` : '꺼짐'}${readOnly ? '  (--read-only)' : ''}`);
-  for (const w of writeWarnings) console.log(`! ${w}`);
-  console.log(llm.enabled ? `LLM: ${llm.provider} / ${llm.model} (동시 ${llm.limiter?.stats().max ?? '-'}건)` : `LLM 꺼짐 (${llm.reason})`);
-  console.log(`동시 호출 상한: GitHub ${githubLimiter.stats().max} / Eureka ${eurekaLimiter.stats().max} (D-24)`);
-  if (lan) {
-    const scheme = tls ? 'wss' : 'ws';
-    const addrs = Object.values(networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => `${scheme}://${i!.address}:${Number(env['HARNESS_WS_PORT']) || 8787}`);
-    console.log(`다른 기기 접속: 허용 ${allowedClients.join(', ')} → 이 기기 주소 ${addrs.join(', ') || '(찾지 못함)'}`);
-    if (!tls) console.log('  ! TLS 없이 열었어요: 토큰이 네트워크에 암호화 없이 오갑니다. 믿을 수 있는 같은 네트워크(집·연구실)에서만 쓰세요.');
-  } else console.log('다른 기기 접속: 꺼짐 (이 기기에서만)');
-  // 웹 화면 연결 준비 상태 (값은 출력하지 않는다)
-  const origins = (env['HARNESS_WS_ALLOWED_ORIGINS'] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-  const port = Number(env['HARNESS_WS_PORT']) || 8787;
-  const scheme = tls ? 'https' : 'http';
-  if (!webEnabled) console.log('웹 화면 서빙: 꺼짐 (HARNESS_WEB=off) — pnpm web:dev로 따로 띄울 수 있어요');
-  else if (!webBuilt) console.log(`웹 화면 서빙: 빌드 없음 (${webDirRaw}) → pnpm web:build 후 다시 시작하세요 (또는 pnpm start)`);
-  else {
-    const hosts = lan ? Object.values(networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i!.address) : [];
-    console.log(`웹 화면 서빙: ${[...(lan ? [] : [wsHost]), ...hosts].map((h) => `${scheme}://${h}:${port}`).join(', ') || `${scheme}://${wsHost}:${port}`}${lan ? ` (이 기기는 ${scheme}://127.0.0.1:${port})` : ''}`);
-  }
-  console.log(
-    env['HARNESS_WS_VIEWER_TOKEN']?.trim()
-      ? `웹 화면 접속: 보기 전용 토큰 설정됨${webEnabled ? ' — 이 서버가 내보낸 화면은 Origin 설정 없이 접속' : ''}${origins.length ? `, 추가 허용 Origin ${origins.join(', ')}` : webEnabled ? '' : ', 허용 Origin 없음 → 브라우저 접속 거부 (HARNESS_WS_ALLOWED_ORIGINS 필요)'}`
-      : `웹 화면 접속: 토큰 없이 보기 전용 (HARNESS_WS_VIEWER_TOKEN 비어 있음, D-45)${lan ? ` — 허용 IP(${allowedClients.join(', ')}) 안의 기기는 누구나 작업 목록을 볼 수 있어요. 공용 네트워크면 HARNESS_WS_VIEWER_TOKEN을 넣으세요` : ''}`,
-  );
-  console.log(`세션 기록(D-47): ${history ? (historyPath ? `${historyPath} (최근 ${history.size}건 불러옴)` : '메모리 (DESKPET_STORE_PATH 없음 → 서버를 끄면 사라짐)') : '꺼짐 (DESKPET_HISTORY_PATH=off)'}`);
-  await updater.readCurrent();
-  const cur = updater.status.current;
-  console.log(`버전: ${cur ? `${cur.commit} ${cur.subject} (${cur.branch})` : '알 수 없음 (git 저장소 아님)'}  /  업데이트 확인(D-49): ${updateCheck && cur ? `켜짐 — ${updateCheckMinutes}분마다 git fetch` : '꺼짐'}  /  웹 업데이트 버튼(D-50): ${adminToken ? `관리 토큰 설정됨${supervised ? ' — 적용 뒤 자동 재시작' : ' — pnpm harness로 켜서 적용 뒤 직접 다시 실행 (pnpm start면 자동)'}` : '꺼짐 (HARNESS_WEB_ADMIN_TOKEN 없음)'}`);
-  console.log(wikiDir.enabled ? `Wiki: ${wikiDir.raw}${wikiDir.source === 'default' ? ' (기본값)' : ''} → ${wikiDir.dir} (wiki/ + projects/ README, Guide 참고용)` : `Wiki 꺼짐 — ${wikiDir.reason}`);
+  // 저장소 정리·재시작 복구 (이전 실행에서 결과를 모르는 쓰기는 다시 보내지 않고 읽기로만 확인한다)
+  const storeRows: BannerRow[] = [];
   if (storePath) {
     const cleaned = await store.maintain();
     const all = await store.listOperations();
     const needed = all.filter((o) => o.recovery === 'needed');
-    console.log(`저장소: ${storePath} (operation ${all.length}건, 결과 확인 필요 ${needed.length}건, 정리 ${cleaned}건)`);
-    // 이전 실행에서 결과를 모르는 쓰기는 다시 보내지 않고 읽기로만 확인한다
+    storeRows.push(['작업', `${storePath} · ${all.length}건${needed.length ? ` (결과 확인 필요 ${needed.length}건)` : ''}${cleaned ? ` · 정리 ${cleaned}건` : ''}`]);
     for (const op of needed) {
       const rec = await harness.reconcile(op.operationId, `server-recover-${Date.now().toString(36)}`, { deadlineAt: new Date(Date.now() + 30_000).toISOString() });
-      console.log(`  · 재시작 복구 ${op.action} [${op.requestId}]: ${rec.status}${rec.actionResult ? ` → ${rec.actionResult.status}` : ''}`);
+      storeRows.push(['', `· 재시작 복구 ${op.action} [${op.requestId}]: ${rec.status}${rec.actionResult ? ` → ${rec.actionResult.status}` : ''}`]);
     }
-  } else console.log('저장소: 메모리 (DESKPET_STORE_PATH 미설정 → 서버를 끄면 기록이 사라짐)');
+  } else storeRows.push(['작업', '메모리 — 서버를 끄면 사라짐 (DESKPET_STORE_PATH)']);
+  storeRows.push(['기록', history ? (historyPath ? `${shortPath(historyPath)} · ${history.size}건` : '메모리 — 서버를 끄면 사라짐') : '꺼짐']);
+  storeRows.push(['Wiki', wikiDir.enabled ? wikiDir.raw : `꺼짐 (${wikiDir.reason.split(' (')[0]})`]);
+
+  await updater.readCurrent();
+  const cur = updater.status.current;
+  const port = Number(env['HARNESS_WS_PORT']) || 8787;
+  const lanAddrs = lan ? Object.values(networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i!.address) : [];
+  const viewerToken = !!env['HARNESS_WS_VIEWER_TOKEN']?.trim();
+  const webScheme = tls ? 'https' : 'http';
+  const webUrls = (lan ? lanAddrs : [wsHost]).map((h) => `${webScheme}://${h}:${port}`);
+  const on = (b: boolean) => (b ? '켜짐' : '꺼짐');
+
+  const warnings = [...writeWarnings];
+  if (lan && !tls) warnings.push('TLS 없이 다른 기기 접속을 열었어요. 토큰이 암호화 없이 오가니 믿을 수 있는 네트워크에서만 쓰세요');
+  if (lan && !viewerToken) warnings.push(`웹 화면에 토큰이 없어요. 허용 IP(${allowedClients.join(', ')}) 안의 누구나 작업·기록을 볼 수 있어요 (HARNESS_WS_VIEWER_TOKEN)`);
+  if (intentRecheck && !llm.guideClient) warnings.push('2차 의도 확인이 켜져 있지만 LLM이 없어 동작하지 않아요');
+  if (webEnabled && !webBuilt) warnings.push(`웹 화면 빌드가 없어요 (${webDirRaw}) → pnpm start로 실행하세요`);
+
+  const sections: BannerSection[] = [
+    {
+      title: '접속',
+      rows: [
+        ['웹 화면', !webEnabled ? '꺼짐 (HARNESS_WEB=off)' : !webBuilt ? '빌드 없음' : `${webUrls.join(', ')}  ${viewerToken ? '(보기 전용 토큰 필요)' : '(토큰 없이 보기 전용)'}`],
+        ['다른 기기', lan ? `허용 ${allowedClients.join(', ')}${tls ? ' · TLS' : ''}` : '꺼짐 (이 기기에서만)'],
+        ...(eurekaBridgeMode === 'external' ? ([['Eureka 요청', '받지 않음 → pnpm eureka:server']] as BannerRow[]) : []),
+      ],
+    },
+    {
+      title: '쓰기',
+      rows: [
+        ['GitHub', allowGithubWrites ? '허용 (확인 답변으로만)' : `꺼짐${readOnly ? ' (--read-only)' : ''}`],
+        ['Eureka', allowEurekaWrites ? `허용 (확인 답변으로만) · ${eurekaEnv}` : `꺼짐${readOnly ? ' (--read-only)' : ''}`],
+      ],
+    },
+    { title: 'LLM', rows: [['', llm.enabled ? `${llm.provider} / ${llm.model} · 동시 ${llm.limiter?.stats().max ?? '-'}건` : `꺼짐 (${llm.reason})`]] },
+    { title: '저장', rows: storeRows },
+    {
+      title: '정책',
+      rows: [
+        ['', `PR 검사 ${prChecks === 'skip' ? '생략' : '확인'} · 승인 허용 저장소 ${allowed.repos.length ? allowed.repos.join(', ') : '제한 없음'} · 리뷰 뒤 승인 질문 ${on(config.offerApprovalAfterReview)}`],
+        ['', `승인 요청 ${config.approvalRequestInput === 'strict' ? '엄격' : '느슨'} · 신뢰도 STT ${config.minSttConfidenceForWrite} / 라우터 ${config.minRouteConfidenceForWrite} · 의도 재확인 ${on(intentRecheck && !!llm.guideClient)} · 완료 근거 기록 ${on(evidenceNote)}`],
+      ],
+    },
+    {
+      title: '업데이트',
+      rows: [['', `${updateCheck && cur ? `${updateCheckMinutes}분마다 확인` : '확인 꺼짐'} · 웹 버튼 ${adminToken ? (supervised ? '켜짐 (자동 재시작)' : '켜짐 (재시작은 직접 — pnpm start면 자동)') : '꺼짐 (HARNESS_WEB_ADMIN_TOKEN 없음)'}`]],
+    },
+  ];
+
+  quietStartLine = true;
   await server.start();
   recovery.start();
   if (updateCheck && cur) updater.start(updateCheckMinutes * 60_000);
+  const now = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+  console.log(
+    renderBanner({
+      title: `DeskPet Harness 서버   ${cur ? `${cur.commit} (${cur.branch})` : '버전 알 수 없음'} · ${now}${env['DESKPET_RESTARTED'] ? ' · 업데이트 뒤 다시 시작' : ''}`,
+      sections,
+      warnings,
+      footer: [`Ctrl+C로 종료하면 처리 중인 요청을 마친 뒤 닫습니다.${process.argv.includes('--verbose') ? '' : ' 설정 설명 전체: --verbose'}`],
+    }),
+  );
+  if (process.argv.includes('--verbose')) printDetails();
   // 업데이트 뒤 자동 재시작이면 브라우저를 다시 열지 않는다 (열려 있는 화면이 다시 연결됨)
   if (process.argv.includes('--web') && !env['DESKPET_RESTARTED']) openBrowser();
-  console.log('Ctrl+C로 종료하면 처리 중인 요청을 마친 뒤 닫습니다.');
+}
+
+/** app 폴더 안의 경로는 상대경로로 짧게 */
+function shortPath(p: string): string {
+  const r = relative(appRoot, p);
+  return r && !r.startsWith('..') && !isAbsolute(r) ? r.split(sep).join('/') : p;
+}
+
+/** --verbose: 설정마다 뜻과 되돌리는 .env 이름까지 (예전 시작 화면) */
+function printDetails() {
+  const origins = (env['HARNESS_WS_ALLOWED_ORIGINS'] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const lines = [
+    `직접 Eureka 요청(eureka.*): ${eurekaBridgeMode === 'internal' ? '이 서버에서 받음' : '받지 않음 — Eureka 내부 API 서버(pnpm eureka:server)로 (DESKPET_EUREKA_BRIDGE=external)'}`,
+    `PR 검사(D-30): ${prChecks === 'skip' ? '조회하지 않음 — 승인 조건에서도 제외 (DESKPET_PR_CHECKS=enforce로 되돌림)' : '조회·필수 검사 확인'}`,
+    `승인 허용 저장소(D-36): ${allowed.repos.length ? allowed.repos.join(', ') : '제한 없음 (DESKPET_ALLOWED_REPOS 비어 있음)'}`,
+    `리뷰 뒤 승인 질문(D-41): ${config.offerApprovalAfterReview ? '켜짐 — 승인 가능하면 "…승인할까요?"를 붙이고, 아니면 이유를 한 문장 (DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off)' : '꺼짐'}`,
+    `승인 요청 입력(D-39): ${config.approvalRequestInput === 'strict' ? '엄격 — 요청부터 신뢰도 기준 적용' : '느슨 — 요청은 신뢰도로 막지 않고 확인 질문까지, 확인 답변에만 기준 적용 (DESKPET_APPROVAL_REQUEST_INPUT=strict로 되돌림)'}`,
+    `쓰기 입력 신뢰도 기준: STT ${config.minSttConfidenceForWrite}${minStt !== undefined ? ' (.env로 바꿈)' : ''}, 라우터 ${config.minRouteConfidenceForWrite}${minRoute !== undefined ? ' (.env로 바꿈)' : ''} (DESKPET_MIN_STT_CONFIDENCE / DESKPET_MIN_ROUTE_CONFIDENCE)`,
+    `2차 의도 확인(D-29): ${intentRecheck ? (llm.guideClient ? '켜짐 — llm·unclear 요청을 LLM이 다시 보고 PR 리뷰·승인이면 규칙 경로로' : '켜져 있지만 LLM 없음 (동작 안 함)') : '꺼짐 (DESKPET_INTENT_RECHECK=off)'}`,
+    `완료 근거 기록(D-28): ${evidenceNote ? `켜짐 — 단계 완료 확인에 함께 묻고 단계 기록에 PR 주소를 남김${env['EUREKA_NOTE_ACTOR_ID']?.trim() ? ' (작성자 actorId 지정)' : ' (작성자 actorId 없음)'}` : '꺼짐 (EUREKA_EVIDENCE_NOTE=off)'}`,
+    `Eureka 주소: ${eurekaBase}`,
+    `동시 호출 상한(D-24): GitHub ${githubLimiter.stats().max} / Eureka ${eurekaLimiter.stats().max} (GITHUB_MAX_CONCURRENT / EUREKA_MAX_CONCURRENT)`,
+    `웹 화면 접속: ${env['HARNESS_WS_VIEWER_TOKEN']?.trim() ? '보기 전용 토큰 설정됨' : '토큰 없이 보기 전용 (HARNESS_WS_VIEWER_TOKEN 비어 있음, D-45)'}${webEnabled ? ' — 이 서버가 내보낸 화면은 Origin 설정 없이 접속' : ''}${origins.length ? `, 추가 허용 Origin ${origins.join(', ')}` : ''}`,
+    `세션 기록(D-47): ${history ? (historyPath ?? '메모리') : '꺼짐 (DESKPET_HISTORY_PATH=off)'}`,
+    `Wiki: ${wikiDir.enabled ? `${wikiDir.raw}${wikiDir.source === 'default' ? ' (기본값)' : ''} → ${wikiDir.dir}` : `꺼짐 — ${wikiDir.reason}`}`,
+    `업데이트(D-49·D-50): ${updater.status.current ? `${updater.status.current.commit} ${updater.status.current.subject}` : '버전 알 수 없음'} · 확인 ${updateCheck ? `${updateCheckMinutes}분마다 (HARNESS_UPDATE_CHECK_MINUTES)` : '꺼짐'} · 웹 버튼 ${adminToken ? '켜짐' : '꺼짐 (HARNESS_WEB_ADMIN_TOKEN)'} · 자동 재시작 ${supervised ? '켜짐 (pnpm start)' : '꺼짐 (pnpm harness)'}`,
+  ];
+  console.log(['  [자세한 설정]', ...lines.map((l) => `  · ${l}`)].join('\n'));
 }
 
 /**
