@@ -9,6 +9,8 @@ import { fromStoreChange, snapshotFromHarness } from '@deskpet/projector';
 import type { HarnessInbound } from './inbound.js';
 import { UnsupportedKindError } from './inbound.js';
 import { CLOSE, ClientFrame, PROTOCOL, type ErrorCode, type Role, type ServerFrame } from './protocol.js';
+import type { HistoryLog } from './history.js';
+import { historyEntryFrom } from './history.js';
 import { createStaticHandler, isSameOriginLiteral, WEB_SECURITY_HEADERS, type StaticHandler } from './staticWeb.js';
 
 /**
@@ -37,6 +39,17 @@ export interface HarnessWsServerOptions {
    * 접속 IP 허용 목록·Origin 검사는 그대로 적용된다. viewerToken과 함께 줄 수 없다
    */
   openViewer?: boolean;
+  /**
+   * 관리 토큰 (D-50, 선택, 16자 이상). 웹 화면의 업데이트 버튼 등 관리 동작에만 쓴다. 다른 토큰과 달라야 한다.
+   * 없으면 관리 동작을 받지 않는다
+   */
+  adminToken?: string;
+  /** 관리 동작 처리. adminToken이 맞을 때만 부른다 */
+  admin?: (action: 'update.check' | 'update.apply') => Promise<{ ok: boolean; message: string }>;
+  /** 세션 기록 (D-47). 주면 실행 요청 결과를 남기고 viewer에게 보여 준다 */
+  history?: HistoryLog;
+  /** 서버 정보 (D-49): 접속 직후 보내고, publishInfo()로 다시 보낸다 */
+  info?: () => unknown;
   host?: string;
   port?: number;
   allowedOrigins?: string[];
@@ -96,6 +109,10 @@ interface Conn {
   subscribed: boolean;
   /** snapshot 전송 전에 들어온 이벤트 */
   pendingEvents: unknown[] | null;
+  /** 세션 기록을 읽은 연결 → 새 기록을 보낸다 */
+  wantsHistory?: boolean;
+  /** 틀린 관리 토큰 횟수 */
+  adminFailures?: number;
 }
 
 interface CachedReply {
@@ -113,6 +130,8 @@ export class HarnessWsServer {
   private readonly heldNotices: { notice: unknown; resultText: string; at: number }[] = [];
   private readonly tokenDigest: Buffer;
   private readonly viewerDigest?: Buffer;
+  private readonly adminDigest?: Buffer;
+  private unsubscribeHistory?: () => void;
   private readonly epoch = Date.now();
   private unsubscribe?: () => void;
   private stopping = false;
@@ -127,6 +146,11 @@ export class HarnessWsServer {
       if (o.viewerToken.length < 16) throw new Error('viewer token must be at least 16 characters');
       if (o.viewerToken === o.token) throw new Error('viewer token must differ from the pipeline token');
       this.viewerDigest = digest(o.viewerToken);
+    }
+    if (o.adminToken !== undefined) {
+      if (o.adminToken.length < 16) throw new Error('admin token must be at least 16 characters');
+      if (o.adminToken === o.token || o.adminToken === o.viewerToken) throw new Error('admin token must differ from the other tokens');
+      this.adminDigest = digest(o.adminToken);
     }
     this.log = o.log ?? (() => {});
   }
@@ -176,6 +200,9 @@ export class HarnessWsServer {
     });
     this.wss.on('connection', (ws) => this.onConnection(ws));
     this.unsubscribe = this.o.store.subscribe((c) => this.broadcast(c));
+    this.unsubscribeHistory = this.o.history?.onAppend((entry) => {
+      for (const conn of this.conns) if (conn.role && conn.wantsHistory) this.send(conn, { type: 'history.appended', entry });
+    });
     const addr = this.http.address() as AddressInfo;
     this.log(`Harness WebSocket 서버 ${this.o.tls ? 'wss' : 'ws'}://${host}:${addr.port} (protocol ${PROTOCOL}, epoch ${this.epoch})`);
     return { host, port: addr.port };
@@ -185,6 +212,7 @@ export class HarnessWsServer {
   async stop(drainMs = 30_000): Promise<void> {
     this.stopping = true;
     this.unsubscribe?.();
+    this.unsubscribeHistory?.();
     const wss = this.wss;
     if (!wss) return;
     const drained = Promise.allSettled([...this.inFlight]);
@@ -202,6 +230,18 @@ export class HarnessWsServer {
   get connectionCount(): number {
     return this.conns.size;
   }
+  /** 처리 중인 요청 수 (업데이트 전 확인용) */
+  get inFlightCount(): number {
+    return this.inFlight.size;
+  }
+
+  /** 서버 정보가 바뀌었을 때(업데이트 상태 등) 접속한 모든 연결에 다시 보낸다 (D-49) */
+  publishInfo(): void {
+    if (!this.o.info) return;
+    const info = this.o.info();
+    for (const conn of this.conns) if (conn.role) this.send(conn, { type: 'server.info', info });
+  }
+
   inFlightIdle(): Promise<void> {
     return Promise.allSettled([...this.inFlight]).then(() => undefined);
   }
@@ -254,6 +294,7 @@ export class HarnessWsServer {
       conn.role = frame.role;
       this.log(`연결 #${conn.id} 인증됨 (${frame.role}${frame.client ? `, ${frame.client}` : ''})`);
       this.send(conn, { type: 'welcome', protocol: PROTOCOL, schemaVersion: `${SUPPORTED_MAJOR}.0`, role: frame.role, epoch: this.epoch, serverTime: new Date().toISOString() });
+      if (this.o.info) this.send(conn, { type: 'server.info', info: this.o.info() });
       if (frame.role === 'pipeline') this.flushHeldNotices(conn);
       return;
     }
@@ -267,6 +308,35 @@ export class HarnessWsServer {
         return this.subscribe(conn);
       case 'request':
         return this.onRequest(conn, frame.envelope);
+      case 'history': {
+        conn.wantsHistory = true;
+        const page = this.o.history?.page({ ...(frame.beforeId ? { beforeId: frame.beforeId } : {}), ...(frame.limit ? { limit: frame.limit } : {}) }) ?? { entries: [], hasMore: false };
+        return this.send(conn, { type: 'history', entries: page.entries, hasMore: page.hasMore, sessionId: this.o.history?.sessionId ?? '' });
+      }
+      case 'admin':
+        return this.onAdmin(conn, frame);
+    }
+  }
+
+  // ---------------------------------------------------------------------- admin
+  private async onAdmin(conn: Conn, frame: { token: string; action: 'update.check' | 'update.apply'; id?: string }) {
+    const reply = (ok: boolean, message: string) => this.send(conn, { type: 'admin.result', ...(frame.id ? { id: frame.id } : {}), action: frame.action, ok, message });
+    if (!this.adminDigest || !this.o.admin) return reply(false, 'admin_disabled');
+    if (!timingSafeEqual(digest(frame.token), this.adminDigest)) {
+      conn.adminFailures = (conn.adminFailures ?? 0) + 1;
+      this.log(`거부: 관리 토큰 불일치 (#${conn.id}, ${conn.adminFailures}회)`);
+      reply(false, 'admin_unauthorized');
+      // 토큰을 계속 바꿔 보는 연결은 닫는다
+      if (conn.adminFailures >= 5) conn.ws.close(CLOSE.unauthorized, 'too many admin failures');
+      return;
+    }
+    this.log(`관리 동작 ${frame.action} (#${conn.id})`);
+    try {
+      const r = await this.o.admin(frame.action);
+      reply(r.ok, r.message);
+    } catch (e) {
+      this.log(`관리 동작 오류 ${frame.action}: ${e instanceof Error ? e.message : 'error'}`);
+      reply(false, 'internal');
     }
   }
 
@@ -310,6 +380,13 @@ export class HarnessWsServer {
     const started = Date.now();
     const reply = this.execute(clampPayloadDeadline(env));
     void reply.then((f) => {
+      try {
+        const ms = Date.now() - started;
+        const h = this.o.history && historyEntryFrom(env, f.type === 'reply' && f.ok ? { ok: true, payload: f.payload } : { ok: false, code: f.type === 'reply' && !f.ok ? f.error.code : 'internal' }, ms);
+        if (h) this.o.history!.append(h);
+      } catch {
+        // 기록 실패는 응답에 영향을 주지 않는다
+      }
       try {
         this.o.onCompleted?.({ kind: env.kind, requestId: env.requestId, ms: Date.now() - started, ok: f.type === 'reply' && f.ok, ...(f.type === 'reply' && f.ok ? { payload: f.payload } : {}) });
       } catch {

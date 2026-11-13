@@ -15,13 +15,19 @@
  *   HARNESS_WS_VIEWER_TOKEN (선택, 16자 이상 — 웹 화면용 구독 전용 토큰. pipeline 토큰과 달라야 함.
  *     비우면 웹 화면(보기 전용)은 토큰 없이 접속된다 (D-45). 접속 IP 허용 목록·Origin 검사는 그대로)
  *   pnpm start -- --web / pnpm harness --web : 서버가 뜨면 이 기기의 기본 브라우저로 웹 화면을 연다 (D-46, 임시)
+ *   pnpm start는 감시 프로세스(scripts/supervise.ts)로 서버를 띄워, 웹에서 업데이트하면 자동으로 다시 시작한다 (D-50)
+ *   DESKPET_HISTORY_PATH (세션 기록 JSONL, 기본 DESKPET_STORE_PATH와 같은 폴더의 history.jsonl, off로 끔) (D-47)
+ *   HARNESS_UPDATE_CHECK (기본 on — git fetch로 새 버전 확인, off로 끔), HARNESS_UPDATE_CHECK_MINUTES (기본 30) (D-49)
+ *   HARNESS_WEB_ADMIN_TOKEN (선택, 16자 이상·다른 토큰과 다름 — 웹 설정에 넣으면 업데이트 버튼 사용) (D-50)
  *   HARNESS_WEB (기본 on — 빌드한 웹 화면을 같은 주소·포트로 내보냄, off로 끔), HARNESS_WEB_DIR (기본 apps/web/dist, 상대경로는 app 폴더 기준) (D-42)
  *   GITHUB_TOKEN, EUREKA_API_KEY, EUREKA_BASE_URL, DESKPET_REQUIRED_CHECKS, DESKPET_STORE_PATH, LLM_* (기존과 같음)
  * 비밀값은 출력하지 않는다. 쓰기는 기본으로 켜져 있고 사용자 확인 답변으로만 보낸다. 서버 콘솔 yes 확인은 없앴다 (사용자 결정 2026-10-24, D-22).
  */
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { Updater, type UpdateStatus } from './updater.js';
+import { RESTART_EXIT_CODE } from './restartCode.js';
 import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
 import { networkInterfaces } from 'node:os';
 import { createEurekaRestGateway, GitHubReviewGateway, parseRequiredChecksFallback, RestGitHubTransport } from '@deskpet/gateways';
@@ -29,7 +35,7 @@ import { DEFAULT_POLICY, FileWikiReader, HarnessService, InMemoryOperationStore,
 import { createLlmFromEnv } from '@deskpet/llm';
 import { OutputService, fallbackText, mapHarnessResult } from '@deskpet/output';
 import { ConcurrencyLimiter, parseAllowedRepositories, type FollowUpNotice } from '@deskpet/contracts';
-import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, PipelineBridge } from '@deskpet/server';
+import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, HistoryLog, PipelineBridge } from '@deskpet/server';
 
 try {
   process.loadEnvFile('.env');
@@ -64,7 +70,13 @@ if (lan) {
   if (token.length < 24) fail('다른 기기 접속을 열 때는 HARNESS_WS_TOKEN을 24자 이상으로 해 주세요');
   const vt = env['HARNESS_WS_VIEWER_TOKEN']?.trim();
   if (vt && vt.length < 24) fail('다른 기기 접속을 열 때는 HARNESS_WS_VIEWER_TOKEN도 24자 이상으로 해 주세요');
+  const at = env['HARNESS_WEB_ADMIN_TOKEN']?.trim();
+  if (at && at.length < 24) fail('다른 기기 접속을 열 때는 HARNESS_WEB_ADMIN_TOKEN도 24자 이상으로 해 주세요');
 }
+// 관리 토큰 (D-50): 웹 화면에서 업데이트를 누를 수 있게 한다. 없으면 웹은 알림만
+const adminToken = env['HARNESS_WEB_ADMIN_TOKEN']?.trim() || undefined;
+if (adminToken && adminToken.length < 16) fail('HARNESS_WEB_ADMIN_TOKEN은 16자 이상이어야 해요');
+if (adminToken && (adminToken === token || adminToken === env['HARNESS_WS_VIEWER_TOKEN']?.trim())) fail('HARNESS_WEB_ADMIN_TOKEN은 다른 토큰(HARNESS_WS_TOKEN·HARNESS_WS_VIEWER_TOKEN)과 달라야 해요');
 if (!!tlsCert !== !!tlsKey) fail('TLS를 쓰려면 HARNESS_WS_TLS_CERT와 HARNESS_WS_TLS_KEY를 둘 다 주세요 (PEM 파일 경로)');
 const tls = tlsCert && tlsKey ? (() => {
   try {
@@ -173,10 +185,15 @@ const harness = new HarnessService({ store, github, eureka, clock: systemClock, 
 const recovery = new RecoveryWorker({ harness, store, clock: systemClock, intervalMs: Number(env['RECOVERY_INTERVAL_MS']) || 30_000, log: (l) => console.log(`[recovery] ${l}`) });
 const output = new OutputService(llm.outputModel ? { model: llm.outputModel, ...(llm.outputTimeoutMs ? { modelTimeoutMs: llm.outputTimeoutMs } : {}) } : {});
 
+// 세션 기록 (D-47): 발화 → 결과를 JSONL로 남겨 웹 화면 '기록'에서 본다. 기본은 저장소 옆 history.jsonl, 저장소가 메모리면 메모리만
+const historyRaw = env['DESKPET_HISTORY_PATH']?.trim();
+const historyPath = historyRaw?.toLowerCase() === 'off' ? undefined : historyRaw ? (isAbsolute(historyRaw) ? historyRaw : resolve(appRoot, historyRaw)) : storePath ? resolve(dirname(isAbsolute(storePath) ? storePath : resolve(appRoot, storePath)), 'history.jsonl') : undefined;
+const history = historyRaw?.toLowerCase() === 'off' ? undefined : new HistoryLog({ ...(historyPath ? { path: historyPath } : {}), log: (l) => console.log(`! ${l}`) });
+
 const pipelineBridge = new PipelineBridge({ harness, store, output });
 // 직접 Eureka 요청을 별도 프로세스(pnpm eureka:server, D-31)로 옮겼으면 이 서버는 eureka.*를 받지 않는다 (기록 권위를 한 곳에)
 const eurekaBridgeMode = (env['DESKPET_EUREKA_BRIDGE'] ?? 'internal').trim().toLowerCase() === 'external' ? 'external' : 'internal';
-const server = new HarnessWsServer({
+const server: HarnessWsServer = new HarnessWsServer({
   // 파이프라인 문서 형식(harness.run 등)도 같은 서버에서 받는다 (docs/pipeline-bridge.md)
   inbound: new DirectHarnessInbound({
     harness,
@@ -190,6 +207,9 @@ const server = new HarnessWsServer({
   token,
   // D-45: 보기 전용 토큰을 비우면 웹 화면은 토큰 없이 접속 (구독만, 실행 불가)
   ...(env['HARNESS_WS_VIEWER_TOKEN']?.trim() ? { viewerToken: env['HARNESS_WS_VIEWER_TOKEN'].trim() } : { openViewer: true }),
+  ...(adminToken ? { adminToken, admin: (action: 'update.check' | 'update.apply'): Promise<{ ok: boolean; message: string }> => (action === 'update.apply' ? updater.apply() : updater.check().then((s: UpdateStatus) => ({ ok: s.state !== 'check_failed', message: s.message ?? s.state }))) } : {}),
+  ...(history ? { history } : {}),
+  info: () => serverInfo(),
   host: wsHost,
   allowedClients,
   ...(tls ? { tls } : {}),
@@ -200,6 +220,35 @@ const server = new HarnessWsServer({
   // 단계별 처리 시간 (NFR-01, D-26). DESKPET_TIMING_LOG=off면 끈다
   ...(env['DESKPET_TIMING_LOG']?.trim() === 'off' ? {} : { onCompleted: (i: { kind: string; requestId: string; ms: number; ok: boolean; payload?: unknown }) => console.log(`[timing] ${i.kind} ${i.requestId} ${i.ms}ms${i.ok ? '' : ' (거부·오류)'}${timingDetail(i.payload)}`) }),
 });
+// 업데이트 확인·적용 (D-49, D-50). app 폴더 git 저장소의 upstream과 비교
+const supervised = env['DESKPET_SUPERVISED'] === '1';
+const updateCheck = (env['HARNESS_UPDATE_CHECK'] ?? 'on').trim().toLowerCase() !== 'off';
+const updateCheckMinutes = positive(env['HARNESS_UPDATE_CHECK_MINUTES'], 30);
+const updater: Updater = new Updater({
+  cwd: appRoot,
+  canApply: !!adminToken,
+  inFlight: (): number => server.inFlightCount,
+  restart: () => {
+    if (!supervised) return 'manual';
+    // 응답·상태 알림을 보낼 시간을 두고 종료 → 감시 프로세스가 새 코드로 다시 띄운다
+    setTimeout(() => void shutdown('업데이트', RESTART_EXIT_CODE), 1_500);
+    return 'restarting';
+  },
+  onChange: () => server.publishInfo(),
+  log: (l) => console.log(`[update] ${l}`),
+});
+function serverInfo() {
+  return {
+    startedAt: history?.sessionId ?? startedAt,
+    version: updater.status.current,
+    update: updater.status,
+    admin: !!adminToken,
+    history: history ? { persistent: !!historyPath } : null,
+    supervised,
+    writes: { github: allowGithubWrites, eureka: allowEurekaWrites },
+  };
+}
+
 notify = (n) => {
   const text = fallbackText(mapHarnessResult(n.result)).text;
   // 파이프라인 문서 형식 ActionResult도 같이 보낸다 (resultText는 고정 문구 → 출력 모델의 requiredText로 쓸 수 있음)
@@ -211,6 +260,8 @@ notify = (n) => {
       console.log(`[notice] ${n.source} ${n.action} → ${n.status}${sent ? '' : ' (연결된 파이프라인 없음 → 보관, 다음 연결 때 전달)'}: ${text}`);
     });
 };
+
+const startedAt = new Date().toISOString();
 
 async function main() {
   console.log('DeskPet Harness 서버');
@@ -247,6 +298,10 @@ async function main() {
       ? `웹 화면 접속: 보기 전용 토큰 설정됨${webEnabled ? ' — 이 서버가 내보낸 화면은 Origin 설정 없이 접속' : ''}${origins.length ? `, 추가 허용 Origin ${origins.join(', ')}` : webEnabled ? '' : ', 허용 Origin 없음 → 브라우저 접속 거부 (HARNESS_WS_ALLOWED_ORIGINS 필요)'}`
       : `웹 화면 접속: 토큰 없이 보기 전용 (HARNESS_WS_VIEWER_TOKEN 비어 있음, D-45)${lan ? ` — 허용 IP(${allowedClients.join(', ')}) 안의 기기는 누구나 작업 목록을 볼 수 있어요. 공용 네트워크면 HARNESS_WS_VIEWER_TOKEN을 넣으세요` : ''}`,
   );
+  console.log(`세션 기록(D-47): ${history ? (historyPath ? `${historyPath} (최근 ${history.size}건 불러옴)` : '메모리 (DESKPET_STORE_PATH 없음 → 서버를 끄면 사라짐)') : '꺼짐 (DESKPET_HISTORY_PATH=off)'}`);
+  await updater.readCurrent();
+  const cur = updater.status.current;
+  console.log(`버전: ${cur ? `${cur.commit} ${cur.subject} (${cur.branch})` : '알 수 없음 (git 저장소 아님)'}  /  업데이트 확인(D-49): ${updateCheck && cur ? `켜짐 — ${updateCheckMinutes}분마다 git fetch` : '꺼짐'}  /  웹 업데이트 버튼(D-50): ${adminToken ? `관리 토큰 설정됨${supervised ? ' — 적용 뒤 자동 재시작' : ' — pnpm harness로 켜서 적용 뒤 직접 다시 실행 (pnpm start면 자동)'}` : '꺼짐 (HARNESS_WEB_ADMIN_TOKEN 없음)'}`);
   console.log(wikiDir.enabled ? `Wiki: ${wikiDir.raw}${wikiDir.source === 'default' ? ' (기본값)' : ''} → ${wikiDir.dir} (wiki/ + projects/ README, Guide 참고용)` : `Wiki 꺼짐 — ${wikiDir.reason}`);
   if (storePath) {
     const cleaned = await store.maintain();
@@ -261,7 +316,9 @@ async function main() {
   } else console.log('저장소: 메모리 (DESKPET_STORE_PATH 미설정 → 서버를 끄면 기록이 사라짐)');
   await server.start();
   recovery.start();
-  if (process.argv.includes('--web')) openBrowser();
+  if (updateCheck && cur) updater.start(updateCheckMinutes * 60_000);
+  // 업데이트 뒤 자동 재시작이면 브라우저를 다시 열지 않는다 (열려 있는 화면이 다시 연결됨)
+  if (process.argv.includes('--web') && !env['DESKPET_RESTARTED']) openBrowser();
   console.log('Ctrl+C로 종료하면 처리 중인 요청을 마친 뒤 닫습니다.');
 }
 
@@ -291,15 +348,16 @@ function openBrowser() {
 }
 
 let closing = false;
-async function shutdown(sig: string) {
+async function shutdown(sig: string, exitCode = 0) {
   if (closing) return;
   closing = true;
   console.log(`\n${sig} 수신 — 처리 중인 요청을 마치고 종료합니다 (최대 30초)`);
+  updater.stop();
   await recovery.stop();
   await server.stop(30_000);
   await harness.drainBackground();
   store.close();
-  process.exit(0);
+  process.exit(exitCode);
 }
 process.on('SIGINT', () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
