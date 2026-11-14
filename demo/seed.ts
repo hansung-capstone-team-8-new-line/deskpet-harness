@@ -5,11 +5,11 @@
  *
  *   pnpm start                      # 터미널 1
  *   pnpm demo:seed                  # 터미널 2 — 읽기 + 확인 질문 거절만. 외부에 아무것도 바꾸지 않는다
- *   pnpm demo:seed --reminders      # + 리마인더 예시용 시험 업무 3개를 Eureka에 등록 (쓰기 — 마감 1·3·6일 뒤)
+ *   pnpm demo:seed --reminder       # + 리마인더 예시: 업무 1개 '[시연] 캡스톤 최종 발표 준비'에 단계 3개(마감 1·3·6일 뒤) — Eureka 쓰기
  *   pnpm demo:seed --fixture        # pnpm web:fixture 서버(가짜 GitHub·Eureka)로
  *
  * 기록에 남는 결과: 완료(업무 목록·업무 상태·PR 리뷰), 질문함(업무 등록·PR 승인 확인), 실패(없는 업무·지원하지 않는 담당자 조회), 거절 답변
- * 시연 업무 정리: pnpm demo:adapter eureka delete "[시연] 중간 발표 자료 정리" → 응
+ * 시연 업무 정리: pnpm demo:adapter eureka delete "[시연] 캡스톤 최종 발표 준비" → 응
  * .env: HARNESS_WS_URL(기본 ws://127.0.0.1:8787), HARNESS_WS_TOKEN, GITHUB_TEST_REPO(owner/name), GITHUB_TEST_PR
  */
 import { HarnessClient, type Reply } from './harnessClient.js';
@@ -56,10 +56,10 @@ function line(say: string, status: string, text?: string | null) {
 }
 
 /** 직접 Eureka 요청 (라우터 형식). transcript는 기록에 문장을 남기기 위한 Harness 확장 필드 */
-async function eureka(say: string, operation: string, heads: Record<string, string> = {}, mutationApproved = false) {
+async function eureka(say: string, operation: string, heads: Record<string, string> = {}, mutationApproved = false, resolvedTarget?: unknown) {
   const requestId = id('eureka');
   const all: Record<string, string> = { intention: 'eureka', modelIntention: 'eureka', operation, ...heads };
-  const decision = { headOutputs: Object.fromEntries(Object.entries(all).map(([k, v]) => [k, { value: v, confidence: 0.95 }])), overallConfidence: 0.93, missingRequiredSlots: [], route: 'eureka' };
+  const decision = { headOutputs: Object.fromEntries(Object.entries(all).map(([k, v]) => [k, { value: v, confidence: 0.95 }])), overallConfidence: 0.93, missingRequiredSlots: [], route: 'eureka', ...(resolvedTarget ? { resolvedTarget } : {}) };
   const payload = { requestId, operationId: id('op'), decision, deadlineAt: deadline(), mutationApproved, transcript: { text: say, isFinal: true, sttConfidence: 0.93 } };
   const r = (await call('eureka.execute', requestId, payload)) as EurekaResult;
   line(say, r.error ? `${r.status} (${r.error.code})` : r.status, r.facts['resultText'] ?? r.facts['question']);
@@ -101,21 +101,29 @@ async function main() {
   await eureka('발표 리허설 업무 새로 만들어 줘', 'create', { task: '발표 리허설', dueAt: new Date(Date.now() + 3 * 86_400_000).toISOString() });
 
   if (withReminders) {
-    console.log('\n[리마인더 예시 업무 등록 — Eureka 쓰기]');
+    // 업무 하나 + 실행 단계 3개(단계마다 마감). 업무 템플릿에서 따라온 기본 단계는 지운다 (2026-11-14 사용자 요청)
+    console.log('\n[리마인더 예시 — Eureka 쓰기: 업무 1개 + 단계 3개]');
+    const at = (days: number) => {
+      const d = new Date(Date.now() + days * 86_400_000);
+      d.setHours(18, 0, 0, 0);
+      return d.toISOString();
+    };
+    const itemName = '[시연] 캡스톤 최종 발표 준비';
+    const q = await eureka('캡스톤 최종 발표 준비 업무 6일 뒤 마감으로 등록해 줘', 'create', { task: itemName, dueAt: at(6) });
+    const created = q.r.status === 'needs_clarification' ? await q.again('응, 등록해') : q.r;
+    line('응, 등록해', created.error ? `${created.status} (${created.error.code})` : created.status, created.facts['resultText']);
+    const itemId = created.facts['itemId'];
+    if (created.status !== 'succeeded' || !itemId) throw new Error('업무 등록이 끝나지 않아 단계를 넣지 않았어요');
+    const target = { kind: 'eureka_item', itemId };
+    const st = await eureka('방금 만든 업무 단계 보여 줘', 'query', {}, false, target);
+    const template = (JSON.parse(st.r.facts['stages'] ?? '[]') as { name: string }[]).map((x) => x.name);
     const plan: [string, number][] = [
-      ['[시연] 중간 발표 자료 정리', 1],
-      ['[시연] 하드웨어 케이스 출력', 3],
-      ['[시연] 최종 보고서 초안', 6],
+      ['중간 발표 자료 정리', 1],
+      ['하드웨어 케이스 출력', 3],
+      ['최종 보고서 초안', 6],
     ];
-    for (const [name, days] of plan) {
-      const due = new Date(Date.now() + days * 86_400_000);
-      due.setHours(18, 0, 0, 0);
-      const q = await eureka(`${name.replace('[시연] ', '')} 업무 ${days}일 뒤 마감으로 등록해 줘`, 'create', { task: name, dueAt: due.toISOString() });
-      if (q.r.status === 'needs_clarification') {
-        const done = await q.again('응, 등록해');
-        line('응, 등록해', done.error ? `${done.status} (${done.error.code})` : done.status, done.facts['resultText']);
-      }
-    }
+    for (const [stage, days] of plan) await eureka(`${stage} 단계 ${days}일 뒤 마감으로 추가해 줘`, 'add_stage', { name: stage, dueAt: at(days) }, true, target);
+    for (const stage of template) await eureka(`${stage} 단계는 지워 줘`, 'delete_stage', { name: stage }, true, target);
   }
 
   const [owner, name] = (env['GITHUB_TEST_REPO'] ?? '').split('/');
@@ -134,7 +142,7 @@ async function main() {
     }
   } else console.log('\n[GitHub] GITHUB_TEST_REPO·GITHUB_TEST_PR이 없어 PR 기록은 건너뜀');
 
-  console.log('\n끝. 웹 → 기록 탭에서 확인하세요.' + (withReminders ? ' 리마인더는 현황 새로 고침 뒤 작업 탭 아래에 보여요.' : ''));
+  console.log('\n끝. 웹 → 기록 탭에서 확인하세요.' + (withReminders ? ' 리마인더(단계별 마감)는 현황 새로 고침 뒤 작업 탭 아래에 보여요.' : ''));
 }
 
 main()

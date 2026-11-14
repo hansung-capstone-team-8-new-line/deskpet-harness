@@ -18,7 +18,7 @@ import {
   isRepositoryAllowed,
 } from '@deskpet/contracts';
 import { createHash } from 'node:crypto';
-import type { EurekaGateway } from '@deskpet/gateways';
+import type { EurekaGateway, StageEdit } from '@deskpet/gateways';
 import { DEFAULT_POLICY, StoreDispatchOwner, expectedOutcomeFor, type Clock, type OperationStore } from '@deskpet/harness';
 import { formatKoreanDateTime } from '@deskpet/output';
 
@@ -61,10 +61,12 @@ export interface EurekaBridgeDeps {
   timezone?: string;
 }
 
-type DirectWrite = Extract<ActionName, 'register_item' | 'postpone_item' | 'complete_item' | 'delete_item' | 'hold_item' | 'resume_item' | 'set_stage_status' | 'set_item_priority' | 'rename_item' | 'add_stage_note'>;
+type DirectWrite = Extract<ActionName, 'register_item' | 'postpone_item' | 'complete_item' | 'delete_item' | 'hold_item' | 'resume_item' | 'set_stage_status' | 'set_item_priority' | 'rename_item' | 'edit_stages' | 'add_stage_note'>;
 /** 단계 상태 변경 라벨 (2026-11-14): 같은 쓰기(set_stage_status)로 보낸다 */
 type StageOp = 'stage:start' | 'stage:reset' | 'stage:skip' | 'stage:update';
-type Kind = 'list' | 'query' | 'status' | 'processes' | DirectWrite | StageOp;
+/** 단계 목록 편집 라벨 (2026-11-14): 같은 쓰기(edit_stages, PUT /items/{id}/stages)로 보낸다 */
+type StageListOp = 'stages:add' | 'stages:delete' | 'stages:up' | 'stages:down';
+type Kind = 'list' | 'query' | 'status' | 'processes' | DirectWrite | StageOp | StageListOp;
 
 /**
  * 의도 이름 → 처리. 두 형식을 받는다 (wiki small-router-model: Intention=eureka + Operation 24개 라벨)
@@ -90,6 +92,10 @@ const OPS: Record<string, Kind> = {
   update_priority: 'set_item_priority',
   priority: 'set_item_priority',
   update_item: 'rename_item',
+  add_stage: 'stages:add',
+  delete_stage: 'stages:delete',
+  move_stage_up: 'stages:up',
+  move_stage_down: 'stages:down',
   add_note: 'add_stage_note',
   query_processes: 'processes',
 };
@@ -99,16 +105,12 @@ const UNSUPPORTED_OPS: Record<string, string> = {
   complete_task: '체크리스트 완료',
   query_actors: '담당자 조회',
   query_workspace: '워크스페이스 조회',
-  add_stage: '단계 추가',
-  delete_stage: '단계 삭제',
   delete_task: '체크리스트 삭제',
   add_task: '체크리스트 추가',
-  move_stage_up: '단계 순서 올리기',
-  move_stage_down: '단계 순서 내리기',
 };
 
 /** 미지원 응답 (wiki deskpet-operation-policies §3): 실행하지 않음 → 지원 범위 → 대안 */
-const SUPPORTED_SCOPE = '지금은 업무 조회·등록·기한·우선순위·이름 변경·완료·보류·재개·삭제, 단계 시작·되돌리기·건너뛰기와 기록 추가를 할 수 있어요.';
+const SUPPORTED_SCOPE = '지금은 업무 조회·등록·기한·우선순위·이름 변경·완료·보류·재개·삭제, 단계 추가·삭제·순서 변경·시작·되돌리기·건너뛰기와 기록 추가를 할 수 있어요.';
 function unsupportedSentence(what?: string): string {
   return `${what ? `${what}${topic(what)} 아직 지원하지 않아` : '그 요청은'} 실행하지 않았어요. ${SUPPORTED_SCOPE}`;
 }
@@ -176,6 +178,10 @@ export class EurekaBridge {
     if (kind === 'add_stage_note') return this.addNote(a, item.task, c);
     if (kind === 'stage:start' || kind === 'stage:reset' || kind === 'stage:skip' || kind === 'stage:update') return this.stageStatus(a, kind, item.task, c);
     if (kind === 'set_item_priority' || kind === 'rename_item') return this.itemField(a, kind, item.task, c);
+    if (kind === 'stages:add' || kind === 'stages:delete' || kind === 'stages:up' || kind === 'stages:down') return this.stageList(a, kind, item.task, c);
+    // 마감 변경에 실제 단계 이름이 있으면 그 단계의 마감을 바꾼다 (단계별 마감, 2026-11-14). 단계 이름이 아니면 지금처럼 업무 마감
+    if (kind === 'postpone_item' && item.task.stages.some((st) => st.name === stageNameOf(a))) return this.stageList(a, 'stages:due', item.task, c);
+    if (kind === 'edit_stages') return fail(a.operationId, 'POLICY_BLOCKED', 'internal action', unsupportedSentence());
     if (kind === 'set_stage_status') return fail(a.operationId, 'POLICY_BLOCKED', 'internal action', unsupportedSentence());
     return this.itemWrite(a, kind, item.task, c);
   }
@@ -200,7 +206,8 @@ export class EurekaBridge {
         observation['currentState'] = t.computedState;
         if (t.dueAtMs !== undefined) observation['currentDueAt'] = this.offsetIso(t.dueAtMs);
         const want = op.actualRequest['dueAtMs'];
-        const matches = op.action === 'postpone_item' ? t.dueAtMs === want : op.action === 'complete_item' ? t.computedState === 'done' : op.action === 'hold_item' ? t.computedState === 'hold' : op.action === 'resume_item' ? t.computedState !== 'hold' : false;
+        const names = op.actualRequest['stageNames'];
+        const matches = op.action === 'edit_stages' ? Array.isArray(names) && JSON.stringify([...t.stages].sort((x, y) => (x.order ?? 0) - (y.order ?? 0)).map((s) => s.name)) === JSON.stringify(names) : op.action === 'postpone_item' ? t.dueAtMs === want : op.action === 'complete_item' ? t.computedState === 'done' : op.action === 'hold_item' ? t.computedState === 'hold' : op.action === 'resume_item' ? t.computedState !== 'hold' : false;
         observation['linkage'] = matches ? 'candidate_only' : 'none';
       }
     }
@@ -318,6 +325,8 @@ export class EurekaBridge {
         itemStatus: s.itemStatus,
         doneStages: String(s.doneStages),
         totalStages: String(s.totalStages),
+        // 단계 이름·상태·마감 (단계 편집·후속 질문용, 2026-11-14)
+        stages: JSON.stringify([...t.stages].sort((x, y) => (x.order ?? 0) - (y.order ?? 0)).map((x) => ({ stageId: x.stageId, name: x.name, status: x.status, ...(x.dueAtMs ? { dueAt: this.offsetIso(x.dueAtMs) } : {}) }))),
       },
       error: null,
     };
@@ -429,6 +438,61 @@ export class EurekaBridge {
       ok: `'${stage.name}' 단계를 ${done}.`,
       what: `'${stage.name}' 단계 상태 변경`,
     });
+  }
+
+  /**
+   * 단계 목록 편집 (2026-11-14): 추가(name·task 헤드 = 새 단계 이름, dueAt 헤드 = 단계 마감, 끝에 붙임)·삭제·순서 위/아래·단계 마감.
+   * Eureka API는 단계 목록 전체를 받으므로, 지금 목록을 그대로 두고 바꿀 곳만 고쳐 보낸다. 단계 값을 다 읽지 못했으면 보내지 않는다
+   */
+  private async stageList(a: PipelineEurekaActionRequest, kind: StageListOp | 'stages:due', t: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
+    const stages = [...t.stages].sort((x, y) => (x.order ?? 0) - (y.order ?? 0));
+    if (stages.some((s) => !s.edit)) return fail(a.operationId, 'POLICY_BLOCKED', 'stage fields incomplete', `'${t.name}' 업무의 단계 정보를 다 읽지 못해서 바꾸지 않았어요.`);
+    const list: StageEdit[] = stages.map((s) => ({ id: s.stageId, name: s.name, actorId: s.edit!.actorId, toolId: s.edit!.toolId, dueAt: s.dueAtMs ?? 0, guideText: s.edit!.guideText, isRequired: s.edit!.isRequired }));
+    const wanted = stageNameOf(a);
+    const idx = wanted ? stages.findIndex((s) => s.name === wanted) : -1;
+    const due = parseDue(a);
+    if (due === 'invalid') return clarify(a.operationId, { missing: 'dueAt', itemId: t.itemId }, '마감 날짜와 시간을 다시 알려 주세요.');
+    let question: string;
+    let ok: string;
+    let what: string;
+
+    if (kind === 'stages:add') {
+      const name = wanted ?? headString(a, 'task');
+      if (!name) return clarify(a.operationId, { missing: 'stage', itemId: t.itemId }, `'${t.name}' 업무에 어떤 단계를 추가할까요?`);
+      if (stages.some((s) => s.name === name)) return fail(a.operationId, 'POLICY_BLOCKED', 'stage exists', `'${t.name}' 업무에는 이미 '${name}' 단계가 있어요. 추가하지 않았어요.`);
+      list.push({ name, actorId: '', toolId: '', dueAt: due ?? 0, guideText: '', isRequired: true });
+      const when = due !== undefined ? ` 마감은 ${copula(formatKoreanDateTime(new Date(due).toISOString(), this.tz))}.` : '';
+      question = `'${t.name}' 업무 끝에 '${name}' 단계를 추가할까요?${when}`;
+      ok = `'${name}' 단계를 추가했어요.`;
+      what = `'${name}' 단계 추가`;
+    } else {
+      if (!wanted) return clarify(a.operationId, { missing: 'stage', itemId: t.itemId }, `'${t.name}' 업무의 어느 단계인가요?`);
+      if (idx < 0) return clarify(a.operationId, { missing: 'stage', itemId: t.itemId }, `'${t.name}' 업무에서 '${wanted}' 단계를 찾지 못했어요. 어느 단계인가요?`);
+      if (kind === 'stages:delete') {
+        if (stages.length === 1) return fail(a.operationId, 'POLICY_BLOCKED', 'last stage', `'${wanted}'는 '${t.name}' 업무의 마지막 하나 남은 단계라 지우지 않았어요.`);
+        list.splice(idx, 1);
+        question = `'${t.name}' 업무의 '${wanted}' 단계를 삭제할까요? 단계 기록도 함께 사라질 수 있고 되돌릴 수 없어요.`;
+        ok = `'${wanted}' 단계를 삭제했어요.`;
+        what = `'${wanted}' 단계 삭제`;
+      } else if (kind === 'stages:up' || kind === 'stages:down') {
+        const to = kind === 'stages:up' ? idx - 1 : idx + 1;
+        if (to < 0 || to >= list.length) return fail(a.operationId, 'POLICY_BLOCKED', 'no room to move', `'${wanted}' 단계는 이미 맨 ${kind === 'stages:up' ? '처음' : '끝'}이에요. 바꾸지 않았어요.`);
+        [list[idx], list[to]] = [list[to]!, list[idx]!];
+        question = `'${wanted}' 단계를 '${list[idx]!.name}' 단계 ${kind === 'stages:up' ? '앞으로' : '뒤로'} 옮길까요?`;
+        ok = `'${wanted}' 단계를 ${to + 1}번째로 옮겼어요.`;
+        what = `'${wanted}' 단계 순서 변경`;
+      } else {
+        if (due === undefined) return clarify(a.operationId, { missing: 'dueAt', itemId: t.itemId }, `'${wanted}' 단계 마감을 언제로 바꿀까요?`);
+        list[idx] = { ...list[idx]!, dueAt: due };
+        const when = formatKoreanDateTime(new Date(due).toISOString(), this.tz);
+        question = `'${t.name}' 업무의 '${wanted}' 단계 마감을 ${ro(when)} 바꿀까요?`;
+        ok = `'${wanted}' 단계 마감을 ${ro(when)} 바꿨어요.`;
+        what = `'${wanted}' 단계 마감 변경`;
+      }
+    }
+    if (!a.mutationApproved) return confirm(a.operationId, question, { itemId: t.itemId });
+    const target = { kind: 'eureka_item' as const, itemId: t.itemId };
+    return this.write(a, 'edit_stages', target, { itemId: t.itemId, stageNames: list.map((s) => s.name), stageDue: list.map((s) => s.dueAt) }, (h) => this.d.eureka.replaceStages({ itemId: t.itemId, stages: list }, h, c), { ok, what });
   }
 
   /** 우선순위·이름 변경 (2026-11-14). 우선순위는 priority 헤드(낮음·보통·높음·긴급 또는 low~urgent), 새 이름은 task 헤드 */

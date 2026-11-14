@@ -21,6 +21,13 @@ export const TaskStage = z.object({
   completedAt: UtcTimestamp.optional(),
   /** 단계 기록(note) ID. 목록 응답에는 본문이 없고 {id, stereo}만 온다 */
   noteIds: z.array(Id).optional(),
+  /** 단계 마감 (밀리초, 2026-11-14 확인: 단계마다 dueAt, 0이면 없음) */
+  dueAtMs: z.number().int().optional(),
+  /**
+   * 단계 편집(PUT /items/{id}/stages)에 그대로 다시 보낼 값. 단계 목록 전체를 보내는 API라
+   * 바꾸지 않는 단계도 원래 값으로 보내야 한다 (2026-11-14 Eureka 웹 요청으로 확인)
+   */
+  edit: z.object({ actorId: z.string(), toolId: z.string(), guideText: z.string(), isRequired: z.boolean() }).optional(),
 });
 export type TaskStage = z.infer<typeof TaskStage>;
 

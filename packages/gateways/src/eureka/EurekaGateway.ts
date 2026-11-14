@@ -58,6 +58,18 @@ export interface EurekaOperatorConfirm {
 const WRITE_STAGE = 'eureka.write';
 const READ_STAGE = 'eureka.read';
 
+/** 단계 편집 한 줄 (PUT /items/{id}/stages). id가 없으면 새 단계 */
+export interface StageEdit {
+  id?: string;
+  name: string;
+  actorId: string;
+  toolId: string;
+  /** 밀리초, 0이면 마감 없음 */
+  dueAt: number;
+  guideText: string;
+  isRequired: boolean;
+}
+
 export class EurekaGateway implements EurekaGatewayPort {
   private readonly totalTimeoutMs: number;
 
@@ -305,6 +317,23 @@ export class EurekaGateway implements EurekaGatewayPort {
   }
 
   /**
+   * 단계 목록 편집 (2026-11-14, Eureka 웹 '전체 단계 편집' 요청으로 확인): PUT /_api_/items/{id}/stages
+   * 본문 {stages:[{id?, name, actorId, toolId, dueAt, guideText, isRequired}]} — 단계 목록 전체. 배열 순서가 단계 순서,
+   * id 없는 항목은 새 단계, 빠진 기존 단계는 지워진다. 응답은 업무 전체(stage$$ 포함).
+   * 응답의 단계 이름 순서가 보낸 것과 같을 때만 반영 확인
+   */
+  replaceStages(cmd: { itemId: string; stages: StageEdit[] }, handle: DispatchHandle, c: CallConstraints) {
+    return this.sendWrite({ method: 'PUT', path: `/_api_/items/${enc(cmd.itemId)}/stages`, body: { stages: cmd.stages } }, handle, c, (b) => {
+      const item = b as { id?: unknown; 'stage$$'?: { id?: unknown; name?: unknown; order?: unknown }[] } | undefined;
+      const got = Array.isArray(item?.['stage$$']) ? [...item!['stage$$']].sort((x, y) => Number(x.order ?? 0) - Number(y.order ?? 0)) : undefined;
+      const same = !!got && got.length === cmd.stages.length && got.every((s, i) => s.name === cmd.stages[i]!.name);
+      return item?.id && same
+        ? { response: { itemId: String(item.id), stageIds: got!.map((s) => String(s.id)) }, externalRefs: [{ system: 'eureka' as const, kind: 'item_stages', id: `${String(item.id)}@${got!.map((s) => String(s.id)).join(',')}` }] }
+        : { response: { raw: b } };
+    }, { action: 'edit_stages', target: `item ${cmd.itemId}` });
+  }
+
+  /**
    * 단계 상태 변경 (2026-11-14 추가): 시작(doing)·되돌리기(todo)·건너뛰기(skip)·완료(done).
    * POST /_api_/stages/{id}/status — done은 확인된 경로, 나머지 값을 받는지는 실제 시험으로 확인한다.
    * 응답의 stage.status가 보낸 값과 같을 때만 반영 확인
@@ -517,6 +546,8 @@ export function normalizeItem(raw: unknown): TaskSummary {
       ...(typeof s['order'] === 'number' ? { order: s['order'] } : {}),
       ...(typeof s['completedAt'] === 'number' ? { completedAt: new Date(s['completedAt']).toISOString() } : {}),
       ...(Array.isArray(s['noteIds']) && s['noteIds'].length ? { noteIds: (s['noteIds'] as unknown[]).map(String) } : {}),
+      ...(typeof s['dueAt'] === 'number' && s['dueAt'] > 0 ? { dueAtMs: s['dueAt'] } : {}),
+      ...('name' in s ? { edit: { actorId: str(s['actorId']), toolId: str(s['toolId']), guideText: str(s['guideText']), isRequired: s['isRequired'] !== false } } : {}),
     };
   });
   const dueAtMs = typeof r['dueAt'] === 'number' ? r['dueAt'] : undefined;
@@ -530,6 +561,10 @@ export function normalizeItem(raw: unknown): TaskSummary {
     computedState: computeItemState(r['status'], stages),
     stages,
   };
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : '';
 }
 
 /** PDF §3-(2) item_state 로직 */

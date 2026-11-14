@@ -156,11 +156,11 @@ describe('EurekaAdapter — 라우터 Operation 라벨 (wiki small-router-model,
 
   it('지원하지 않는 라벨은 실행하지 않고, 무엇을 안 했는지·지원 범위를 말한다', async () => {
     const { bridge, server } = setup();
-    for (const op of ['add_task', 'move_stage_up', 'nonsense']) {
+    for (const op of ['add_task', 'delete_task', 'nonsense']) {
       const r = await bridge.execute(req('eureka', { operation: op, name: '보고서 제출' }, { mutationApproved: true }));
       // 라우터 24개 라벨 중 미구현은 EUREKA_OPERATION_NOT_IMPLEMENTED, 목록에 없는 값은 POLICY_BLOCKED
       expect(r).toMatchObject({ status: 'failed', error: { code: op === 'nonsense' ? 'POLICY_BLOCKED' : 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
-      expect(r.facts['resultText']).toContain('실행하지 않았어요. 지금은 업무 조회·등록·기한·우선순위·이름 변경·완료·보류·재개·삭제, 단계 시작·되돌리기·건너뛰기와 기록 추가를 할 수 있어요.');
+      expect(r.facts['resultText']).toContain('실행하지 않았어요. 지금은 업무 조회·등록·기한·우선순위·이름 변경·완료·보류·재개·삭제, 단계 추가·삭제·순서 변경·시작·되돌리기·건너뛰기와 기록 추가를 할 수 있어요.');
     }
     expect((await bridge.execute(req('eureka', { operation: 'query_actors' }))).facts['resultText']).toContain('담당자 조회는 아직');
     expect(server.calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
@@ -186,6 +186,40 @@ describe('EurekaAdapter — 라우터 Operation 라벨 (wiki small-router-model,
     // 이미 그 상태면 보내지 않는다
     expect(await bridge.execute(req('eureka', { operation: 'update_stage', target: '세 단계 업무', stage: '구현', task: '완료' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'POLICY_BLOCKED' } });
     expect(server.calls.filter((c) => c.method === 'POST' && c.path.includes('/stages/'))).toHaveLength(4);
+  });
+
+  it('단계 추가·삭제·순서·단계 마감 (2026-11-14): 단계 목록 전체를 원래 값 그대로 보내고 바꿀 곳만 고친다', async () => {
+    const { bridge, server } = setup();
+    server.addItem({ id: '2005', name: '편집 업무', stages: [{ id: 'e1', name: '가', status: 'done', order: 1, guideText: '안내', actorId: 'a@1' }, { id: 'e2', name: '나', status: 'todo', order: 2 }] });
+    const T5 = { resolvedTarget: { kind: 'eureka_item', itemId: '2005' } };
+    const due = '2026-10-06T18:00:00+09:00';
+    expect((await bridge.execute(req('eureka', { operation: 'add_stage', modelIntention: 'eureka', name: '다', dueAt: due }, T5))).facts['question']).toBe("'편집 업무' 업무 끝에 '다' 단계를 추가할까요? 마감은 2026년 10월 6일 밤 6시예요.");
+    expect(await bridge.execute(req('eureka', { operation: 'add_stage', modelIntention: 'eureka', name: '다', dueAt: due }, { ...T5, mutationApproved: true }))).toMatchObject({ status: 'succeeded', facts: { action: 'edit_stages' } });
+    const put = server.calls.filter((c) => c.method === 'PUT' && c.path.endsWith('/stages'));
+    expect(put).toHaveLength(1);
+    // 기존 단계는 id·원래 값 그대로, 새 단계는 id 없이
+    expect((put[0]!.body as { stages: unknown[] }).stages).toEqual([
+      { id: 'e1', name: '가', actorId: 'a@1', toolId: '', dueAt: 0, guideText: '안내', isRequired: true },
+      { id: 'e2', name: '나', actorId: '', toolId: '', dueAt: 0, guideText: '', isRequired: true },
+      { name: '다', actorId: '', toolId: '', dueAt: Date.parse(due), guideText: '', isRequired: true },
+    ]);
+    expect(server.items.get('2005')!.stages.map((s) => s.name)).toEqual(['가', '나', '다']);
+    // 순서: 다를 위로
+    expect(await bridge.execute(req('eureka', { operation: 'move_stage_up', modelIntention: 'eureka', name: '다' }, { ...T5, mutationApproved: true }))).toMatchObject({ status: 'succeeded' });
+    expect(server.items.get('2005')!.stages.map((s) => s.name)).toEqual(['가', '다', '나']);
+    // 맨 끝을 아래로는 보내지 않는다
+    expect(await bridge.execute(req('eureka', { operation: 'move_stage_down', modelIntention: 'eureka', name: '나' }, { ...T5, mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'POLICY_BLOCKED' } });
+    // 단계 마감: postpone + 실제 단계 이름
+    const due2 = '2026-10-08T18:00:00+09:00';
+    expect(await bridge.execute(req('eureka', { operation: 'postpone', modelIntention: 'eureka', name: '나', dueAt: due2 }, { ...T5, mutationApproved: true }))).toMatchObject({ status: 'succeeded', facts: { action: 'edit_stages' } });
+    expect(server.items.get('2005')!.stages.find((s) => s.name === '나')!.dueAt).toBe(Date.parse(due2));
+    expect(server.items.get('2005')!.dueAt).toBeUndefined();
+    // 삭제는 되돌릴 수 없다고 묻는다
+    expect((await bridge.execute(req('eureka', { operation: 'delete_stage', modelIntention: 'eureka', name: '가' }, T5))).facts['question']).toContain('되돌릴 수 없어요');
+    expect(await bridge.execute(req('eureka', { operation: 'delete_stage', modelIntention: 'eureka', name: '가' }, { ...T5, mutationApproved: true }))).toMatchObject({ status: 'succeeded' });
+    expect(server.items.get('2005')!.stages.map((s) => s.name)).toEqual(['다', '나']);
+    // 이미 있는 이름은 추가하지 않는다
+    expect(await bridge.execute(req('eureka', { operation: 'add_stage', modelIntention: 'eureka', name: '나' }, { ...T5, mutationApproved: true }))).toMatchObject({ status: 'failed' });
   });
 
   it('우선순위·이름 변경 (2026-11-14): 묻고 승인 뒤 PUT 1번, 모르는 값은 다시 묻는다', async () => {

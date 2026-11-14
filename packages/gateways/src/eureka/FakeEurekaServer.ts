@@ -10,6 +10,11 @@ export interface FakeStage {
   status?: 'todo' | 'doing' | 'done' | 'skip';
   order: number;
   completedAt?: number;
+  dueAt?: number;
+  guideText?: string;
+  actorId?: string;
+  toolId?: string;
+  isRequired?: boolean;
   /** 단계 기록 (GET /_api_/notes/0/list?stageId=) */
   notes?: { id: string; content: string; uid?: string; actorId?: string; deletedAt?: number }[];
 }
@@ -84,7 +89,7 @@ export class FakeEurekaServer implements HttpClient {
         dueAt: i.dueAt,
         priority: i.priority,
         ...(i.status ? { status: i.status } : {}),
-        'stage$$': i.stages.map((s) => ({ id: s.id, name: s.name, status: s.status, order: s.order, noteIds: (s.notes ?? []).map((n) => n.id), 'note$$': (s.notes ?? []).map((n) => ({ id: n.id, stereo: 'comment' })) })),
+        'stage$$': i.stages.map((s) => ({ id: s.id, name: s.name, status: s.status, order: s.order, dueAt: s.dueAt ?? 0, actorId: s.actorId ?? '', toolId: s.toolId ?? '', guideText: s.guideText ?? '', isRequired: s.isRequired ?? true, noteIds: (s.notes ?? []).map((n) => n.id), 'note$$': (s.notes ?? []).map((n) => ({ id: n.id, stereo: 'comment' })) })),
       }));
       return ok({ total: list.length, list });
     }
@@ -108,6 +113,19 @@ export class FakeEurekaServer implements HttpClient {
         return ok({ stage: { id: s.id, status: s.status, completedAt: s.completedAt }, warnings: [] });
       }
       return { status: 404, bodyText: `.id[${id}] not found` };
+    }
+    if (req.method === 'PUT' && (m = req.path.match(/^\/_api_\/items\/([^/]+)\/stages$/))) {
+      const it = this.items.get(decodeURIComponent(m[1]!));
+      if (!it) return { status: 404, bodyText: `.id[${m[1]}] not found` };
+      const body = req.body as { stages?: { id?: string; name?: string; dueAt?: number; guideText?: string; actorId?: string; toolId?: string; isRequired?: boolean }[] };
+      if (!Array.isArray(body?.stages)) return { status: 500, bodyText: '.stages is required' };
+      const old = new Map(it.stages.map((s) => [s.id, s]));
+      it.stages = body.stages.map((x, i) => {
+        const prev = x.id ? old.get(x.id) : undefined;
+        if (x.id && !prev) throw new Error(`unknown stage ${x.id}`);
+        return { ...(prev ?? { id: `${it.id}${90 + i}${this.calls.length}`, status: 'todo' as const }), name: String(x.name ?? ''), order: i + 1, dueAt: x.dueAt ?? 0, guideText: x.guideText ?? '', actorId: x.actorId ?? '', toolId: x.toolId ?? '', isRequired: x.isRequired ?? true };
+      });
+      return ok({ id: it.id, name: it.name, stageIds: it.stages.map((s) => s.id), 'stage$$': it.stages.map((s) => ({ id: s.id, name: s.name, status: s.status, order: s.order, dueAt: s.dueAt })) });
     }
     if (req.method === 'PUT' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/))) {
       const it = this.items.get(decodeURIComponent(m[1]!));

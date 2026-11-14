@@ -136,7 +136,7 @@ export interface OverviewItem {
   description?: string;
   priority?: string;
   dueAt?: string;
-  stages: { stageId: string; name: string; status: string }[];
+  stages: { stageId: string; name: string; status: string; dueAt?: string }[];
   doneStages: number;
   currentStage?: string;
   prs: OverviewPr[];
@@ -157,7 +157,7 @@ export interface Overview {
   observedAt?: string;
   items: OverviewItem[];
   autoFocusId?: string;
-  reminders: { itemId: string; name: string; dueAt: string; overdue: boolean; daysLeft: number }[];
+  reminders: { itemId: string; name: string; stageName?: string; dueAt: string; overdue: boolean; daysLeft: number }[];
   links: { eurekaWebUrl?: string; repos: { owner: string; name: string; url: string; openPrs?: OpenPullRequest[]; hasMore?: boolean; error?: string }[] };
   problems: string[];
   refreshing?: boolean;

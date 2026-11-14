@@ -112,7 +112,7 @@ export function CurrentWorkCard({ conn, overview }: { conn: HarnessConnection; o
                     key={s.stageId}
                     className={`rounded-md border px-2 py-0.5 text-xs ${s.status === 'doing' ? 'border-foreground font-medium' : s.status === 'done' || s.status === 'skip' ? 'bg-muted text-muted-foreground' : ''}`}
                   >
-                    {i + 1}. {s.name} <span className="text-muted-foreground">· {STAGE_LABEL[s.status] ?? s.status}</span>
+                    {i + 1}. {s.name} <span className="text-muted-foreground">· {STAGE_LABEL[s.status] ?? s.status}{s.dueAt && s.status !== 'done' && s.status !== 'skip' ? ` · ${dDay(s.dueAt, nowOf(overview))}` : ''}</span>
                   </li>
                 ))}
               </ol>
@@ -170,8 +170,16 @@ export function RemindersAndLinks({ overview }: { overview?: Overview }) {
         ) : (
           <ul className="mt-2 divide-y text-sm">
             {reminders.map((r) => (
-              <li key={r.itemId} className="flex items-baseline justify-between gap-3 py-1.5">
-                <span className="min-w-0 truncate">{r.name}</span>
+              <li key={`${r.itemId}/${r.stageName ?? ''}`} className="flex items-baseline justify-between gap-3 py-1.5">
+                <span className="min-w-0 truncate">
+                  {r.stageName ? (
+                    <>
+                      {r.stageName} <span className="text-muted-foreground">· {r.name}</span>
+                    </>
+                  ) : (
+                    r.name
+                  )}
+                </span>
                 <span className="shrink-0 tabular-nums">
                   <span className={r.overdue ? 'font-medium text-destructive' : r.daysLeft <= 1 ? 'font-medium' : ''}>{dDay(r.dueAt, nowOf(overview))}</span>
                   <span className="ml-2 text-muted-foreground">{formatDateTime(r.dueAt)}</span>
