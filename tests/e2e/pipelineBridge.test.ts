@@ -62,7 +62,7 @@ describe('파이프라인 문서 형식 — HarnessAdapter.run', () => {
 
     const ask = PipelineHarnessResult.parse(await bridge.run(run('좋아, 그 PR 승인해줘', { intention: 'llm', requestId: 'REQ-APPROVE' })));
     expect(ask.action).toMatchObject({ operationId: expect.stringMatching(/^OP-/), status: 'needs_clarification', facts: { questionKind: 'confirmation' } });
-    expect(ask.question).toContain(`NewLine/DeskPet PR 42번, 현재 커밋 ${SHA_A.slice(0, 7)}에 승인 리뷰를 등록할까요?`);
+    expect(ask.question).toContain(`NewLine/DeskPet PR 42번, 현재 커밋 ${SHA_A.slice(0, 7)}을 승인할까요?`);
     expect(w.github.submitCount).toBe(0);
 
     // 출력 모델은 requiredText를 지키고, 파이프라인이 실제로 말한 문장을 보고한다
