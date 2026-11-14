@@ -45,6 +45,8 @@ export interface ServerInfo {
   admin?: boolean;
   history?: { persistent: boolean } | null;
   supervised?: boolean;
+  /** 웹에서 바꾸는 서버 설정 (D-52) */
+  settings?: { allowedRepositories: string[]; source: 'file' | 'env'; persistent: boolean; updatedAt?: string };
 }
 
 export const HISTORY_STATUS_LABEL: Record<HistoryStatus, string> = {

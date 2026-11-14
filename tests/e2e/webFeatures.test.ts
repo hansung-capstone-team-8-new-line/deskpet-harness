@@ -75,7 +75,7 @@ async function boot(o: { history?: HistoryLog; admin?: boolean; info?: () => unk
     ...(o.admin
       ? {
           adminToken: ADMIN,
-          admin: async (action: 'update.check' | 'update.apply') => {
+          admin: async (action: 'update.check' | 'update.apply' | 'settings.set') => {
             calls.push(action);
             return { ok: true, message: `did ${action}` };
           },

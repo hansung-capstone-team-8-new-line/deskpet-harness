@@ -192,7 +192,7 @@ export function RemindersAndLinks({ overview }: { overview?: Overview }) {
               <A href={links.eurekaWebUrl}>Eureka 홈</A>
             </li>
           ) : (
-            <li className="text-muted-foreground">Eureka 링크 없음 (.env EUREKA_WEB_URL)</li>
+            <li className="text-muted-foreground">Eureka 링크 없음</li>
           )}
           {links.repos.map((r) => (
             <li key={`${r.owner}/${r.name}`}>

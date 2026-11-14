@@ -16,10 +16,11 @@
  *   EUREKA_WS_TOKEN (없으면 HARNESS_WS_TOKEN, 16자 이상), EUREKA_WS_HOST(기본 127.0.0.1), EUREKA_WS_PORT(기본 8789)
  *   EUREKA_WS_ALLOWED_CLIENTS (다른 기기 접속 허용 IP·CIDR. EUREKA_WS_HOST를 loopback이 아닌 값으로 줄 때 필수)
  *   EUREKA_STORE_PATH (쓰기 작업 기록 SQLite. Harness의 DESKPET_STORE_PATH와 다른 파일이어야 함)
- *   DESKPET_ALLOWED_REPOS (PR 연결 후보로 받을 저장소 owner/name 목록, D-36. 비우면 제한 없음)
+ *   DESKPET_ALLOWED_REPOS (PR 연결 후보로 받을 저장소 owner/name 목록, D-36. 비우면 제한 없음. 웹 설정에서 저장한 settings.json이 있으면 그것을 씀, D-52)
  *   EUREKA_API_KEY, EUREKA_BASE_URL, EUREKA_DEFAULT_PROCESS_ID, EUREKA_MAX_CONCURRENT, EUREKA_NOTE_ACTOR_ID
  */
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { loadRuntimeSettings } from './runtimeSettings.js';
 import { ConcurrencyLimiter, parseAllowedRepositories } from '@deskpet/contracts';
 import { EUREKA_DEFAULT_BASE_URL, createEurekaRestGateway } from '@deskpet/gateways';
 import { DEFAULT_POLICY, InMemoryOperationStore, StoreLockedError, randomIdGen, systemClock } from '@deskpet/harness';
@@ -80,8 +81,12 @@ const eureka = (() => {
     return fail(e instanceof Error ? e.message : String(e));
   }
 })();
-const allowed = parseAllowedRepositories(env['DESKPET_ALLOWED_REPOS']);
-if (allowed.invalid.length) fail(`DESKPET_ALLOWED_REPOS 형식이 틀렸어요 (owner/name,owner/name): ${allowed.invalid.join(', ')}`);
+const envAllowed = parseAllowedRepositories(env['DESKPET_ALLOWED_REPOS']);
+if (envAllowed.invalid.length) fail(`DESKPET_ALLOWED_REPOS 형식이 틀렸어요 (owner/name,owner/name): ${envAllowed.invalid.join(', ')}`);
+// 웹 설정에서 저장한 승인 허용 저장소가 있으면 그것을 쓴다 (D-52). 시작할 때 한 번 읽으므로 바꾼 뒤에는 이 서버를 다시 켠다
+const settingsPath = env['DESKPET_SETTINGS_PATH']?.trim() ? resolve(env['DESKPET_SETTINGS_PATH'].trim()) : harnessStore ? resolve(dirname(resolve(harnessStore)), 'settings.json') : undefined;
+const loaded = loadRuntimeSettings(settingsPath, { allowedRepositories: envAllowed.repos });
+const allowed = parseAllowedRepositories(loaded.settings.allowedRepositories.join(','));
 const processId = env['EUREKA_DEFAULT_PROCESS_ID']?.trim();
 const bridge = new EurekaBridge({ eureka, store, clock: systemClock, holderId: `eureka-server-${process.pid}`, ...(allowed.repos.length ? { allowedRepositories: allowed.repos } : {}), ...(processId ? { defaultProcessId: processId } : {}) });
 const server = new HarnessWsServer({

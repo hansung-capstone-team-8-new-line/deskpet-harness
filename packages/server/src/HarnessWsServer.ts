@@ -45,7 +45,7 @@ export interface HarnessWsServerOptions {
    */
   adminToken?: string;
   /** 관리 동작 처리. adminToken이 맞을 때만 부른다 */
-  admin?: (action: 'update.check' | 'update.apply') => Promise<{ ok: boolean; message: string }>;
+  admin?: (action: AdminAction, payload?: { settings?: { allowedRepositories: string[] } }) => Promise<{ ok: boolean; message: string }>;
   /** 세션 기록 (D-47). 주면 실행 요청 결과를 남기고 viewer에게 보여 준다 */
   history?: HistoryLog;
   /** 서버 정보 (D-49): 접속 직후 보내고, publishInfo()로 다시 보낸다 */
@@ -93,6 +93,8 @@ export interface HarnessWsServerOptions {
   /** 요청 하나를 끝낼 때마다 (처리 시간 기록용, NFR-01) */
   onCompleted?: (info: { kind: string; requestId: string; ms: number; ok: boolean; payload?: unknown }) => void;
 }
+
+export type AdminAction = 'update.check' | 'update.apply' | 'settings.set';
 
 export type Lane = 'work' | 'eureka' | 'control';
 const CONTROL_KINDS = new Set(['pipeline.event', 'harness.cancel', 'harness.reconcile', 'eureka.reconcile']);
@@ -333,7 +335,7 @@ export class HarnessWsServer {
   }
 
   // ---------------------------------------------------------------------- admin
-  private async onAdmin(conn: Conn, frame: { token: string; action: 'update.check' | 'update.apply'; id?: string }) {
+  private async onAdmin(conn: Conn, frame: { token: string; action: AdminAction; id?: string; settings?: { allowedRepositories: string[] } }) {
     const reply = (ok: boolean, message: string) => this.send(conn, { type: 'admin.result', ...(frame.id ? { id: frame.id } : {}), action: frame.action, ok, message });
     if (!this.adminDigest || !this.o.admin) return reply(false, 'admin_disabled');
     if (!timingSafeEqual(digest(frame.token), this.adminDigest)) {
@@ -346,7 +348,7 @@ export class HarnessWsServer {
     }
     this.log(`관리 동작 ${frame.action} (#${conn.id})`);
     try {
-      const r = await this.o.admin(frame.action);
+      const r = await this.o.admin(frame.action, frame.settings ? { settings: frame.settings } : undefined);
       reply(r.ok, r.message);
     } catch (e) {
       this.log(`관리 동작 오류 ${frame.action}: ${e instanceof Error ? e.message : 'error'}`);

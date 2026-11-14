@@ -96,7 +96,7 @@ export class HarnessConnection {
   }
 
   /** 관리 동작 (D-50). 관리 토큰은 보내기만 하고 저장하지 않는다 */
-  admin(token: string, action: 'update.check' | 'update.apply'): Promise<AdminResult> {
+  admin(token: string, action: 'update.check' | 'update.apply' | 'settings.set', extra?: { settings: { allowedRepositories: string[] } }): Promise<AdminResult> {
     if (this.view.state !== 'connected' || !this.ws) return Promise.resolve({ ok: false, message: 'not_connected' });
     const id = `a${++this.adminSeq}`;
     const ws = this.ws;
@@ -109,7 +109,7 @@ export class HarnessConnection {
         clearTimeout(timer);
         resolve(r);
       });
-      ws.send(JSON.stringify({ type: 'admin', token, action, id }));
+      ws.send(JSON.stringify({ type: 'admin', token, action, id, ...(extra ?? {}) }));
     });
   }
 

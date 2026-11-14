@@ -9,7 +9,7 @@ import type { GitHubTransport, OpenPullRequest } from '@deskpet/gateways';
  *   (진행 중 단계가 있는 업무 → 마감이 가까운 순 → 마감 없는 업무). 웹에서 다른 업무로 바꿀 수 있다(그 브라우저에만 기억)
  * - 업무 단계 기록에 적힌 PR 주소 → PR 상태(열림·병합·닫힘)·제목. 허용 저장소 목록(D-36) 밖은 뺀다
  * - 리마인더: 마감이 지났거나 reminderDays일 안에 마감인 열린 업무
- * - 링크: Eureka 웹 홈(EUREKA_WEB_URL), GitHub 저장소와 그 저장소의 열린 PR(최근 수정 순)
+ * - 링크: Eureka(EUREKA_BASE_URL), 승인 허용 저장소(웹 설정)와 그 저장소의 열린 PR(최근 수정 순)
  * - 한쪽이 실패해도 나머지는 보여 준다 (부분 결과에 이유를 붙임)
  */
 export interface OverviewStage {
@@ -67,8 +67,9 @@ export interface Overview {
 export interface OverviewOptions {
   eureka?: Pick<EurekaGatewayPort, 'listTasks' | 'listStageNotes'>;
   github?: Pick<GitHubTransport, 'read'>;
-  /** 링크·열린 PR을 보여 줄 저장소 */
-  repos?: Repository[];
+  /** 링크·열린 PR을 보여 줄 저장소. 함수면 읽을 때마다 부른다 (웹 설정에서 바뀜) */
+  repos?: Repository[] | (() => Repository[]);
+  /** 승인 허용 저장소 (D-36). 같은 배열을 계속 읽으므로 웹 설정에서 바꾸면 다음 조회부터 반영된다 */
   allowedRepositories?: string[];
   eurekaWebUrl?: string;
   reminderDays?: number;
@@ -193,7 +194,8 @@ export class OverviewService {
 
     // 저장소: 설정한 저장소 + 업무에 연결된 PR의 저장소
     const repoKeys = new Map<string, Repository>();
-    for (const r of [...(this.opt.repos ?? []), ...items.flatMap((i) => i.prs.map((p) => ({ owner: p.owner, name: p.name })))]) {
+    const configured = typeof this.opt.repos === 'function' ? this.opt.repos() : (this.opt.repos ?? []);
+    for (const r of [...configured, ...items.flatMap((i) => i.prs.map((p) => ({ owner: p.owner, name: p.name })))]) {
       const k = `${r.owner}/${r.name}`.toLowerCase();
       if (!repoKeys.has(k)) repoKeys.set(k, r);
     }
@@ -211,7 +213,7 @@ export class OverviewService {
       }
       repos.push(repo);
     }
-    if (!repos.length) problems.push('표시할 GitHub 저장소가 없어요 (.env DESKPET_GITHUB_REPOS)');
+    if (!repos.length) problems.push('표시할 GitHub 저장소가 없어요 (웹 설정 > 승인 허용 저장소)');
 
     const days = this.opt.reminderDays ?? 7;
     const now = this.now();

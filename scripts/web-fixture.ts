@@ -69,7 +69,9 @@ let update: Record<string, unknown> = {
   ],
   checkedAt: new Date().toISOString(),
 };
-const info = () => ({ startedAt: history.sessionId, version: update['current'], update, admin: true, history: { persistent: false }, supervised: false });
+const repos: string[] = ['NewLine/DeskPet'];
+let settingsAt: string | undefined;
+const info = () => ({ startedAt: history.sessionId, version: update['current'], update, admin: true, history: { persistent: false }, supervised: false, settings: { allowedRepositories: [...repos], source: settingsAt ? 'file' : 'env', persistent: false, ...(settingsAt ? { updatedAt: settingsAt } : {}) } });
 
 // 현황(D-51) 확인용: 가짜 Eureka 업무 + 가짜 GitHub 열린 PR
 w.github.openPrs = [
@@ -79,8 +81,9 @@ w.github.openPrs = [
 const overview = new OverviewService({
   eureka: w.eurekaGw,
   github: w.github,
-  repos: [{ owner: 'NewLine', name: 'DeskPet' }],
-  eurekaWebUrl: 'https://example.invalid/eureka',
+  repos: () => repos.map((r) => ({ owner: r.split('/')[0]!, name: r.split('/')[1]! })),
+  allowedRepositories: repos,
+  eurekaWebUrl: 'https://api.eureka.codes/flw-v1',
   now: () => w.clock.nowMs(),
   onChange: () => server.publishOverview(),
 });
@@ -90,8 +93,15 @@ const server = new HarnessWsServer({
   overview,
   info,
   adminToken: ADMIN,
-  admin: async (action) => {
+  admin: async (action, payload) => {
     if (action === 'update.check') return { ok: true, message: 'checked' };
+    if (action === 'settings.set') {
+      repos.splice(0, repos.length, ...(payload?.settings?.allowedRepositories ?? []));
+      settingsAt = new Date().toISOString();
+      server.publishInfo();
+      void overview.refresh(true);
+      return { ok: true, message: '적용했어요 (fixture — 파일에 저장하지 않음)' };
+    }
     for (const step of ['새 코드 받기', '웹 화면 빌드']) {
       update = { ...update, state: 'updating', step };
       server.publishInfo();

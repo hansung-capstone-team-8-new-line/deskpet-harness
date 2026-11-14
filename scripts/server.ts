@@ -21,7 +21,7 @@ import './quietWarnings.js';
  *   DESKPET_HISTORY_PATH (세션 기록 JSONL, 기본 DESKPET_STORE_PATH와 같은 폴더의 history.jsonl, off로 끔) (D-47)
  *   HARNESS_UPDATE_CHECK (기본 on — git fetch로 새 버전 확인, off로 끔), HARNESS_UPDATE_CHECK_MINUTES (기본 30) (D-49)
  *   HARNESS_WEB_ADMIN_TOKEN (선택, 16자 이상·다른 토큰과 다름 — 웹 설정에 넣으면 업데이트 버튼 사용) (D-50)
- *   EUREKA_WEB_URL (웹 현황의 Eureka 링크), DESKPET_GITHUB_REPOS (현황에 보일 저장소 owner/name, 비우면 DESKPET_ALLOWED_REPOS),
+ *   현황의 Eureka 링크는 EUREKA_BASE_URL, 저장소는 승인 허용 저장소(웹 설정에서 관리, 처음 값은 DESKPET_ALLOWED_REPOS → settings.json, D-52)
  *   DESKPET_OVERVIEW_MINUTES (기본 10), DESKPET_REMINDER_DAYS (기본 7), DESKPET_OVERVIEW=off로 끔 (D-51)
  *   HARNESS_WEB (기본 on — 빌드한 웹 화면을 같은 주소·포트로 내보냄, off로 끔), HARNESS_WEB_DIR (기본 apps/web/dist, 상대경로는 app 폴더 기준) (D-42)
  *   GITHUB_TOKEN, EUREKA_API_KEY, EUREKA_BASE_URL, DESKPET_REQUIRED_CHECKS, DESKPET_STORE_PATH, LLM_* (기존과 같음)
@@ -32,6 +32,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { renderBanner, type BannerRow, type BannerSection } from './banner.js';
 import { Updater, type UpdateStatus } from './updater.js';
+import { loadRuntimeSettings, saveRuntimeSettings } from './runtimeSettings.js';
 import { RESTART_EXIT_CODE } from './restartCode.js';
 import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
 import { networkInterfaces } from 'node:os';
@@ -40,7 +41,7 @@ import { DEFAULT_POLICY, FileWikiReader, HarnessService, InMemoryOperationStore,
 import { createLlmFromEnv } from '@deskpet/llm';
 import { OutputService, fallbackText, mapHarnessResult } from '@deskpet/output';
 import { ConcurrencyLimiter, parseAllowedRepositories, type FollowUpNotice } from '@deskpet/contracts';
-import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, HistoryLog, OverviewService, parseRepoList, PipelineBridge } from '@deskpet/server';
+import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, type AdminAction, HistoryLog, OverviewService, parseRepoList, PipelineBridge } from '@deskpet/server';
 
 try {
   process.loadEnvFile('.env');
@@ -119,6 +120,8 @@ if (allowed.invalid.length) {
   console.log(`✗ DESKPET_ALLOWED_REPOS 형식이 틀렸어요 (owner/name,owner/name): ${allowed.invalid.join(', ')}`);
   process.exit(1);
 }
+// 승인 허용 저장소 (D-36, D-52): 서버 전체가 이 배열 하나를 같이 읽는다. 웹 설정에서 바꾸면 그 자리에서 내용을 바꾼다 (비어 있으면 제한 없음)
+const allowedRepos: string[] = [...allowed.repos];
 const config = {
   ...DEFAULT_POLICY,
   evidenceNote,
@@ -128,7 +131,7 @@ const config = {
   offerApprovalAfterReview: (env['DESKPET_OFFER_APPROVAL_AFTER_REVIEW'] ?? 'on').trim().toLowerCase() !== 'off',
   // D-39: 승인 요청 단계 입력 검사. 기본 loose (STT 정확도가 오르면 DESKPET_APPROVAL_REQUEST_INPUT=strict)
   approvalRequestInput: (env['DESKPET_APPROVAL_REQUEST_INPUT']?.trim() === 'strict' ? 'strict' : 'loose') as 'loose' | 'strict',
-  ...(allowed.repos.length ? { allowedRepositories: allowed.repos } : {}),
+  allowedRepositories: allowedRepos,
   ...(guideTimeout > 0 ? { llmGuideTimeoutMs: guideTimeout } : {}),
   ...(minStt !== undefined ? { minSttConfidenceForWrite: minStt } : {}),
   ...(minRoute !== undefined ? { minRouteConfidenceForWrite: minRoute } : {}),
@@ -186,6 +189,40 @@ const recovery = new RecoveryWorker({ harness, store, clock: systemClock, interv
 const output = new OutputService(llm.outputModel ? { model: llm.outputModel, ...(llm.outputTimeoutMs ? { modelTimeoutMs: llm.outputTimeoutMs } : {}) } : {});
 
 // 세션 기록 (D-47): 발화 → 결과를 JSONL로 남겨 웹 화면 '기록'에서 본다. 기본은 저장소 옆 history.jsonl, 저장소가 메모리면 메모리만
+// 웹에서 바꾸는 서버 설정 (D-52): 저장소 옆 settings.json. 없으면 .env(DESKPET_ALLOWED_REPOS)가 처음 값
+const settingsPath = env['DESKPET_SETTINGS_PATH']?.trim() ? resolve(appRoot, env['DESKPET_SETTINGS_PATH'].trim()) : storePath ? resolve(dirname(isAbsolute(storePath) ? storePath : resolve(appRoot, storePath)), 'settings.json') : undefined;
+const loadedSettings = loadRuntimeSettings(settingsPath, { allowedRepositories: allowed.repos });
+if (loadedSettings.error) writeWarnings.push(loadedSettings.error);
+{
+  const parsed = parseAllowedRepositories(loadedSettings.settings.allowedRepositories.join(','));
+  allowedRepos.splice(0, allowedRepos.length, ...parsed.repos);
+}
+let settingsSource: 'file' | 'env' = loadedSettings.source;
+let settingsUpdatedAt = loadedSettings.settings.updatedAt;
+
+/** 웹 설정 저장 (관리 토큰 확인 뒤 서버가 부른다) */
+async function applySettings(s: { allowedRepositories: string[] } | undefined): Promise<{ ok: boolean; message: string }> {
+  if (!s) return { ok: false, message: '바꿀 설정이 없어요' };
+  const parsed = parseAllowedRepositories(s.allowedRepositories.join(','));
+  if (parsed.invalid.length) return { ok: false, message: `저장소 형식이 틀렸어요 (owner/name): ${parsed.invalid.join(', ')}` };
+  // 대소문자만 다른 중복은 처음 쓴 것만 남긴다
+  const repos = parsed.repos.filter((r, i) => parsed.repos.findIndex((x) => x.toLowerCase() === r.toLowerCase()) === i);
+  settingsUpdatedAt = new Date().toISOString();
+  if (settingsPath) {
+    try {
+      saveRuntimeSettings(settingsPath, { allowedRepositories: repos, updatedAt: settingsUpdatedAt });
+    } catch (e) {
+      return { ok: false, message: `설정 파일에 저장하지 못했어요 (${e instanceof Error ? e.message : String(e)})` };
+    }
+  }
+  allowedRepos.splice(0, allowedRepos.length, ...repos);
+  settingsSource = 'file';
+  console.log(`[settings] 승인 허용 저장소: ${repos.length ? repos.join(', ') : '제한 없음'}${settingsPath ? '' : ' (저장소가 메모리라 서버를 끄면 .env 값으로 돌아감)'}`);
+  server.publishInfo();
+  void overview?.refresh(true);
+  return { ok: true, message: settingsPath ? '저장했어요' : '적용했어요 (서버를 끄면 .env 값으로 돌아가요 — DESKPET_STORE_PATH를 넣으면 파일에 남아요)' };
+}
+
 const historyRaw = env['DESKPET_HISTORY_PATH']?.trim();
 const historyPath = historyRaw?.toLowerCase() === 'off' ? undefined : historyRaw ? (isAbsolute(historyRaw) ? historyRaw : resolve(appRoot, historyRaw)) : storePath ? resolve(dirname(isAbsolute(storePath) ? storePath : resolve(appRoot, storePath)), 'history.jsonl') : undefined;
 const history = historyRaw?.toLowerCase() === 'off' ? undefined : new HistoryLog({ ...(historyPath ? { path: historyPath } : {}), log: (l) => console.log(`! ${l}`) });
@@ -193,15 +230,16 @@ const history = historyRaw?.toLowerCase() === 'off' ? undefined : new HistoryLog
 // 웹 현황 (D-51): 진행 중 업무·리마인더·링크. 시작 때와 DESKPET_OVERVIEW_MINUTES(기본 10)분마다 Eureka·GitHub를 읽기만 한다
 const overviewOn = (env['DESKPET_OVERVIEW'] ?? 'on').trim().toLowerCase() !== 'off';
 const overviewMinutes = positive(env['DESKPET_OVERVIEW_MINUTES'], 10);
-const overviewRepos = env['DESKPET_GITHUB_REPOS']?.trim() ? parseRepoList(env['DESKPET_GITHUB_REPOS']) : parseRepoList(allowed.repos.join(','));
-const eurekaWebUrl = env['EUREKA_WEB_URL']?.trim() || undefined;
+// 현황 링크·열린 PR은 승인 허용 저장소를 쓴다 (웹 설정에서 관리). Eureka 링크는 EUREKA_BASE_URL
+const overviewRepos = () => parseRepoList(allowedRepos.join(','));
+const eurekaWebUrl = eurekaBase;
 const overview = overviewOn
   ? new OverviewService({
       eureka,
       github: githubTransport,
       repos: overviewRepos,
-      ...(allowed.repos.length ? { allowedRepositories: allowed.repos } : {}),
-      ...(eurekaWebUrl ? { eurekaWebUrl } : {}),
+      allowedRepositories: allowedRepos,
+      eurekaWebUrl,
       reminderDays: positive(env['DESKPET_REMINDER_DAYS'], 7),
       onChange: () => server.publishOverview(),
       log: (l) => console.log(`[overview] ${l}`),
@@ -218,14 +256,14 @@ const server: HarnessWsServer = new HarnessWsServer({
     output,
     bridge: pipelineBridge,
     ...(eurekaBridgeMode === 'internal'
-      ? { eurekaBridge: new EurekaBridge({ eureka, store, clock: systemClock, holderId: `server-${process.pid}-eureka`, ...(allowed.repos.length ? { allowedRepositories: allowed.repos } : {}), ...(env['EUREKA_DEFAULT_PROCESS_ID']?.trim() ? { defaultProcessId: env['EUREKA_DEFAULT_PROCESS_ID'].trim() } : {}) }) }
+      ? { eurekaBridge: new EurekaBridge({ eureka, store, clock: systemClock, holderId: `server-${process.pid}-eureka`, allowedRepositories: allowedRepos, ...(env['EUREKA_DEFAULT_PROCESS_ID']?.trim() ? { defaultProcessId: env['EUREKA_DEFAULT_PROCESS_ID'].trim() } : {}) }) }
       : {}),
   }),
   store,
   token,
   // D-45: 보기 전용 토큰을 비우면 웹 화면은 토큰 없이 접속 (구독만, 실행 불가)
   ...(env['HARNESS_WS_VIEWER_TOKEN']?.trim() ? { viewerToken: env['HARNESS_WS_VIEWER_TOKEN'].trim() } : { openViewer: true }),
-  ...(adminToken ? { adminToken, admin: (action: 'update.check' | 'update.apply'): Promise<{ ok: boolean; message: string }> => (action === 'update.apply' ? updater.apply() : updater.check().then((s: UpdateStatus) => ({ ok: s.state !== 'check_failed', message: s.message ?? s.state }))) } : {}),
+  ...(adminToken ? { adminToken, admin: (action: AdminAction, payload?: { settings?: { allowedRepositories: string[] } }): Promise<{ ok: boolean; message: string }> => (action === 'settings.set' ? applySettings(payload?.settings) : action === 'update.apply' ? updater.apply() : updater.check().then((s: UpdateStatus) => ({ ok: s.state !== 'check_failed', message: s.message ?? s.state }))) } : {}),
   ...(history ? { history } : {}),
   info: () => serverInfo(),
   ...(overview ? { overview } : {}),
@@ -268,6 +306,7 @@ function serverInfo() {
     admin: !!adminToken,
     history: history ? { persistent: !!historyPath } : null,
     supervised,
+    settings: { allowedRepositories: [...allowedRepos], source: settingsSource, persistent: !!settingsPath, ...(settingsUpdatedAt ? { updatedAt: settingsUpdatedAt } : {}) },
   };
 }
 
@@ -334,13 +373,13 @@ async function main() {
     {
       title: '정책',
       rows: [
-        ['', `PR 검사 ${prChecks === 'skip' ? '생략' : '확인'} · 승인 허용 저장소 ${allowed.repos.length ? allowed.repos.join(', ') : '제한 없음'} · 리뷰 뒤 승인 질문 ${on(config.offerApprovalAfterReview)}`],
+        ['', `PR 검사 ${prChecks === 'skip' ? '생략' : '확인'} · 승인 허용 저장소 ${allowedRepos.length ? allowedRepos.join(', ') : '제한 없음'}${settingsSource === 'file' ? ' (웹 설정)' : ''} · 리뷰 뒤 승인 질문 ${on(config.offerApprovalAfterReview)}`],
         ['', `승인 요청 ${config.approvalRequestInput === 'strict' ? '엄격' : '느슨'} · 신뢰도 STT ${config.minSttConfidenceForWrite} / 라우터 ${config.minRouteConfidenceForWrite} · 의도 재확인 ${on(intentRecheck && !!llm.guideClient)} · 완료 근거 기록 ${on(evidenceNote)}`],
       ],
     },
     {
       title: '현황',
-      rows: [['', overview ? `${overviewMinutes}분마다 Eureka·GitHub 조회 · 저장소 ${overviewRepos.length ? overviewRepos.map((r) => `${r.owner}/${r.name}`).join(', ') : '없음 (DESKPET_GITHUB_REPOS)'}${eurekaWebUrl ? '' : ' · Eureka 링크 없음 (EUREKA_WEB_URL)'}` : '꺼짐 (DESKPET_OVERVIEW=off)']],
+      rows: [['', overview ? `${overviewMinutes}분마다 Eureka·GitHub 조회` : '꺼짐 (DESKPET_OVERVIEW=off)']],
     },
     {
       title: '업데이트',
@@ -379,7 +418,7 @@ function printDetails() {
   const lines = [
     `직접 Eureka 요청(eureka.*): ${eurekaBridgeMode === 'internal' ? '이 서버에서 받음' : '받지 않음 — Eureka 내부 API 서버(pnpm eureka:server)로 (DESKPET_EUREKA_BRIDGE=external)'}`,
     `PR 검사(D-30): ${prChecks === 'skip' ? '조회하지 않음 — 승인 조건에서도 제외 (DESKPET_PR_CHECKS=enforce로 되돌림)' : '조회·필수 검사 확인'}`,
-    `승인 허용 저장소(D-36): ${allowed.repos.length ? allowed.repos.join(', ') : '제한 없음 (DESKPET_ALLOWED_REPOS 비어 있음)'}`,
+    `승인 허용 저장소(D-36·D-52): ${allowedRepos.length ? allowedRepos.join(', ') : '제한 없음'} — ${settingsSource === 'file' ? `웹 설정 (${settingsPath})` : '.env DESKPET_ALLOWED_REPOS (웹 설정 > 승인 허용 저장소에서 바꾸면 settings.json에 저장)'}`,
     `리뷰 뒤 승인 질문(D-41): ${config.offerApprovalAfterReview ? '켜짐 — 승인 가능하면 "…승인할까요?"를 붙이고, 아니면 이유를 한 문장 (DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off)' : '꺼짐'}`,
     `승인 요청 입력(D-39): ${config.approvalRequestInput === 'strict' ? '엄격 — 요청부터 신뢰도 기준 적용' : '느슨 — 요청은 신뢰도로 막지 않고 확인 질문까지, 확인 답변에만 기준 적용 (DESKPET_APPROVAL_REQUEST_INPUT=strict로 되돌림)'}`,
     `쓰기 입력 신뢰도 기준: STT ${config.minSttConfidenceForWrite}${minStt !== undefined ? ' (.env로 바꿈)' : ''}, 라우터 ${config.minRouteConfidenceForWrite}${minRoute !== undefined ? ' (.env로 바꿈)' : ''} (DESKPET_MIN_STT_CONFIDENCE / DESKPET_MIN_ROUTE_CONFIDENCE)`,
