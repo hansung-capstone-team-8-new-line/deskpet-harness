@@ -148,6 +148,12 @@ describe('세션 기록 (D-47)', () => {
     expect(historyEntryFrom({ kind: 'output.generate', requestId: 'r', payload: {} }, { ok: true, payload: {} }, 1)).toBeUndefined();
   });
 
+  it('직접 Eureka 요청: operation을 의도로, transcript가 있으면 발화로, 확인 질문 문장', () => {
+    const payload = { decision: { headOutputs: { intention: { value: 'eureka', confidence: 0.9 }, operation: { value: 'create', confidence: 0.9 } }, route: 'eureka' }, transcript: { text: '발표 리허설 업무 만들어 줘', sttConfidence: 0.9 } };
+    const e = historyEntryFrom({ kind: 'eureka.execute', requestId: 'r', payload }, { ok: true, payload: { operationId: 'o', status: 'needs_clarification', facts: { question: '등록할까요?' }, error: null } }, 3);
+    expect(e).toMatchObject({ route: 'eureka.create', input: '발표 리허설 업무 만들어 줘', status: 'question', resultText: '등록할까요?' });
+  });
+
   it('화면 검색·필터', () => {
     const h = new HistoryLog();
     h.append({ kind: 'harness.run', requestId: 'a', input: 'PR 리뷰해', status: 'succeeded', ms: 1 });

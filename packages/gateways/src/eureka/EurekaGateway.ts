@@ -58,6 +58,18 @@ export interface EurekaOperatorConfirm {
 const WRITE_STAGE = 'eureka.write';
 const READ_STAGE = 'eureka.read';
 
+/** 단계 편집 한 줄 (PUT /items/{id}/stages). id가 없으면 새 단계 */
+export interface StageEdit {
+  id?: string;
+  name: string;
+  actorId: string;
+  toolId: string;
+  /** 밀리초, 0이면 마감 없음 */
+  dueAt: number;
+  guideText: string;
+  isRequired: boolean;
+}
+
 export class EurekaGateway implements EurekaGatewayPort {
   private readonly totalTimeoutMs: number;
 
@@ -66,19 +78,43 @@ export class EurekaGateway implements EurekaGatewayPort {
   }
 
   // ================================================================ reads
-  async listTasks(query: { onlyOpen?: boolean; limit?: number }, c: CallConstraints): Promise<ReadOutcome<TaskList>> {
-    const res = await this.read(
-      { method: 'GET', path: '/_api_/items/0/list', query: { sites: '', detail: 'true', limit: String(query.limit ?? 100) } },
-      c,
-    );
-    if (!res.ok) return { ok: false, result: res.result };
-    const body = safeJson(res.response.bodyText) as { total?: number; list?: unknown[] } | undefined;
-    if (!body || !Array.isArray(body.list)) {
-      return { ok: false, result: readFailure('EUREKA_SERVER_ERROR', 'unexpected list body', 'none') };
+  /**
+   * 업무 목록. 업무가 limit보다 많으면 page를 넘겨 total까지 모은다 (2026-11-14: 100개를 넘으면 새 업무가 목록에 없어
+   * 방금 만든 업무를 못 찾던 문제). 서버가 page를 무시하면(같은 업무만 다시 오면) 멈추고 partial로 둔다. 최대 maxPages쪽
+   */
+  async listTasks(query: { onlyOpen?: boolean; limit?: number; maxPages?: number }, c: CallConstraints): Promise<ReadOutcome<TaskList>> {
+    const limit = query.limit ?? 100;
+    const seen = new Map<string, unknown>();
+    let total: number | undefined;
+    for (let page = 0; page < (query.maxPages ?? 10); page++) {
+      const res = await this.read(
+        { method: 'GET', path: '/_api_/items/0/list', query: { sites: '', detail: 'true', limit: String(limit), ...(page > 0 ? { page: String(page) } : {}) } },
+        c,
+      );
+      if (!res.ok) {
+        if (page === 0) return { ok: false, result: res.result };
+        break; // 첫 쪽은 받았으니 받은 만큼으로 partial
+      }
+      const body = safeJson(res.response.bodyText) as { total?: number; list?: unknown[] } | undefined;
+      if (!body || !Array.isArray(body.list)) {
+        if (page === 0) return { ok: false, result: readFailure('EUREKA_SERVER_ERROR', 'unexpected list body', 'none') };
+        break;
+      }
+      if (typeof body.total === 'number') total = body.total;
+      let added = 0;
+      for (const raw of body.list) {
+        const id = String((raw as { id?: unknown })?.id ?? '');
+        if (id && !seen.has(id)) {
+          seen.set(id, raw);
+          added++;
+        }
+      }
+      if (total === undefined || seen.size >= total || body.list.length === 0 || added === 0) break;
     }
-    const all = body.list.map(normalizeItem);
+    const all = [...seen.values()].map(normalizeItem);
     const items = query.onlyOpen ? all.filter((i) => i.computedState !== 'done' && i.computedState !== 'hold') : all;
-    const completeness = typeof body.total === 'number' ? (body.list.length < body.total ? 'partial' : 'complete') : 'unknown';
+    const completeness = typeof total === 'number' ? (seen.size < total ? 'partial' : 'complete') : 'unknown';
+    const body = { total };
     const observedAt = this.iso();
     const data: TaskList = { items, completeness, observedAt, ...(typeof body.total === 'number' ? { total: body.total } : {}) };
     return {
@@ -86,6 +122,16 @@ export class EurekaGateway implements EurekaGatewayPort {
       data,
       result: gr({ mode: 'read', dispatchState: 'sent', outcome: 'response', respondedAt: observedAt, completeness, response: { count: items.length } }),
     };
+  }
+
+  /** 업무 한 건 (stage$$ 포함). 번호를 아는 업무는 목록 대신 이것으로 찾는다 (2026-11-14) */
+  async getItem(itemId: string, c: CallConstraints): Promise<ReadOutcome<TaskSummary>> {
+    const res = await this.read({ method: 'GET', path: `/_api_/items/${enc(itemId)}` }, c);
+    if (!res.ok) return { ok: false, result: res.result };
+    const body = safeJson(res.response.bodyText) as { id?: unknown; deletedAt?: unknown } | undefined;
+    if (!body?.id || (typeof body.deletedAt === 'number' && body.deletedAt > 0)) return { ok: false, result: readFailure('EUREKA_NOT_FOUND', `item ${itemId} not found`, 'none') };
+    const item = normalizeItem(body);
+    return { ok: true, data: item, result: gr({ mode: 'read', dispatchState: 'sent', outcome: 'response', respondedAt: this.iso() }) };
   }
 
   async getTaskState(query: { itemId: string; stageId?: string }, c: CallConstraints): Promise<ReadOutcome<TaskState>> {
@@ -304,6 +350,93 @@ export class EurekaGateway implements EurekaGatewayPort {
     );
   }
 
+  /**
+   * 단계 목록 편집 (2026-11-14, Eureka 웹 '전체 단계 편집' 요청으로 확인): PUT /_api_/items/{id}/stages
+   * 본문 {stages:[{id?, name, actorId, toolId, dueAt, guideText, isRequired}]} — 단계 목록 전체. 배열 순서가 단계 순서,
+   * id 없는 항목은 새 단계. 기존 단계를 빼면 409 "stageIds changed"로 거절된다(삭제는 deleteStage). 응답은 업무 전체(stage$$ 포함).
+   * 응답의 단계 이름 순서가 보낸 것과 같을 때만 반영 확인
+   */
+  replaceStages(cmd: { itemId: string; stages: StageEdit[] }, handle: DispatchHandle, c: CallConstraints) {
+    return this.sendWrite({ method: 'PUT', path: `/_api_/items/${enc(cmd.itemId)}/stages`, body: { stages: cmd.stages } }, handle, c, (b) => {
+      const item = b as { id?: unknown; 'stage$$'?: { id?: unknown; name?: unknown; order?: unknown }[] } | undefined;
+      const got = Array.isArray(item?.['stage$$']) ? [...item!['stage$$']].sort((x, y) => Number(x.order ?? 0) - Number(y.order ?? 0)) : undefined;
+      const same = !!got && got.length === cmd.stages.length && got.every((s, i) => s.name === cmd.stages[i]!.name);
+      return item?.id && same
+        ? { response: { itemId: String(item.id), stageIds: got!.map((s) => String(s.id)) }, externalRefs: [{ system: 'eureka' as const, kind: 'item_stages', id: `${String(item.id)}@${got!.map((s) => String(s.id)).join(',')}` }] }
+        : { response: { raw: b } };
+    }, { action: 'edit_stages', target: `item ${cmd.itemId}` });
+  }
+
+  /**
+   * 단계 삭제 (2026-11-14). 단계 목록 PUT에서 단계를 빼면 Eureka가 409 "stageIds changed"로 거절해서(실제 확인) 단계 하나를 지우는
+   * DELETE /_api_/stages/{id}를 쓴다 — 경로는 다른 삭제(DELETE /items/{id})와 같은 모양으로 추정, 실제 시험 필요. 2xx면 삭제로 본다
+   */
+  deleteStage(cmd: { itemId: string; stageId: string }, handle: DispatchHandle, c: CallConstraints) {
+    return this.sendWrite(
+      { method: 'DELETE', path: `/_api_/stages/${enc(cmd.stageId)}` },
+      handle,
+      c,
+      () => ({ response: { stageId: cmd.stageId }, externalRefs: [{ system: 'eureka' as const, kind: 'stage_delete', id: cmd.stageId }] }),
+      { action: 'edit_stages', target: `stage ${cmd.stageId}` },
+    );
+  }
+
+  /**
+   * 단계 상태 변경 (2026-11-14 추가): 시작(doing)·되돌리기(todo)·건너뛰기(skip)·완료(done).
+   * POST /_api_/stages/{id}/status — done은 확인된 경로, 나머지 값을 받는지는 실제 시험으로 확인한다.
+   * 응답의 stage.status가 보낸 값과 같을 때만 반영 확인
+   */
+  setStageStatus(cmd: { stageId: string; status: 'todo' | 'doing' | 'done' | 'skip' }, handle: DispatchHandle, c: CallConstraints) {
+    return this.sendWrite({ method: 'POST', path: `/_api_/stages/${enc(cmd.stageId)}/status`, body: { status: cmd.status } }, handle, c, (b) => {
+      const st = (b as { stage?: { id?: unknown; status?: unknown } })?.stage;
+      return st?.id && st.status === cmd.status
+        ? { response: { stageId: String(st.id), status: st.status }, externalRefs: [{ system: 'eureka' as const, kind: 'stage_status', id: `${String(st.id)}@${cmd.status}` }] }
+        : { response: { raw: b } };
+    }, { action: 'set_stage_status', target: `stage ${cmd.stageId}` });
+  }
+
+  /**
+   * 업무 정보 변경 (2026-11-14 추가): 우선순위·이름. PUT /_api_/items/{id} — 보낸 필드만 바뀐다 (마감 변경과 같은 경로).
+   * 응답의 같은 필드가 보낸 값과 같을 때만 반영 확인
+   */
+  updateItemField(cmd: { itemId: string; field: 'priority' | 'name'; value: string }, handle: DispatchHandle, c: CallConstraints) {
+    const action = cmd.field === 'priority' ? 'set_item_priority' : 'rename_item';
+    return this.sendWrite({ method: 'PUT', path: `/_api_/items/${enc(cmd.itemId)}`, body: { [cmd.field]: cmd.value } }, handle, c, (b) => {
+      const item = b as Record<string, unknown> | undefined;
+      return item?.['id'] && item[cmd.field] === cmd.value
+        ? { response: { itemId: String(item['id']), [cmd.field]: cmd.value }, externalRefs: [{ system: 'eureka' as const, kind: action, id: `${String(item['id'])}@${cmd.value}` }] }
+        : { response: { raw: b } };
+    }, { action, target: `item ${cmd.itemId}` });
+  }
+
+  /**
+   * 업무 보류·재개 (2026-11-14 추가). PUT /_api_/items/{id} {status} — 위키에는 '업무 정보 변경'으로만 있어 실제 시험으로 확인한다.
+   * 응답의 status가 보낸 값과 같을 때만 반영 확인으로 본다. 다르거나 없으면 결과 불명(목록으로 확인)
+   */
+  setItemStatus(cmd: { itemId: string; status: 'hold' | 'todo' | 'doing' }, handle: DispatchHandle, c: CallConstraints) {
+    const action = cmd.status === 'hold' ? 'hold_item' : 'resume_item';
+    return this.sendWrite({ method: 'PUT', path: `/_api_/items/${enc(cmd.itemId)}`, body: { status: cmd.status } }, handle, c, (b) => {
+      const item = b as { id?: unknown; status?: unknown };
+      return item?.id && item.status === cmd.status
+        ? { response: { itemId: String(item.id), status: item.status }, externalRefs: [{ system: 'eureka' as const, kind: `item_${action}`, id: `${String(item.id)}@${cmd.status}` }] }
+        : { response: { raw: b } };
+    }, { action, target: `item ${cmd.itemId}` });
+  }
+
+  /**
+   * 업무 삭제 (2026-11-14 추가). DELETE /_api_/items/{id} — 위키 API 목록에는 없어 실제 시험으로 확인한다.
+   * 2xx면 삭제로 본다(응답 본문이 비어도). 404면 이미 없거나 경로가 다름, 405면 Eureka가 삭제를 받지 않음
+   */
+  deleteItem(cmd: { itemId: string }, handle: DispatchHandle, c: CallConstraints) {
+    return this.sendWrite(
+      { method: 'DELETE', path: `/_api_/items/${enc(cmd.itemId)}` },
+      handle,
+      c,
+      (b) => ({ response: { itemId: cmd.itemId, ...(b && typeof b === 'object' ? { deletedAt: (b as { deletedAt?: unknown }).deletedAt ?? null } : {}) }, externalRefs: [{ system: 'eureka' as const, kind: 'item_delete', id: cmd.itemId }] }),
+      { action: 'delete_item', target: `item ${cmd.itemId}` },
+    );
+  }
+
   /** 미정: 템플릿 목록 */
   async listProcesses(c: CallConstraints): Promise<ReadOutcome<{ id: string; name: string }[]>> {
     const res = await this.read({ method: 'GET', path: '/_api_/processes/0/list', query: { sites: '', detail: 'true', limit: '50' } }, c);
@@ -461,6 +594,8 @@ export function normalizeItem(raw: unknown): TaskSummary {
       ...(typeof s['order'] === 'number' ? { order: s['order'] } : {}),
       ...(typeof s['completedAt'] === 'number' ? { completedAt: new Date(s['completedAt']).toISOString() } : {}),
       ...(Array.isArray(s['noteIds']) && s['noteIds'].length ? { noteIds: (s['noteIds'] as unknown[]).map(String) } : {}),
+      ...(typeof s['dueAt'] === 'number' && s['dueAt'] > 0 ? { dueAtMs: s['dueAt'] } : {}),
+      ...('name' in s ? { edit: { actorId: str(s['actorId']), toolId: str(s['toolId']), guideText: str(s['guideText']), isRequired: s['isRequired'] !== false } } : {}),
     };
   });
   const dueAtMs = typeof r['dueAt'] === 'number' ? r['dueAt'] : undefined;
@@ -474,6 +609,10 @@ export function normalizeItem(raw: unknown): TaskSummary {
     computedState: computeItemState(r['status'], stages),
     stages,
   };
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : '';
 }
 
 /** PDF §3-(2) item_state 로직 */

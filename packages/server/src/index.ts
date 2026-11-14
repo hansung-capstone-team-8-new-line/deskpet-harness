@@ -6,3 +6,4 @@ export * from './eurekaBridge.js';
 export * from './staticWeb.js';
 export * from './history.js';
 export * from './overview.js';
+export * from './prAutoLink.js';

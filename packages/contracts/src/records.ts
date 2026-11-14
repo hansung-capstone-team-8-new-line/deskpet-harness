@@ -93,7 +93,7 @@ export const ActionResult = z
     error: ErrorInfo.optional(),
   })
   .superRefine((r, ctx) => {
-    const isWrite = ['submit_approval', 'complete_stage', 'register_item', 'postpone_item', 'complete_item', 'add_stage_note'].includes(
+    const isWrite = ['submit_approval', 'complete_stage', 'register_item', 'postpone_item', 'complete_item', 'delete_item', 'hold_item', 'resume_item', 'set_stage_status', 'set_item_priority', 'rename_item', 'edit_stages', 'add_stage_note'].includes(
       r.action,
     );
     if (isWrite && r.status === 'succeeded' && r.externalRefs.length === 0) {

@@ -42,6 +42,10 @@ export interface OpenPullRequest {
   updatedAt?: string;
   /** 리뷰 요청된 사람·팀이 있음 */
   reviewRequested: boolean;
+  /** 브랜치 이름 (head.ref). Eureka 표시(EU-업무번호)를 찾을 때 쓴다 */
+  branch?: string;
+  /** 본문 (Eureka 표시 찾기용). 웹 화면에는 보내지 않는다 */
+  body?: string;
 }
 
 export type TransportSubmitResponse =

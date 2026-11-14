@@ -77,6 +77,12 @@ export const ACTION_LABEL: Record<string, string> = {
   register_item: 'Eureka 업무 등록',
   postpone_item: 'Eureka 마감 변경',
   complete_item: 'Eureka 업무 완료',
+  delete_item: 'Eureka 업무 삭제',
+  hold_item: 'Eureka 업무 보류',
+  resume_item: 'Eureka 업무 재개',
+  set_stage_status: 'Eureka 단계 상태 변경',
+  set_item_priority: 'Eureka 우선순위 변경',
+  rename_item: 'Eureka 업무 이름 변경',
   add_stage_note: 'Eureka 단계 기록',
 };
 
@@ -130,7 +136,7 @@ export interface OverviewItem {
   description?: string;
   priority?: string;
   dueAt?: string;
-  stages: { stageId: string; name: string; status: string }[];
+  stages: { stageId: string; name: string; status: string; dueAt?: string }[];
   doneStages: number;
   currentStage?: string;
   prs: OverviewPr[];
@@ -151,7 +157,7 @@ export interface Overview {
   observedAt?: string;
   items: OverviewItem[];
   autoFocusId?: string;
-  reminders: { itemId: string; name: string; dueAt: string; overdue: boolean; daysLeft: number }[];
+  reminders: { itemId: string; name: string; stageName?: string; dueAt: string; overdue: boolean; daysLeft: number }[];
   links: { eurekaWebUrl?: string; repos: { owner: string; name: string; url: string; openPrs?: OpenPullRequest[]; hasMore?: boolean; error?: string }[] };
   problems: string[];
   refreshing?: boolean;

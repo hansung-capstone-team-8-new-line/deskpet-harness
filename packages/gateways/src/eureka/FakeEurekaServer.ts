@@ -10,6 +10,11 @@ export interface FakeStage {
   status?: 'todo' | 'doing' | 'done' | 'skip';
   order: number;
   completedAt?: number;
+  dueAt?: number;
+  guideText?: string;
+  actorId?: string;
+  toolId?: string;
+  isRequired?: boolean;
   /** 단계 기록 (GET /_api_/notes/0/list?stageId=) */
   notes?: { id: string; content: string; uid?: string; actorId?: string; deletedAt?: number }[];
 }
@@ -19,7 +24,8 @@ export interface FakeItem {
   description?: string;
   dueAt?: number;
   priority?: string;
-  status?: 'hold';
+  /** 서버에 저장된 업무 상태 값. hold만 계산에 쓰인다 */
+  status?: 'hold' | 'todo' | 'doing';
   stages: FakeStage[];
 }
 
@@ -72,20 +78,31 @@ export class FakeEurekaServer implements HttpClient {
     return f.fault;
   }
 
+  private itemJson(i: FakeItem) {
+    return {
+      id: i.id,
+      name: i.name,
+      ...(i.description ? { description: i.description } : {}),
+      dueAt: i.dueAt,
+      priority: i.priority,
+      ...(i.status ? { status: i.status } : {}),
+      'stage$$': i.stages.map((s) => ({ id: s.id, name: s.name, status: s.status, order: s.order, dueAt: s.dueAt ?? 0, actorId: s.actorId ?? '', toolId: s.toolId ?? '', guideText: s.guideText ?? '', isRequired: s.isRequired ?? true, noteIds: (s.notes ?? []).map((n) => n.id), 'note$$': (s.notes ?? []).map((n) => ({ id: n.id, stereo: 'comment' })) })),
+      };
+  }
+
   private route(req: HttpRequest): HttpResponse {
     const ok = (b: unknown) => ({ status: 200, bodyText: JSON.stringify(b) });
     let m: RegExpMatchArray | null;
     if (req.method === 'GET' && req.path === '/_api_/items/0/list') {
-      const list = [...this.items.values()].map((i) => ({
-        id: i.id,
-        name: i.name,
-        ...(i.description ? { description: i.description } : {}),
-        dueAt: i.dueAt,
-        priority: i.priority,
-        ...(i.status ? { status: i.status } : {}),
-        'stage$$': i.stages.map((s) => ({ id: s.id, name: s.name, status: s.status, order: s.order, noteIds: (s.notes ?? []).map((n) => n.id), 'note$$': (s.notes ?? []).map((n) => ({ id: n.id, stereo: 'comment' })) })),
-      }));
-      return ok({ total: list.length, list });
+      const all = [...this.items.values()].map((i) => this.itemJson(i));
+      const limit = Number(req.query?.['limit'] ?? 100);
+      const page = Number(req.query?.['page'] ?? 0);
+      return ok({ total: all.length, limit, page, list: all.slice(page * limit, page * limit + limit) });
+    }
+    if (req.method === 'GET' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/)) && m[1] !== '0') {
+      const it = this.items.get(decodeURIComponent(m[1]!));
+      if (!it) return { status: 404, bodyText: `.id[${m[1]}] not found` };
+      return ok(this.itemJson(it));
     }
     if (req.method === 'GET' && (m = req.path.match(/^\/_api_\/items\/([^/]+)\/status$/))) {
       const it = this.items.get(decodeURIComponent(m[1]!));
@@ -101,19 +118,55 @@ export class FakeEurekaServer implements HttpClient {
         if (!s) continue;
         if (it.status === 'hold') return { status: 409, bodyText: 'item is on hold' };
         const body = req.body as { status?: string };
-        if (body?.status !== 'done') return { status: 500, bodyText: `.status[${body?.status}] is invalid` };
-        s.status = 'done';
-        s.completedAt = this.now();
+        if (body?.status !== 'done' && body?.status !== 'doing' && body?.status !== 'todo' && body?.status !== 'skip') return { status: 500, bodyText: `.status[${body?.status}] is invalid` };
+        s.status = body.status;
+        if (s.status === 'done') s.completedAt = this.now();
         return ok({ stage: { id: s.id, status: s.status, completedAt: s.completedAt }, warnings: [] });
       }
       return { status: 404, bodyText: `.id[${id}] not found` };
     }
+    if (req.method === 'PUT' && (m = req.path.match(/^\/_api_\/items\/([^/]+)\/stages$/))) {
+      const it = this.items.get(decodeURIComponent(m[1]!));
+      if (!it) return { status: 404, bodyText: `.id[${m[1]}] not found` };
+      const body = req.body as { stages?: { id?: string; name?: string; dueAt?: number; guideText?: string; actorId?: string; toolId?: string; isRequired?: boolean }[] };
+      if (!Array.isArray(body?.stages)) return { status: 500, bodyText: '.stages is required' };
+      const old = new Map(it.stages.map((s) => [s.id, s]));
+      // 실제 Eureka처럼: 기존 단계를 빼면 거절 (2026-11-14 확인)
+      const sentIds = new Set(body.stages.map((x) => x.id).filter(Boolean));
+      if ([...old.keys()].some((id) => !sentIds.has(id))) return { status: 409, bodyText: `409 CONFLICT - item:${it.id} stageIds changed @saveItemStages(${it.id})` };
+      it.stages = body.stages.map((x, i) => {
+        const prev = x.id ? old.get(x.id) : undefined;
+        if (x.id && !prev) throw new Error(`unknown stage ${x.id}`);
+        return { ...(prev ?? { id: `${it.id}${90 + i}${this.calls.length}`, status: 'todo' as const }), name: String(x.name ?? ''), order: i + 1, dueAt: x.dueAt ?? 0, guideText: x.guideText ?? '', actorId: x.actorId ?? '', toolId: x.toolId ?? '', isRequired: x.isRequired ?? true };
+      });
+      return ok({ id: it.id, name: it.name, stageIds: it.stages.map((s) => s.id), 'stage$$': it.stages.map((s) => ({ id: s.id, name: s.name, status: s.status, order: s.order, dueAt: s.dueAt })) });
+    }
     if (req.method === 'PUT' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/))) {
       const it = this.items.get(decodeURIComponent(m[1]!));
       if (!it) return { status: 404, bodyText: `.id[${m[1]}] not found` };
-      const body = req.body as { dueAt?: unknown };
+      const body = req.body as { dueAt?: unknown; status?: unknown; priority?: unknown; name?: unknown };
       if (typeof body?.dueAt === 'number') it.dueAt = body.dueAt;
-      return ok({ id: it.id, name: it.name, dueAt: it.dueAt });
+      if (typeof body?.priority === 'string') it.priority = body.priority;
+      if (typeof body?.name === 'string') it.name = body.name;
+      if (body?.status === 'hold' || body?.status === 'todo' || body?.status === 'doing') it.status = body.status;
+      return ok({ id: it.id, name: it.name, dueAt: it.dueAt, ...(it.priority ? { priority: it.priority } : {}), ...(it.status ? { status: it.status } : {}) });
+    }
+    if (req.method === 'DELETE' && (m = req.path.match(/^\/_api_\/stages\/([^/]+)$/))) {
+      const id = decodeURIComponent(m[1]!);
+      for (const it of this.items.values()) {
+        const i = it.stages.findIndex((s) => s.id === id);
+        if (i < 0) continue;
+        it.stages.splice(i, 1);
+        it.stages.forEach((s, k) => (s.order = k + 1));
+        return ok({ id, deletedAt: this.now() });
+      }
+      return { status: 404, bodyText: `.id[${id}] not found` };
+    }
+    if (req.method === 'DELETE' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/))) {
+      const it = this.items.get(decodeURIComponent(m[1]!));
+      if (!it) return { status: 404, bodyText: `.id[${m[1]}] not found` };
+      this.items.delete(it.id);
+      return ok({ id: it.id, deletedAt: this.now() });
     }
     if (req.method === 'POST' && req.path === '/_api_/items/0/start') {
       const body = req.body as { processId?: unknown; name?: unknown; dueAt?: unknown };

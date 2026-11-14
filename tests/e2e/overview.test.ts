@@ -69,6 +69,16 @@ describe('웹 현황 (D-51)', () => {
     ]);
   });
 
+  it('리마인더: 끝나지 않은 단계의 마감도 단계 이름과 함께 (2026-11-14)', async () => {
+    const { svc, clock } = setup();
+    const s = (svc as unknown as { opt: { eureka: { o: { http: FakeEurekaServer } } } }).opt.eureka.o.http;
+    s.addItem({ id: 'e', name: '발표 준비', stages: [{ id: 'e1', name: '자료', status: 'todo', order: 1, dueAt: clock.nowMs() + 2 * DAY }, { id: 'e2', name: '끝난 단계', status: 'done', order: 2, dueAt: clock.nowMs() + DAY }] });
+    await svc.refresh(true);
+    const r = svc.get().reminders.filter((x) => x.itemId === 'e');
+    expect(r).toEqual([expect.objectContaining({ name: '발표 준비', stageName: '자료', overdue: false, daysLeft: 2 })]);
+    expect(svc.get().items.find((i) => i.itemId === 'e')!.stages[0]!.dueAt).toBeTruthy();
+  });
+
   it('링크: Eureka 홈, 저장소와 열린 PR', async () => {
     const { svc } = setup();
     await svc.refresh(true);

@@ -93,6 +93,8 @@ export class RestGitHubTransport implements GitHubTransport {
             draft: Boolean(p.draft),
             ...(p.updated_at ? { updatedAt: String(p.updated_at) } : {}),
             reviewRequested: (Array.isArray(p.requested_reviewers) && p.requested_reviewers.length > 0) || (Array.isArray(p.requested_teams) && p.requested_teams.length > 0),
+            ...(p.head?.ref ? { branch: String(p.head.ref) } : {}),
+            ...(typeof p.body === 'string' && p.body ? { body: p.body.slice(0, 4_000) } : {}),
           })),
           hasMore: list.length >= q.perPage,
         } satisfies TransportReadResultMap['open_prs'];

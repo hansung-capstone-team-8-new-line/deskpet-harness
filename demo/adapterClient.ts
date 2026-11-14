@@ -15,7 +15,17 @@
  *   pnpm demo:adapter eureka postpone "업무" 마감ISO        # 쓰기: 마감 변경 (예: 2026-11-20T23:59:00+09:00)
  *   pnpm demo:adapter eureka note "업무" "내용" [--stage "단계"]   # 쓰기: 단계 기록 추가
  *   pnpm demo:adapter eureka complete "업무"               # 쓰기: 업무 전체 완료
- *   pnpm demo:adapter eureka unsupported                 # 미지원 작업(delete) 안내 확인
+ *   pnpm demo:adapter eureka delete "업무"                 # 쓰기: 업무 삭제 (되돌릴 수 없음, 2026-11-14)
+ *   pnpm demo:adapter eureka hold "업무" / resume "업무"    # 쓰기: 업무 보류·재개 (2026-11-14)
+ *   pnpm demo:adapter eureka start|reset|skip "업무" [--stage "단계"]   # 쓰기: 단계 시작·대기로·건너뛰기 (2026-11-14)
+ *   pnpm demo:adapter eureka priority "업무" 높음        # 쓰기: 우선순위 (낮음·보통·높음·긴급)
+ *   pnpm demo:adapter eureka rename "업무" "새 이름"      # 쓰기: 업무 이름 변경
+ *   pnpm demo:adapter eureka add-stage "업무" "단계" [마감ISO]   # 쓰기: 단계 추가 (끝에, 단계 마감 선택)
+ *   pnpm demo:adapter eureka delete-stage "업무" "단계"   # 쓰기: 단계 삭제
+ *   pnpm demo:adapter eureka move-up|move-down "업무" "단계"   # 쓰기: 단계 순서
+ *   pnpm demo:adapter eureka stage-due "업무" "단계" 마감ISO   # 쓰기: 단계 마감
+ *     --item <업무번호>: 이름 대신 업무 번호로 고른다 (같은 이름 업무가 여럿일 때)
+ *   pnpm demo:adapter eureka unsupported                 # 미지원 작업(query_actors) 안내 확인
  *   pnpm demo:adapter eureka reconcile --req <requestId> --op <operationId>   # 결과 조회
  *     쓰기는 확인 질문을 보여 주고 답을 받는다(승인 말 → 같은 요청에 mutationApproved=true). --answer "응" 또는 --approve로 미리 지정
  *     --req·--op로 requestId·operationId를 직접 줄 수 있다 (같은 번호 재사용 거절 확인용)
@@ -114,11 +124,14 @@ async function ask(q: string): Promise<string | undefined> {
 function eurekaDecision(operation: string, heads: Record<string, string | undefined> = {}) {
   const all: Record<string, string> = { intention: 'eureka', modelIntention: 'eureka', operation };
   for (const [k, v] of Object.entries(heads)) if (v !== undefined) all[k] = v;
+  const item = valueOf('--item');
   return {
     headOutputs: Object.fromEntries(Object.entries(all).map(([k, v]) => [k, { value: v, confidence: 0.95 }])),
     overallConfidence: 0.93,
     missingRequiredSlots: [],
     route: 'eureka',
+    // --item: 업무 번호로 고른다 (같은 이름 업무가 여럿일 때)
+    ...(item ? { resolvedTarget: { kind: 'eureka_item', itemId: item } } : {}),
   };
 }
 
@@ -138,7 +151,10 @@ async function eureka() {
   const sub = args[1];
   const requestId = valueOf('--req') ?? id('adapter-eureka');
   const operationId = valueOf('--op') ?? id('op');
-  const pos = args.slice(2).filter((a, i, all) => !a.startsWith('--') && !['--stage', '--answer', '--req', '--op'].includes(all[i - 1] ?? ''));
+  const pos = args.slice(2).filter((a, i, all) => !a.startsWith('--') && !['--stage', '--answer', '--req', '--op', '--item'].includes(all[i - 1] ?? ''));
+  // --item을 주면 업무 이름 자리를 비워도 된다
+  if (valueOf('--item') && ['delete', 'hold', 'resume', 'start', 'reset', 'skip', 'complete', 'query', 'status'].includes(sub ?? '') && pos.length === 0) pos.push('');
+  if (valueOf('--item') && ['add-stage', 'delete-stage', 'move-up', 'move-down', 'stage-due', 'priority', 'rename', 'postpone', 'note'].includes(sub ?? '')) pos.unshift('');
   const exec = async (decision: unknown, mutationApproved: boolean) =>
     (await call('eureka.execute', requestId, { requestId, operationId, decision, deadlineAt: deadline(), mutationApproved })) as EurekaResult;
   /** 확인 질문이면 답을 받아 같은 요청을 mutationApproved=true로 다시 보낸다 (파이프라인 흐름) */
@@ -153,7 +169,7 @@ async function eureka() {
       showEureka(`${title} — 승인 후 (mutationApproved=true)`, requestId, r);
     }
   };
-  const need = (v: string | undefined, what: string) => v ?? fail(`${what}이(가) 필요해요 (따옴표로 감싸세요)`);
+  const need = (v: string | undefined, what: string) => (v === '' && valueOf('--item') ? undefined : v) ?? (valueOf('--item') && what === '업무 이름' ? '' : fail(`${what}이(가) 필요해요 (따옴표로 감싸세요)`));
 
   if (sub === 'list') return run('목록', eurekaDecision('list'));
   if (sub === 'processes') return run('업무 유형', eurekaDecision('query_processes'));
@@ -162,13 +178,23 @@ async function eureka() {
   if (sub === 'postpone') return run('마감 변경', eurekaDecision('postpone', { target: need(pos[0], '업무 이름'), dueAt: need(pos[1], '새 마감(예: 2026-11-20T23:59:00+09:00)') }));
   if (sub === 'note') return run('단계 기록', eurekaDecision('add_note', { target: need(pos[0], '업무 이름'), note: need(pos[1], '기록 내용'), name: valueOf('--stage') }));
   if (sub === 'complete') return run('업무 완료', eurekaDecision('complete', { target: need(pos[0], '업무 이름') }));
-  if (sub === 'unsupported') return run('미지원 작업', eurekaDecision('delete', { target: pos[0] ?? '아무 업무' }));
+  if (sub === 'delete') return run('업무 삭제', eurekaDecision('delete', { target: need(pos[0], '업무 이름') }));
+  if (sub === 'hold') return run('업무 보류', eurekaDecision('hold', { target: need(pos[0], '업무 이름') }));
+  if (sub === 'resume') return run('업무 재개', eurekaDecision('resume', { target: need(pos[0], '업무 이름') }));
+  if (sub === 'start' || sub === 'reset' || sub === 'skip') return run(`단계 ${sub}`, eurekaDecision(`${sub}_stage`, { target: need(pos[0], '업무 이름'), name: valueOf('--stage') }));
+  if (sub === 'priority') return run('우선순위 변경', eurekaDecision('update_priority', { target: need(pos[0], '업무 이름'), priority: need(pos[1], '우선순위(낮음·보통·높음·긴급)') }));
+  if (sub === 'rename') return run('이름 변경', eurekaDecision('update_item', { target: need(pos[0], '업무 이름'), task: need(pos[1], '새 이름') }));
+  if (sub === 'add-stage') return run('단계 추가', eurekaDecision('add_stage', { target: need(pos[0], '업무 이름') || undefined, name: need(pos[1], '단계 이름'), dueAt: pos[2] }));
+  if (sub === 'delete-stage') return run('단계 삭제', eurekaDecision('delete_stage', { target: need(pos[0], '업무 이름') || undefined, name: need(pos[1], '단계 이름') }));
+  if (sub === 'move-up' || sub === 'move-down') return run('단계 순서', eurekaDecision(sub === 'move-up' ? 'move_stage_up' : 'move_stage_down', { target: need(pos[0], '업무 이름') || undefined, name: need(pos[1], '단계 이름') }));
+  if (sub === 'stage-due') return run('단계 마감', eurekaDecision('postpone', { target: need(pos[0], '업무 이름') || undefined, name: need(pos[1], '단계 이름'), dueAt: need(pos[2], '새 마감(예: 2026-11-20T18:00:00+09:00)') }));
+  if (sub === 'unsupported') return run('미지원 작업', eurekaDecision('query_actors', { target: pos[0] ?? '아무 업무' }));
   if (sub === 'reconcile') {
     if (!valueOf('--req') || !valueOf('--op')) fail('--req <requestId> --op <operationId> 가 필요해요 (쓰기 결과에 찍힌 값)');
     const r = (await call('eureka.reconcile', requestId, { requestId, operationId, decision: eurekaDecision('query'), deadlineAt: deadline() })) as EurekaResult;
     return showEureka('결과 조회', requestId, r);
   }
-  fail(`알 수 없는 하위 명령: ${sub ?? '(없음)'} — list | processes | query | create | postpone | note | complete | unsupported | reconcile`);
+  fail(`알 수 없는 하위 명령: ${sub ?? '(없음)'} — list | processes | query | create | postpone | note | complete | delete | hold | resume | start | reset | skip | priority | rename | add-stage | delete-stage | move-up | move-down | stage-due | unsupported | reconcile`);
 }
 
 // --------------------------------------------------------------- harness

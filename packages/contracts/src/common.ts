@@ -82,7 +82,7 @@ export type AllowedAction = z.infer<typeof AllowedAction>;
  * 직접 Eureka 경로 행위. 계약 미정 (다이어그램 EurekaGateway 주석).
  * Harness `unclear → direct_eureka` 경로에서도 EurekaGateway를 직접 호출할 때 사용한다.
  */
-export const DirectEurekaAction = z.enum(['register_item', 'postpone_item', 'complete_item', 'add_stage_note', 'list_processes']);
+export const DirectEurekaAction = z.enum(['register_item', 'postpone_item', 'complete_item', 'delete_item', 'hold_item', 'resume_item', 'set_stage_status', 'set_item_priority', 'rename_item', 'edit_stages', 'add_stage_note', 'list_processes']);
 export type DirectEurekaAction = z.infer<typeof DirectEurekaAction>;
 
 export const ActionName = z.union([AllowedAction, DirectEurekaAction]);
@@ -95,6 +95,13 @@ export const WRITE_ACTIONS: ReadonlySet<ActionName> = new Set<ActionName>([
   'register_item',
   'postpone_item',
   'complete_item',
+  'delete_item',
+  'hold_item',
+  'resume_item',
+  'set_stage_status',
+  'set_item_priority',
+  'rename_item',
+  'edit_stages',
   'add_stage_note',
 ]);
 export const isWriteAction = (a: ActionName): boolean => WRITE_ACTIONS.has(a);

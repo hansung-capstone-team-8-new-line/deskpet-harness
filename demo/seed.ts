@@ -1,0 +1,162 @@
+/* eslint-disable no-console */
+/**
+ * 시연용 실행 기록 만들기 (2026-11-14). 켜 둔 Harness 서버에 실제 요청을 차례로 보내 웹 '기록' 탭에 여러 결과를 남긴다.
+ * 파이프라인 대신 같은 형식으로 보내고, 사용자 발화 문장(transcript)을 같이 실어 기록에 문장이 보이게 한다.
+ *
+ *   pnpm start                      # 터미널 1
+ *   pnpm demo:seed                  # 터미널 2 — 읽기 + 확인 질문 거절만. 외부에 아무것도 바꾸지 않는다
+ *   pnpm demo:seed --reminder       # + 리마인더 예시: 업무 1개 '[시연] 캡스톤 최종 발표 준비'에 단계 3개(마감 1·3·6일 뒤) — Eureka 쓰기
+ *   pnpm demo:seed --fixture        # pnpm web:fixture 서버(가짜 GitHub·Eureka)로
+ *
+ * 기록에 남는 결과: 완료(업무 목록·업무 상태·PR 리뷰), 질문함(업무 등록·PR 승인 확인), 실패(없는 업무), 거절 답변
+ * 시연 업무 정리: pnpm demo:adapter eureka delete "[시연] 캡스톤 최종 발표 준비" → 응
+ * .env: HARNESS_WS_URL(기본 ws://127.0.0.1:8787), HARNESS_WS_TOKEN, GITHUB_TEST_REPO(owner/name), GITHUB_TEST_PR
+ */
+import { HarnessClient, type Reply } from './harnessClient.js';
+
+const fixture = process.argv.includes('--fixture');
+// --reminder도 받는다 (2026-11-14: 단수로 쳐서 리마인더가 안 만들어졌던 일)
+const withReminders = process.argv.includes('--reminders') || process.argv.includes('--reminder');
+const unknownFlags = process.argv.slice(2).filter((a) => a.startsWith('--') && !['--reminders', '--reminder', '--fixture'].includes(a));
+try {
+  process.loadEnvFile('.env');
+} catch {
+  if (!fixture) console.log('! .env 파일을 찾지 못했어요. app 폴더에서 실행했는지 확인하세요.');
+}
+const env = process.env;
+if (fixture) {
+  env['HARNESS_WS_URL'] = 'ws://127.0.0.1:8788';
+  env['HARNESS_WS_TOKEN'] = 'fixture-pipeline-token-123';
+  env['GITHUB_TEST_REPO'] = 'NewLine/DeskPet';
+  env['GITHUB_TEST_PR'] = '42';
+}
+const fail = (msg: string): never => {
+  console.log(`✗ ${msg}`);
+  process.exit(1);
+};
+const token = env['HARNESS_WS_TOKEN']?.trim() || fail('HARNESS_WS_TOKEN이 비어 있어요');
+const runId = Date.now().toString(36);
+const client = new HarnessClient(env['HARNESS_WS_URL']?.trim() || 'ws://127.0.0.1:8787', runId);
+let n = 0;
+const id = (p: string) => `seed-${p}-${runId}-${++n}`;
+const deadline = (sec = 60) => new Date(Date.now() + sec * 1000).toISOString();
+const conversationId = `seed-conv-${runId}`;
+
+type EurekaResult = { status: string; facts: Record<string, string>; error: { code: string } | null };
+type RunResult = { action: { status: string; facts: Record<string, string> }; question: string | null; resultText: string | null };
+
+async function call(kind: string, requestId: string, payload: unknown, withDeadline = true): Promise<unknown> {
+  const r: Reply = await client.request(kind, requestId, payload, withDeadline ? deadline() : undefined);
+  if (!r.ok) throw new Error(`${kind} 거부: ${r.error?.code} ${r.error?.message}`);
+  return r.payload;
+}
+
+function line(say: string, status: string, text?: string | null) {
+  console.log(`  “${say}” → ${status}${text ? ` — ${text}` : ''}`);
+}
+
+/** 직접 Eureka 요청 (라우터 형식). transcript는 기록에 문장을 남기기 위한 Harness 확장 필드 */
+async function eureka(say: string, operation: string, heads: Record<string, string> = {}, mutationApproved = false, resolvedTarget?: unknown) {
+  const requestId = id('eureka');
+  const all: Record<string, string> = { intention: 'eureka', modelIntention: 'eureka', operation, ...heads };
+  const decision = { headOutputs: Object.fromEntries(Object.entries(all).map(([k, v]) => [k, { value: v, confidence: 0.95 }])), overallConfidence: 0.93, missingRequiredSlots: [], route: 'eureka', ...(resolvedTarget ? { resolvedTarget } : {}) };
+  const payload = { requestId, operationId: id('op'), decision, deadlineAt: deadline(), mutationApproved, transcript: { text: say, isFinal: true, sttConfidence: 0.93 } };
+  const r = (await call('eureka.execute', requestId, payload)) as EurekaResult;
+  line(say, r.error ? `${r.status} (${r.error.code})` : r.status, r.facts['resultText'] ?? r.facts['question']);
+  // 확인 질문에 승인 답을 했을 때 파이프라인이 보내는 것처럼: 같은 요청을 mutationApproved=true로, 문장은 답변
+  return { r, again: (answer: string) => call('eureka.execute', requestId, { ...payload, mutationApproved: true, transcript: { text: answer, isFinal: true, sttConfidence: 0.95 } }) as Promise<EurekaResult> };
+}
+
+async function harnessRun(requestId: string, say: string, intention: string, target: unknown, mutationApproved = false) {
+  const transcript = { text: say, isFinal: true, sttConfidence: 0.94 };
+  const r = (await call('harness.run', requestId, {
+    action: { requestId, operationId: id('op'), decision: { headOutputs: { intention: { value: intention, confidence: 0.95 } }, overallConfidence: 0.93, missingRequiredSlots: [], route: 'harness', resolvedTarget: target }, deadlineAt: deadline() },
+    transcript,
+    context: { requestId, turnId: id('turn'), transcript, stamp: { conversationId }, turns: [] },
+    wikiSearchAllowed: false,
+    mutationApproved,
+  })) as RunResult;
+  line(say, r.action.status, r.question ?? r.resultText);
+  return r;
+}
+
+async function main() {
+  if (unknownFlags.length) fail(`모르는 옵션: ${unknownFlags.join(' ')} (--reminders, --fixture만 받아요)`);
+  await client.connect(token, 'pipeline');
+  console.log(`시연 기록 만들기 (${fixture ? 'fixture' : '실제 서버'})`);
+
+  console.log('\n[Eureka]');
+  const list = await eureka('지금 진행 중인 업무 뭐 있어?', 'list');
+  // 목록 결과에서 업무 이름 하나를 골라 상태를 묻는다 (없으면 건너뜀)
+  let firstName = env['SEED_ITEM_NAME'];
+  try {
+    firstName ??= (JSON.parse(list.r.facts['items'] ?? '[]') as { name?: string }[])[0]?.name;
+  } catch {
+    /* 목록 형식이 다르면 건너뜀 */
+  }
+  if (firstName) await eureka(`${firstName} 업무 어디까지 했어?`, 'query', { target: firstName });
+  await eureka('우주선 발사 준비 업무 상태 알려줘', 'query', { target: '우주선 발사 준비' });
+  // 확인 질문까지만: 답을 거절하므로 등록하지 않는다
+  await eureka('발표 리허설 업무 새로 만들어 줘', 'create', { task: '발표 리허설', dueAt: new Date(Date.now() + 3 * 86_400_000).toISOString() });
+
+  if (withReminders) {
+    // 업무 하나 + 실행 단계 3개(단계마다 마감). 업무 템플릿에서 따라온 기본 단계는 지운다 (2026-11-14 사용자 요청)
+    console.log('\n[리마인더 예시 — Eureka 쓰기: 업무 1개 + 단계 3개]');
+    const at = (days: number) => {
+      const d = new Date(Date.now() + days * 86_400_000);
+      d.setHours(18, 0, 0, 0);
+      return d.toISOString();
+    };
+    const itemName = '[시연] 캡스톤 최종 발표 준비';
+    // 이미 있으면(지난번 실행) 다시 만들지 않고 그 업무의 단계만 맞춘다
+    const found = await eureka(`${itemName} 업무 있어?`, 'query', { target: itemName });
+    let itemId = found.r.status === 'succeeded' ? found.r.facts['itemId'] : undefined;
+    if (!itemId) {
+      const q = await eureka('캡스톤 최종 발표 준비 업무 6일 뒤 마감으로 등록해 줘', 'create', { task: itemName, dueAt: at(6) });
+      const created = q.r.status === 'needs_clarification' ? await q.again('응, 등록해') : q.r;
+      line('응, 등록해', created.error ? `${created.status} (${created.error.code})` : created.status, created.facts['resultText']);
+      itemId = created.facts['itemId'];
+      if (created.status !== 'succeeded' || !itemId) throw new Error('업무 등록이 끝나지 않아 단계를 넣지 않았어요');
+    }
+    const target = { kind: 'eureka_item', itemId };
+    const st = await eureka('그 업무 단계 보여 줘', 'query', {}, false, target);
+    if (st.r.status !== 'succeeded') throw new Error(`방금 만든 업무(${itemId})를 다시 읽지 못했어요`);
+    const existing = (JSON.parse(st.r.facts['stages'] ?? '[]') as { name: string }[]).map((x) => x.name);
+    const plan: [string, number][] = [
+      ['중간 발표 자료 정리', 1],
+      ['하드웨어 케이스 출력', 3],
+      ['최종 보고서 초안', 6],
+    ];
+    for (const [stage, days] of plan) {
+      if (existing.includes(stage)) await eureka(`${stage} 단계 마감 ${days}일 뒤로 바꿔 줘`, 'postpone', { name: stage, dueAt: at(days) }, true, target);
+      else await eureka(`${stage} 단계 ${days}일 뒤 마감으로 추가해 줘`, 'add_stage', { name: stage, dueAt: at(days) }, true, target);
+    }
+    // 업무 템플릿에서 따라온 기본 단계를 지운다 (단계가 하나도 없으면 안 되므로 실행 단계를 넣은 뒤에)
+    for (const stage of existing.filter((x) => !plan.some(([p]) => p === x))) await eureka(`${stage} 단계는 지워 줘`, 'delete_stage', { name: stage }, true, target);
+  }
+
+  const [owner, name] = (env['GITHUB_TEST_REPO'] ?? '').split('/');
+  const prNumber = Number(env['GITHUB_TEST_PR']);
+  if (owner && name && prNumber) {
+    console.log('\n[GitHub]');
+    const target = { kind: 'github_pr', repository: { owner, name }, prNumber };
+    await harnessRun(id('review'), `PR ${prNumber}번 리뷰해 줘`, 'pr.review', target);
+    const approveId = id('approve');
+    const q = await harnessRun(approveId, `PR ${prNumber}번 승인해 줘`, 'pr.approve', target);
+    if (q.action.status === 'needs_clarification' && q.question) {
+      // 질문이 사용자에게 전달됐다고 보고한 뒤 거절한다 (승인하지 않음)
+      const f = q.action.facts;
+      await call('pipeline.event', f['harnessRequestId']!, { messageId: id('ev'), requestId: f['harnessRequestId'], pendingId: f['pendingId'], outputId: f['outputId'], sourceRevision: 1, occurredAt: new Date().toISOString(), kind: 'question_delivered', channel: 'speech', deliveredText: q.question }, false);
+      await harnessRun(approveId, '아니, 아직 보류해', 'confirm.reject', target);
+    }
+  } else console.log('\n[GitHub] GITHUB_TEST_REPO·GITHUB_TEST_PR이 없어 PR 기록은 건너뜀');
+
+  console.log('\n끝. 웹 → 기록 탭에서 확인하세요.' + (withReminders ? ' 리마인더(단계별 마감)는 현황 새로 고침 뒤 작업 탭 아래에 보여요.' : ''));
+}
+
+main()
+  .catch((e: unknown) => {
+    console.log(`✗ ${e instanceof Error ? e.message : String(e)}`);
+    process.exitCode = 1;
+  })
+  .finally(() => client.close());

@@ -16,6 +16,8 @@ export interface OverviewStage {
   stageId: string;
   name: string;
   status: string;
+  /** 단계 마감 (2026-11-14) */
+  dueAt?: string;
 }
 
 export interface OverviewPr {
@@ -57,7 +59,8 @@ export interface Overview {
   observedAt?: string;
   items: OverviewItem[];
   autoFocusId?: string;
-  reminders: { itemId: string; name: string; dueAt: string; overdue: boolean; daysLeft: number }[];
+  /** 업무 마감과 단계 마감 (단계면 stageName이 있다) */
+  reminders: { itemId: string; name: string; stageName?: string; dueAt: string; overdue: boolean; daysLeft: number }[];
   links: { eurekaWebUrl?: string; repos: OverviewRepo[] };
   /** 실패·일부만 읽은 이유 (사람이 읽는 짧은 문장) */
   problems: string[];
@@ -205,7 +208,8 @@ export class OverviewService {
       if (this.opt.github) {
         try {
           const b = await this.opt.github.read({ kind: 'open_prs', repository: r, perPage: 20 }, { timeoutMs: TIMEOUT_MS });
-          repo.openPrs = b.prs;
+          // 본문은 웹으로 보내지 않는다 (Eureka 표시 찾기는 서버 안에서만)
+          repo.openPrs = b.prs.map(({ body: _body, ...p }) => p);
           repo.hasMore = b.hasMore;
         } catch (e) {
           repo.error = (e as { kind?: string }).kind === 'not_found' ? '저장소를 찾지 못했어요 (이름·토큰 권한 확인)' : '열린 PR을 읽지 못했어요';
@@ -217,11 +221,15 @@ export class OverviewService {
 
     const days = this.opt.reminderDays ?? 7;
     const now = this.now();
-    const reminders = items
-      .filter((i) => i.dueAt)
-      .map((i) => {
-        const ms = Date.parse(i.dueAt!) - now;
-        return { itemId: i.itemId, name: i.name, dueAt: i.dueAt!, overdue: ms < 0, daysLeft: Math.ceil(ms / 86_400_000) };
+    // 업무 마감 + 끝나지 않은 단계의 마감 (단계별 마감, 2026-11-14)
+    const dues = items.flatMap((i) => [
+      ...(i.dueAt ? [{ itemId: i.itemId, name: i.name, dueAt: i.dueAt }] : []),
+      ...i.stages.filter((s) => s.dueAt && s.status !== 'done' && s.status !== 'skip').map((s) => ({ itemId: i.itemId, name: i.name, stageName: s.name, dueAt: s.dueAt! })),
+    ]);
+    const reminders = dues
+      .map((d) => {
+        const ms = Date.parse(d.dueAt) - now;
+        return { ...d, overdue: ms < 0, daysLeft: Math.ceil(ms / 86_400_000) };
       })
       .filter((r) => r.overdue || r.daysLeft <= days)
       .sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt));
@@ -256,7 +264,7 @@ function toItem(t: TaskSummary): OverviewItem {
     ...(t.description ? { description: t.description.slice(0, 500) } : {}),
     ...(t.priority ? { priority: t.priority } : {}),
     ...(t.dueAt ? { dueAt: t.dueAt } : {}),
-    stages: stages.map((s) => ({ stageId: s.stageId, name: s.name, status: s.status })),
+    stages: stages.map((s) => ({ stageId: s.stageId, name: s.name, status: s.status, ...(s.dueAtMs ? { dueAt: new Date(s.dueAtMs).toISOString() } : {}) })),
     doneStages: stages.filter((s) => s.status === 'done' || s.status === 'skip').length,
     ...(current ? { currentStage: current.name } : {}),
     prs: [],
