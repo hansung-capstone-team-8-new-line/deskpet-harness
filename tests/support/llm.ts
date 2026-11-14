@@ -128,7 +128,16 @@ export function createScriptedSwarmLlm(): LlmClient {
             return { text: JSON.stringify(json), json, model: 'scripted' };
           }
 
-          const wantsApproval = /(승인|approve|lgtm|허가)/i.test(goal);
+          const lastToolOut = (observations['lastToolResult'] as { output?: Record<string, unknown> } | undefined)?.output;
+          const reviewObj =
+            lastToolOut && typeof lastToolOut === 'object' ? lastToolOut : safeJson(reviewEntry.outputPreview);
+          const blockers = Array.isArray((observations['lastReviewFacts'] as Record<string, unknown> | undefined)?.['approvalBlockers'])
+            ? ((observations['lastReviewFacts'] as Record<string, unknown>)['approvalBlockers'] as unknown[])
+            : Array.isArray(reviewObj['approvalBlockers'])
+              ? (reviewObj['approvalBlockers'] as unknown[])
+              : [];
+          const offerApproval = reviewObj['offerApprovalAfterReview'] === true && blockers.length === 0;
+          const wantsApproval = /(승인|approve|lgtm|허가)/i.test(goal) || offerApproval;
           const approveEntry = history.find((h) => toolNameOf(h) === 'github_fast_submit_approval');
           if (wantsApproval && !approveEntry) {
             const lastHeadSha =

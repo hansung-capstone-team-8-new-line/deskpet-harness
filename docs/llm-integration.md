@@ -74,8 +74,7 @@ GEMINI_MODEL=gemini-3.1-flash-lite
 
 pnpm install                 # 새 패키지(@deskpet/llm, @google/genai, openai, langchain) 설치
 pnpm smoke llm               # 작은 호출 2번 (Guide 단계 1, 출력 문장 1)
-pnpm demo 11 --ask "이 PR 뭐가 바뀌었어?"   # 규칙이 모르는 의도 → LLM 보조 Guide
-pnpm demo 11                 # 기존 흐름 + 출력 문장 다듬기 (모델 문장 거부 시 이유 표시)
+pnpm demo:adapter harness 11   # 리뷰 흐름 + 출력 문장 다듬기 (모델 문장 거부 시 이유 표시)
 ```
 
 ## 원격 fallback 어댑터를 추가할 때

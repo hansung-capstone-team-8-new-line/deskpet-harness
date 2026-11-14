@@ -14,9 +14,8 @@
 | `packages/server/src/protocol.ts` | 프레임 형식 | 필요하면 수정 |
 | `packages/server/src/inbound.ts` | Envelope → Harness 호출 변환 (지금은 그대로 전달) | 입력 형식이 바뀌면 여기서 변환 |
 | `packages/server/src/HarnessWsServer.ts` | 인증·역할·상한·재전송·구독 | 그대로 |
-| `packages/server/src/operatorGate.ts` | (사용 안 함, D-22) 쓰기 직전 서버 콘솔 `yes` 확인 | 다시 필요해지면 서버에서 연결 |
 | `scripts/server.ts` | 실행 진입점 (`pnpm harness`) — `pnpm server`는 pnpm 자체 명령이라 쓰지 않는다 | 그대로 |
-| `demo/` | 파이프라인 흉내 클라이언트 (`pnpm demo`) | **폴더째 삭제 가능** (서버는 import하지 않음) |
+| `demo/` | 파이프라인 형식 시험 클라이언트 (`pnpm demo:adapter`) | **폴더째 삭제 가능** (서버는 import하지 않음) |
 
 ## 연결
 
@@ -94,10 +93,10 @@
 ## 쓰기
 
 - 기본은 쓰기 비활성.
-- `pnpm harness --allow-github-writes`일 때만 GitHub 승인 전송 가능. `DESKPET_STORE_PATH`(영속 저장소)가 없으면 시작하지 않는다.
+- GitHub 승인 전송은 기본으로 켜져 있다(D-38). `--read-only`·`--no-github-writes`로 끈다. `DESKPET_STORE_PATH`(영속 저장소)가 없으면 쓰기를 끄고 시작한다.
 - 승인은 요청 쪽 사용자 확인(질문 전달 보고 + 승인 답변)만으로 받는다. 서버 콘솔 `yes` 확인은 없앴다 (D-22).
 - 보내기 직전 head SHA·PR 상태·권한·필수 검사를 다시 확인한 다음에만 보낸다 (DurableAck 전).
-- Eureka 쓰기는 `pnpm harness --allow-eureka-writes`일 때만, 개발 환경(flw-d1)에서만 (D-20).
+- Eureka 쓰기도 기본으로 켜져 있다(D-38, `--no-eureka-writes`로 끔).
 
 ## 문서와 다른 점 (C-14)
 
@@ -107,10 +106,9 @@
 
 ```
 # 터미널 1
-pnpm harness                  # 또는 pnpm harness --allow-github-writes
+pnpm harness                  # 쓰기 허용이 기본. 조회만: pnpm harness --read-only
 # 터미널 2
-pnpm demo 12                 # 기존 데모와 같은 입력·출력
-pnpm demo 12 --ask "이 PR 뭐가 바뀌었어?"
+pnpm demo:adapter harness 12   # 파이프라인 형식으로 G-01 흐름
 ```
 
 ## 검증

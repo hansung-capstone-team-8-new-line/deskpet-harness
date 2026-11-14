@@ -24,7 +24,7 @@ export const TaskStage = z.object({
 });
 export type TaskStage = z.infer<typeof TaskStage>;
 
-/** 단계 기록. GET /_api_/notes/0/list?sites&detail=true&stageId= (PDF에 없음, 2026-10-24 flw-d1에서 확인) */
+/** 단계 기록. GET /_api_/notes/0/list?sites&detail=true&stageId= (PDF에 없음, 2026-10-24 Eureka에서 확인) */
 export const StageNote = z.object({
   noteId: Id,
   stageId: Id,

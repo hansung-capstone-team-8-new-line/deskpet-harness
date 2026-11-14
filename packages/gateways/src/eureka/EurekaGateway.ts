@@ -126,7 +126,7 @@ export class EurekaGateway implements EurekaGatewayPort {
   }
 
   /**
-   * 단계 기록 목록 (본문 포함). PDF에 없는 경로로, 2026-10-24 flw-d1에서 확인:
+   * 단계 기록 목록 (본문 포함). PDF에 없는 경로로, 2026-10-24 Eureka에서 확인:
    * GET /_api_/notes/0/list?sites&detail=true&stageId= → {total, limit, page, list:[{id, content, stageId, $:{uid}, ...}]}
    */
   async listStageNotes(query: { stageId: string; limit?: number }, c: CallConstraints): Promise<ReadOutcome<StageNoteList>> {

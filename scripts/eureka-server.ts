@@ -4,8 +4,9 @@
  * 별도 프로세스다. wiki deskpet-pipeline §4 "Eureka Internal API Deployment Review"의 목표 배치:
  * 긴 Harness 요청(LLM·GitHub)이 직접 Eureka 요청의 처리 용량·이벤트 루프·재시작을 함께 쓰지 않게 한다.
  *
- *   pnpm eureka:server                         # 읽기만 (쓰기 요청은 보내지 않음)
- *   pnpm eureka:server --allow-eureka-writes   # Eureka 쓰기 허용 (개발판 flw-d1·운영판 flw-v1). EUREKA_STORE_PATH 필수
+ *   pnpm eureka:server                         # Eureka 쓰기 허용이 기본 (D-38). 확인 받은 요청(mutationApproved)만 보낸다
+ *                                              # 쓰기에는 EUREKA_STORE_PATH가 필요하다. 없으면 쓰기를 끄고 시작한다
+ *   pnpm eureka:server --read-only             # 읽기만
  *
  * 메시지·봉투는 Harness 서버와 같다 (deskpet.harness.v1). 파이프라인은 Eureka 연결부 주소만 이 서버로 바꾸면 된다.
  * Harness 서버를 DESKPET_EUREKA_BRIDGE=external로 켜면 그쪽은 eureka.*를 받지 않는다 (작업 기록 권위를 한 곳에만 둔다).
@@ -15,12 +16,13 @@
  *   EUREKA_WS_TOKEN (없으면 HARNESS_WS_TOKEN, 16자 이상), EUREKA_WS_HOST(기본 127.0.0.1), EUREKA_WS_PORT(기본 8789)
  *   EUREKA_WS_ALLOWED_CLIENTS (다른 기기 접속 허용 IP·CIDR. EUREKA_WS_HOST를 loopback이 아닌 값으로 줄 때 필수)
  *   EUREKA_STORE_PATH (쓰기 작업 기록 SQLite. Harness의 DESKPET_STORE_PATH와 다른 파일이어야 함)
- *   DESKPET_ALLOWED_REPOS (PR 연결 후보로 받을 저장소 owner/name 목록, D-36. 비우면 제한 없음)
+ *   DESKPET_ALLOWED_REPOS (PR 연결 후보로 받을 저장소 owner/name 목록, D-36. 비우면 제한 없음. 웹 설정에서 저장한 settings.json이 있으면 그것을 씀, D-52)
  *   EUREKA_API_KEY, EUREKA_BASE_URL, EUREKA_DEFAULT_PROCESS_ID, EUREKA_MAX_CONCURRENT, EUREKA_NOTE_ACTOR_ID
  */
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { loadRuntimeSettings } from './runtimeSettings.js';
 import { ConcurrencyLimiter, parseAllowedRepositories } from '@deskpet/contracts';
-import { createEurekaRestGateway } from '@deskpet/gateways';
+import { EUREKA_DEFAULT_BASE_URL, createEurekaRestGateway } from '@deskpet/gateways';
 import { DEFAULT_POLICY, InMemoryOperationStore, StoreLockedError, randomIdGen, systemClock } from '@deskpet/harness';
 import { EurekaBridge, EurekaInbound, HarnessWsServer } from '@deskpet/server';
 
@@ -34,7 +36,8 @@ const fail = (msg: string): never => {
   console.log(`✗ ${msg}`);
   process.exit(1);
 };
-const allowWrites = process.argv.includes('--allow-eureka-writes');
+let allowWrites = !process.argv.includes('--read-only');
+const writeWarnings: string[] = [];
 
 const token = env['EUREKA_WS_TOKEN']?.trim() || env['HARNESS_WS_TOKEN']?.trim() || fail('EUREKA_WS_TOKEN(또는 HARNESS_WS_TOKEN)이 비어 있어요 (16자 이상)');
 if (token.length < 16) fail('토큰은 16자 이상이어야 해요');
@@ -45,12 +48,13 @@ const allowedClients = (env['EUREKA_WS_ALLOWED_CLIENTS'] ?? '').split(',').map((
 if (lan && !allowedClients.length) fail(`EUREKA_WS_HOST=${host}로 다른 기기 접속을 열려면 EUREKA_WS_ALLOWED_CLIENTS가 필요해요`);
 if (lan && token.length < 24) fail('다른 기기 접속을 열 때는 토큰을 24자 이상으로 해 주세요');
 
-const base = env['EUREKA_BASE_URL']?.trim() || 'https://api.eureka.codes/flw-d1';
-const envName = /\/flw-d1\/?$/.test(base) ? '개발판 flw-d1' : /\/flw-v1\/?$/.test(base) ? '운영판 flw-v1' : undefined;
-if (allowWrites && !envName) fail(`--allow-eureka-writes는 Eureka 개발판(flw-d1)·운영판(flw-v1) 주소에서만 켤 수 있어요 (지금: ${base})`);
+const base = env['EUREKA_BASE_URL']?.trim() || EUREKA_DEFAULT_BASE_URL;
 
 const storePath = env['EUREKA_STORE_PATH']?.trim();
-if (allowWrites && !storePath) fail('--allow-eureka-writes는 EUREKA_STORE_PATH(영속 저장소)가 있어야 켤 수 있어요');
+if (allowWrites && !storePath) {
+  allowWrites = false;
+  writeWarnings.push('EUREKA_STORE_PATH(영속 저장소)가 없어 쓰기를 끄고 시작해요. .env에 EUREKA_STORE_PATH=.deskpet/eureka.db 를 넣으세요');
+}
 const harnessStore = env['DESKPET_STORE_PATH']?.trim();
 if (storePath && harnessStore && resolve(storePath) === resolve(harnessStore)) fail('EUREKA_STORE_PATH는 Harness의 DESKPET_STORE_PATH와 다른 파일이어야 해요');
 const storeOpts = {
@@ -77,8 +81,12 @@ const eureka = (() => {
     return fail(e instanceof Error ? e.message : String(e));
   }
 })();
-const allowed = parseAllowedRepositories(env['DESKPET_ALLOWED_REPOS']);
-if (allowed.invalid.length) fail(`DESKPET_ALLOWED_REPOS 형식이 틀렸어요 (owner/name,owner/name): ${allowed.invalid.join(', ')}`);
+const envAllowed = parseAllowedRepositories(env['DESKPET_ALLOWED_REPOS']);
+if (envAllowed.invalid.length) fail(`DESKPET_ALLOWED_REPOS 형식이 틀렸어요 (owner/name,owner/name): ${envAllowed.invalid.join(', ')}`);
+// 웹 설정에서 저장한 승인 허용 저장소가 있으면 그것을 쓴다 (D-52). 시작할 때 한 번 읽으므로 바꾼 뒤에는 이 서버를 다시 켠다
+const settingsPath = env['DESKPET_SETTINGS_PATH']?.trim() ? resolve(env['DESKPET_SETTINGS_PATH'].trim()) : harnessStore ? resolve(dirname(resolve(harnessStore)), 'settings.json') : undefined;
+const loaded = loadRuntimeSettings(settingsPath, { allowedRepositories: envAllowed.repos });
+const allowed = parseAllowedRepositories(loaded.settings.allowedRepositories.join(','));
 const processId = env['EUREKA_DEFAULT_PROCESS_ID']?.trim();
 const bridge = new EurekaBridge({ eureka, store, clock: systemClock, holderId: `eureka-server-${process.pid}`, ...(allowed.repos.length ? { allowedRepositories: allowed.repos } : {}), ...(processId ? { defaultProcessId: processId } : {}) });
 const server = new HarnessWsServer({
@@ -94,7 +102,8 @@ const server = new HarnessWsServer({
 
 async function main() {
   console.log('DeskPet Eureka 내부 API 서버 (D-31)');
-  console.log(`Eureka: ${envName ?? base} / 쓰기 ${allowWrites ? '허용 (확인 받은 요청만, mutationApproved)' : '꺼짐'} / 동시 호출 ${max}건`);
+  console.log(`Eureka: ${base} / 쓰기 ${allowWrites ? '허용 (확인 받은 요청만, mutationApproved)' : '꺼짐'} / 동시 호출 ${max}건`);
+  for (const w of writeWarnings) console.log(`! ${w}`);
   console.log(`받는 요청: eureka.execute · eureka.reconcile · eureka.reminders · eureka.reminder · eureka.links`);
   console.log(storePath ? `저장소: ${storePath}` : '저장소: 메모리 (EUREKA_STORE_PATH 미설정 → 끄면 기록이 사라짐)');
   const r = await server.start();

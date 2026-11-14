@@ -686,7 +686,9 @@ export class HarnessService {
     const facts = ctx.prBasics
       ? reviewFacts(
           ctx,
-          purpose === 'approval_precheck' ? (expectedHeadSha ?? ctx.initialHeadSha) : undefined,
+          purpose === 'approval_precheck' || this.cfg.offerApprovalAfterReview
+            ? (expectedHeadSha ?? ctx.initialHeadSha)
+            : undefined,
           {
             ignoreChecks: this.cfg.prChecks === 'skip',
             repositoryAllowed: isRepositoryAllowed(

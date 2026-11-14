@@ -2,6 +2,7 @@ import type { ChecksData, PrBasics, Repository, ReviewItem, ViewerPermission } f
 import {
   GitHubTransportError,
   type GitHubTransport,
+  type OpenPullRequest,
   type TransportErrorKind,
   type TransportReadQuery,
   type TransportReadResultMap,
@@ -36,6 +37,8 @@ export class FakeGitHubTransport implements GitHubTransport {
   afterRead?: (kind: TransportReadQuery['kind'], callIndex: number) => void;
   /** 승인 제출이 서버에 반영된 직후 실행할 훅 (예: 승인 직후 새 커밋 push) */
   afterSubmit?: () => void;
+  /** 열린 PR 목록 (open_prs 읽기, 웹 현황) */
+  openPrs: OpenPullRequest[] = [];
 
   constructor(
     readonly mode: 'mcp' | 'rest',
@@ -109,6 +112,8 @@ export class FakeGitHubTransport implements GitHubTransport {
         };
       case 'viewer':
         return { ...this.viewer };
+      case 'open_prs':
+        return { prs: this.openPrs, hasMore: false };
     }
   }
 

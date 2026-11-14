@@ -1,31 +1,36 @@
 import { SearchIcon } from 'lucide-react';
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ConnectForm } from '@/components/connect-form';
 import { DetailPanel } from '@/components/detail-panel';
+import { HistoryView } from '@/components/history-view';
+import { CurrentWorkCard, RemindersAndLinks } from '@/components/overview';
+import { SettingsView, adminMessage } from '@/components/settings-view';
 import { TaskTable } from '@/components/task-table';
+import { UpdateBanner } from '@/components/update-banner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { HarnessConnection, type ConnView } from '@/lib/connection';
 import { STATUS_LABEL, STATUS_ORDER, filterRows, toRows, type StatusKey } from '@/lib/model';
+import { clearConnection, loadAdminToken, loadConnection, saveAdminToken, saveConnection, useSettings, type SavedConnection } from '@/lib/settings';
+import { cn } from '@/lib/utils';
 
-const DEFAULT_URL = 'ws://127.0.0.1:8787';
-const KEY = 'deskpet.viewer';
-
-function loadSaved(): { url: string; token: string } | null {
-  try {
-    const raw = sessionStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as { url: string; token: string }) : null;
-  } catch {
-    return null;
-  }
-}
+/**
+ * 기본 서버 주소. Harness 서버가 이 화면을 내보낸 경우(D-42) 같은 주소의 WebSocket으로,
+ * Vite 개발 서버(pnpm web:dev)에서 열었으면 이 기기의 Harness 기본 주소로.
+ */
+const DEFAULT_URL = import.meta.env.DEV ? 'ws://127.0.0.1:8787' : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+/** 웹에서 업데이트를 누른 탭 표시 (새로 고침 뒤에도 한 번만 쓰고 지운다) */
+const UPDATED_HERE = 'deskpet.updatedHere';
 
 export function App() {
-  const [conn, setConn] = useState<HarnessConnection | null>(() => {
-    const s = loadSaved();
-    return s ? new HarnessConnection(s.url, s.token) : null;
+  const [saved, setSaved] = useState<SavedConnection | null>(() => {
+    const s = loadConnection();
+    if (s) return s;
+    // D-45: Harness 서버가 내보낸 화면이면 토큰 없이 바로 연결해 본다. 토큰이 필요한 서버면 연결 화면으로 돌아간다
+    return import.meta.env.DEV ? null : { url: DEFAULT_URL, token: '' };
   });
+  const conn = useMemo(() => (saved ? new HarnessConnection(saved.url, saved.token) : null), [saved]);
   const [formError, setFormError] = useState<string>();
 
   useEffect(() => {
@@ -34,19 +39,16 @@ export function App() {
     return () => conn.stop();
   }, [conn]);
 
-  if (!conn) {
+  if (!conn || !saved) {
     return (
       <ConnectForm
-        initialUrl={loadSaved()?.url ?? DEFAULT_URL}
+        initialUrl={loadConnection()?.url ?? DEFAULT_URL}
         error={formError}
         onConnect={(url, token) => {
-          try {
-            sessionStorage.setItem(KEY, JSON.stringify({ url, token }));
-          } catch {
-            /* 저장 실패해도 이 탭에서는 연결된다 */
-          }
+          const c = { url, token, remember: false };
+          saveConnection(c);
           setFormError(undefined);
-          setConn(new HarnessConnection(url, token));
+          setSaved(c);
         }}
       />
     );
@@ -54,34 +56,156 @@ export function App() {
   return (
     <Dashboard
       conn={conn}
+      saved={saved}
+      onReconnect={(c) => {
+        saveConnection(c);
+        setSaved(c);
+      }}
       onDisconnect={(error) => {
-        try {
-          sessionStorage.removeItem(KEY);
-        } catch {
-          /* 무시 */
-        }
+        clearConnection();
         setFormError(error);
-        setConn(null);
+        setSaved(null);
       }}
     />
   );
 }
 
-function Dashboard({ conn, onDisconnect }: { conn: HarnessConnection; onDisconnect: (error?: string) => void }) {
+type Tab = 'tasks' | 'history' | 'settings';
+const TAB_LABEL: Record<Tab, string> = { tasks: '작업', history: '기록', settings: '설정' };
+
+function Dashboard({ conn, saved, onReconnect, onDisconnect }: { conn: HarnessConnection; saved: SavedConnection; onReconnect: (c: SavedConnection) => void; onDisconnect: (error?: string) => void }) {
   const view = useSyncExternalStore(conn.subscribe, conn.getView);
+  const [settings, setSettings] = useSettings();
+  const [tab, setTab] = useState<Tab>('tasks');
+  const [adminToken, setAdminToken] = useState(loadAdminToken);
+  const [applyMsg, setApplyMsg] = useState<string>();
+  const updatedHere = useRef(false);
+  try {
+    updatedHere.current ||= sessionStorage.getItem(UPDATED_HERE) === '1';
+  } catch {
+    /* 무시 */
+  }
+
+  useEffect(() => {
+    if (view.state === 'auth_failed') onDisconnect(view.lastError);
+  }, [view.state, view.lastError, onDisconnect]);
+
+  // 이 탭에서 업데이트했고 서버가 새 버전으로 다시 켜졌으면 화면도 새로 고친다 (설정에서 끌 수 있음)
+  const commit = view.info?.version?.commit;
+  useEffect(() => {
+    if (view.state !== 'connected' || !commit || !view.firstCommit || commit === view.firstCommit) return;
+    if (updatedHere.current && settings.autoReload) {
+      try {
+        sessionStorage.removeItem(UPDATED_HERE);
+      } catch {
+        /* 무시 */
+      }
+      location.reload();
+    }
+  }, [view.state, commit, view.firstCommit, settings.autoReload]);
+
+  return (
+    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">DeskPet Harness</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">작업·확인 질문과 대화 기록 (보기 전용)</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <ConnectionText view={view} sync={conn.projector.syncStates().find((s) => s.source === 'harness')?.synchronizationState} />
+          <Button variant="outline" size="sm" onClick={() => onDisconnect()}>
+            연결 해제
+          </Button>
+        </div>
+      </header>
+
+      <nav role="tablist" aria-label="화면" className="mt-4 flex gap-1 border-b">
+        {(Object.keys(TAB_LABEL) as Tab[]).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            type="button"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            className={cn(
+              '-mb-px border-b-2 px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              tab === t ? 'border-foreground font-medium' : 'border-transparent text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {TAB_LABEL[t]}
+            {t === 'settings' && view.info?.update?.state === 'available' ? <span className="ml-1 text-xs text-muted-foreground">(새 버전)</span> : null}
+          </button>
+        ))}
+      </nav>
+
+      <ConnectionNotice view={view} sync={conn.projector.syncStates().find((s) => s.source === 'harness')} onRetry={() => conn.reconnectNow()} />
+      <UpdateBanner
+        view={view}
+        adminToken={adminToken}
+        onOpenSettings={() => setTab('settings')}
+        onApply={async () => {
+          setApplyMsg(undefined);
+          try {
+            sessionStorage.setItem(UPDATED_HERE, '1');
+          } catch {
+            /* 무시 */
+          }
+          updatedHere.current = true;
+          const r = await conn.admin(adminToken, 'update.apply');
+          if (!r.ok) {
+            updatedHere.current = false;
+            try {
+              sessionStorage.removeItem(UPDATED_HERE);
+            } catch {
+              /* 무시 */
+            }
+          }
+          // 성공은 위 알림(서버 상태)이 보여 주므로 실패만 따로 적는다
+          setApplyMsg(r.ok ? undefined : adminMessage(r.message));
+        }}
+      />
+      {applyMsg && (
+        <p role="status" className="mt-2 text-sm text-muted-foreground">
+          {applyMsg}
+        </p>
+      )}
+
+      {tab === 'tasks' && <TasksView conn={conn} view={view} hideFinished={settings.hideFinished} />}
+      {tab === 'history' && <HistoryView conn={conn} view={view} />}
+      {tab === 'settings' && (
+        <SettingsView
+          conn={conn}
+          view={view}
+          connection={saved}
+          settings={settings}
+          onSettings={setSettings}
+          onReconnect={onReconnect}
+          adminToken={adminToken}
+          onAdminToken={(t) => {
+            saveAdminToken(t);
+            setAdminToken(t);
+          }}
+        />
+      )}
+
+      <p className="mt-6 text-xs text-muted-foreground">이 화면은 상태를 보여 주기만 합니다. 승인 등 변경은 DeskPet의 확인 절차로만 처리됩니다.</p>
+    </div>
+  );
+}
+
+const FINISHED: ReadonlySet<StatusKey> = new Set(['succeeded', 'cancelled']);
+
+function TasksView({ conn, view, hideFinished }: { conn: HarnessConnection; view: ConnView; hideFinished: boolean }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<StatusKey | 'all'>('all');
   const [selectedId, setSelectedId] = useState<string>();
 
   // view.version이 바뀔 때마다 투영 상태를 다시 읽는다
   const rows = useMemo(() => toRows(conn.projector.objects('harness')), [conn, view.version]);
-  const sync = useMemo(() => conn.projector.syncStates().find((s) => s.source === 'harness'), [conn, view.version]);
-  const visible = filterRows(rows, query, status);
+  // 완료·취소 숨기기(설정)는 상태 필터로 그 상태를 직접 고르면 무시한다
+  const base = hideFinished && (status === 'all' || !FINISHED.has(status)) ? rows.filter((r) => !FINISHED.has(r.status)) : rows;
+  const visible = filterRows(base, query, status);
   const selected = rows.find((r) => r.id === selectedId);
-
-  useEffect(() => {
-    if (view.state === 'auth_failed') onDisconnect(view.lastError);
-  }, [view.state, view.lastError, onDisconnect]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -92,22 +216,8 @@ function Dashboard({ conn, onDisconnect }: { conn: HarnessConnection; onDisconne
   }, []);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">작업 상태</h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">DeskPet Harness의 작업과 확인 질문 (보기 전용)</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <ConnectionText view={view} sync={sync?.synchronizationState} />
-          <Button variant="outline" size="sm" onClick={() => onDisconnect()}>
-            연결 해제
-          </Button>
-        </div>
-      </header>
-
-      <ConnectionNotice view={view} sync={sync} onRetry={() => conn.reconnectNow()} />
-
+    <>
+      <CurrentWorkCard conn={conn} overview={view.overview} />
       <div className="mt-5 flex flex-wrap items-center gap-2">
         <div className="relative w-full sm:w-72">
           <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
@@ -140,6 +250,7 @@ function Dashboard({ conn, onDisconnect }: { conn: HarnessConnection; onDisconne
         )}
         <span className="ml-auto text-sm text-muted-foreground" aria-live="polite">
           {visible.length}건{visible.length !== rows.length ? ` / 전체 ${rows.length}건` : ''}
+          {hideFinished && base.length !== rows.length ? ' (완료·취소 숨김)' : ''}
         </span>
       </div>
 
@@ -158,9 +269,8 @@ function Dashboard({ conn, onDisconnect }: { conn: HarnessConnection; onDisconne
           )}
         </div>
       </div>
-
-      <p className="mt-6 text-xs text-muted-foreground">이 화면은 상태를 보여 주기만 합니다. 승인 등 변경은 DeskPet의 확인 절차로만 처리됩니다.</p>
-    </div>
+      <RemindersAndLinks overview={view.overview} />
+    </>
   );
 }
 

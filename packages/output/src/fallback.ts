@@ -13,6 +13,7 @@ interface ReviewFactsLike {
   changes?: { fileCount: number; additions: number; deletions: number };
   checks?: { requiredState: string; required?: string[]; requiredSource?: string; requiredReasonCode?: string; failing: string[]; pending: string[]; runs?: unknown[] };
   approvalWarnings?: string[];
+  approvalBlockers?: string[];
   copilot?: { status: string; comments: unknown[]; blockingComments: number; commentCoverage?: string };
 }
 
@@ -57,6 +58,9 @@ export function fallbackText(req: OutputRequest): { text: string; displayText: s
   // ---------------------------------------------------------------- 리뷰 요약
   if (review && !blocked && !approval && review.changes) {
     parts.push(reviewSentence(review));
+    // D-41: 리뷰만 한 경우(질문 없음) 승인할 수 없는 PR이면 이유를 한 문장 붙인다
+    const note = !question && f['offerApprovalAfterReview'] ? reviewApprovalNote(review.approvalBlockers ?? []) : '';
+    if (note) parts.push(note);
     display.push(`PR ${review.prNumber} @${short(review.headSha)}`);
   } else if (f['reviewError'] === 'sensor_assessment_pending' && !approval) {
     parts.push('PR 정보는 받았지만 검사 판정을 끝내지 못했어요. 확인되지 않은 내용으로는 진행하지 않을게요.');
@@ -210,7 +214,9 @@ export function fallbackText(req: OutputRequest): { text: string; displayText: s
     // 필수가 아닌 검사 실패는 차단하지 않고 경고로 알린다 (README D-14)
     const warn = question.purpose === 'confirm_pr_approval' ? warningSentence(review?.approvalWarnings ?? []) : '';
     if (warn) parts.push(warn);
-    parts.push(questionSentence(question, review?.prNumber ?? question.target?.prNumber));
+    // D-41: 차단 수준 Copilot 지적이 있으면 '그래도'를 붙여 묻는다
+    const blocking = question.purpose === 'confirm_pr_approval' && review?.copilot?.status === 'current' ? review.copilot.blockingComments : 0;
+    parts.push(`${blocking > 0 ? '그래도 ' : ''}${questionSentence(question, review?.prNumber ?? question.target?.prNumber)}`);
     display.push('답변 대기');
   }
 
@@ -266,8 +272,7 @@ function reviewSentence(r: ReviewFactsLike): string {
         s.push(r.copilot.comments.length === 0 ? '현재 커밋의 Copilot 리뷰는 있지만 세부 지적은 확인하지 못했어요.' : `Copilot 지적은 확인된 것만 ${r.copilot.comments.length}건이고, 나머지는 확인하지 못했어요.`);
       } else s.push(r.copilot.comments.length === 0 ? 'Copilot 지적은 없어요.' : `Copilot 지적 ${r.copilot.comments.length}건이 있고 차단 수준은 ${r.copilot.blockingComments}건이에요.`);
     } else if (r.copilot.status === 'stale_only') s.push('현재 커밋에 대한 Copilot 리뷰는 아직 없어요. 이전 커밋 리뷰만 있어요.');
-    else if (r.copilot.status === 'none') s.push('Copilot 리뷰는 없어요.');
-    else s.push('리뷰 목록은 확인하지 못했어요.');
+    // D-41: Copilot 리뷰가 없거나 목록을 못 읽었으면 말하지 않는다 (있을 때만 알린다)
   }
   if (r.consistency === 'changed') s.push('확인하는 동안 새 커밋이 추가돼서 일부 자료는 이전 버전 기준이에요.');
   return s.join(' ');
@@ -292,7 +297,20 @@ function blockedSentence(reasons: string[], pr?: number, review?: ReviewFactsLik
   return `조건이 맞지 않아 실행하지 않았어요 (${reasons.join(', ')}).`;
 }
 
-function questionSentence(q: { purpose: string; scope?: ConfirmationScope; questionText?: string }, pr?: number): string {
+/** D-41: 리뷰 뒤 승인할 수 없는 이유 한 문장. 알려 줄 만한 이유가 없으면 빈 문자열 */
+function reviewApprovalNote(reasons: string[]): string {
+  if (reasons.includes('cannot_approve_own_pr')) return '본인이 연 PR이라 GitHub에서 승인할 수는 없어요.';
+  if (reasons.includes('pr_merged')) return '이미 병합된 PR이라 승인할 수는 없어요.';
+  if (reasons.includes('pr_closed')) return '닫힌 PR이라 승인할 수는 없어요.';
+  if (reasons.includes('pr_draft')) return '초안 상태라 아직 승인할 수는 없어요.';
+  if (reasons.includes('repository_not_allowed')) return '승인을 허용한 저장소의 PR이 아니라 승인할 수는 없어요.';
+  if (reasons.some((r) => r.startsWith('required_check_failed'))) return '필수 검사가 실패해서 지금은 승인할 수 없어요.';
+  if (reasons.some((r) => r.startsWith('required_check_pending'))) return '필수 검사가 아직 진행 중이라 지금은 승인할 수 없어요.';
+  if (reasons.includes('permission_insufficient')) return '이 계정에는 승인 권한이 없어요.';
+  return '';
+}
+
+function questionSentence(q: { purpose: string; scope?: ConfirmationScope; questionText?: string }, _pr?: number): string {
   if (typeof q.questionText === 'string' && q.questionText.trim()) return q.questionText.trim();
   switch (q.purpose) {
     case 'identify_pr':
@@ -302,7 +320,8 @@ function questionSentence(q: { purpose: string; scope?: ConfirmationScope; quest
     case 'clarify_request':
       return '무엇을 도와드릴지 조금 더 자세히 말해 주시겠어요?';
     case 'restate_write_command':
-      return `승인 명령을 정확히 듣지 못했어요. ${pr ? `PR ${pr}번을 승인하려면 '${pr}번 승인해'라고` : '대상과 함께'} 다시 말해 주세요.`;
+      // D-39: 번호는 요구하지 않는다 (PR이 여럿이 되면 그때 다시 넣는다)
+      return "승인 명령을 정확히 듣지 못했어요. 승인하려면 '승인해'라고 다시 말해 주세요.";
     // 대상·행위·버전은 고정 범위 문구로만 말한다 (contracts/confirmation.ts)
     case 'confirm_pr_approval':
       return `${confirmationTokens(q.scope!)[0]}을 승인할까요?`;

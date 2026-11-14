@@ -22,6 +22,8 @@
  *     --eureka-server: Eureka 내부 API 서버(pnpm eureka:server, EUREKA_WS_URL 기본 ws://127.0.0.1:8789)에 붙는다
  *   pnpm demo:adapter harness [PR번호] [--answer "응, 승인해"]
  *   pnpm demo:adapter harness --item <itemId>            # 위와 같되 대상 PR·완료할 단계를 eureka.links로 찾는다
+ *   pnpm demo:adapter eureka <itemId>                    # harness --item <itemId>와 같음 (업무 → PR → 승인 → 단계 완료 한 번에)
+ *     Harness 서버가 DESKPET_EUREKA_BRIDGE=external이면 eureka.links만 Eureka 내부 API 서버(8789)에 묻는다
  *                                                        # HarnessAdapter.run: 리뷰 → 승인 질문 → output.generate → 전달 보고 → 답변
  *
  * .env: HARNESS_WS_URL(기본 ws://127.0.0.1:8787), HARNESS_WS_TOKEN, GITHUB_TEST_REPO, GITHUB_TEST_PR
@@ -31,6 +33,7 @@
  *   pnpm demo:adapter --fixture harness --answer "응, 승인해"
  */
 import { createInterface } from 'node:readline/promises';
+import { answerWordVerdict } from '@deskpet/harness';
 import { HarnessClient, type Reply } from './harnessClient.js';
 
 try {
@@ -87,11 +90,10 @@ function decision(intention: string, heads: Record<string, unknown> = {}, resolv
   };
 }
 
-/** 확인 답변 판정 (Harness inputPolicy와 같은 말 목록). 거절 말이 먼저, 승인 말이 없으면 unclear */
-const REJECT_WORDS = /(아니|안\s*돼|안\s*해|취소|보류|거절|거부|하지\s*마|하지\s*말|싫어|그만|nope|\bno\b|cancel|reject)/i;
-const APPROVE_WORDS = /(^|\s)(응|네|예|그래|좋아|맞아|ㅇㅇ|승인|완료해|진행해|반영해|yes|ok|okay)/i;
+/** 확인 답변 판정: Harness와 같은 말 목록(answerWordVerdict)을 쓴다. 되묻는 말·알 수 없는 말은 unclear */
 function answerVerdict(text: string): 'approve' | 'reject' | 'unclear' {
-  return REJECT_WORDS.test(text) ? 'reject' : APPROVE_WORDS.test(text) ? 'approve' : 'unclear';
+  const v = answerWordVerdict(text);
+  return v === 'approve' || v === 'reject' ? v : 'unclear';
 }
 
 async function ask(q: string): Promise<string | undefined> {
@@ -170,12 +172,33 @@ async function eureka() {
 }
 
 // --------------------------------------------------------------- harness
-async function links(itemId: string) {
+type LinkLookup = {
+  status: string;
+  links: { repository: { owner: string; name: string }; prNumber: number; itemId: string; stageId: string; stageName: string; noteId: string }[];
+};
+
+/**
+ * eureka.links. Harness 서버를 DESKPET_EUREKA_BRIDGE=external로 켰으면(D-31) 그 서버는 eureka.*를 받지 않으므로
+ * Eureka 내부 API 서버(EUREKA_WS_URL, 기본 ws://127.0.0.1:8789)에 다시 묻는다. 리뷰·승인·단계 완료는 그대로 Harness 서버
+ */
+async function links(itemId: string): Promise<LinkLookup> {
   const requestId = id('adapter-links');
-  return (await call('eureka.links', requestId, { requestId, itemId }, false)) as {
-    status: string;
-    links: { repository: { owner: string; name: string }; prNumber: number; itemId: string; stageId: string; stageName: string; noteId: string }[];
-  };
+  const r: Reply = await client.request('eureka.links', requestId, { requestId, itemId });
+  if (r.ok) return r.payload as LinkLookup;
+  if (r.error?.code !== 'unsupported_kind') fail(`eureka.links 거부: ${r.error?.code} ${r.error?.message}`);
+  const url2 = env['EUREKA_WS_URL']?.trim() || 'ws://127.0.0.1:8789';
+  console.log(`  (이 서버는 eureka.*를 받지 않아요 → Eureka 내부 API 서버 ${url2}에 물어요)`);
+  const eurekaClient = new HarnessClient(url2, `${runId}-e`);
+  try {
+    await eurekaClient.connect(env['EUREKA_WS_TOKEN']?.trim() || token, 'pipeline');
+    const r2: Reply = await eurekaClient.request('eureka.links', requestId, { requestId, itemId });
+    if (!r2.ok) fail(`eureka.links 거부 (${url2}): ${r2.error?.code} ${r2.error?.message}`);
+    return r2.payload as LinkLookup;
+  } catch (e) {
+    return fail(`Eureka 내부 API 서버(${url2})에 연결하지 못했어요: ${e instanceof Error ? e.message : String(e)} — pnpm eureka:server를 켰는지 확인하세요`);
+  } finally {
+    eurekaClient.close();
+  }
 }
 
 async function harness() {
@@ -239,6 +262,8 @@ async function harness() {
 
 async function main() {
   await client.connect(token, 'pipeline');
+  // eureka <업무번호>: 업무에서 시작하는 G-01 전체(연결된 PR 리뷰 → 승인 → Eureka 단계 완료)를 harness --item으로 돌린다
+  if (args[0] === 'eureka' && /^\d+$/.test(args[1] ?? '')) args.splice(0, 2, 'harness', '--item', args[1]!);
   const cmd = args[0];
   if (cmd === 'reminders') {
     const requestId = id('adapter-rem');

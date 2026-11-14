@@ -10,7 +10,7 @@ import {
 } from '@deskpet/contracts';
 import { reviewFacts } from '../facts.js';
 import { DEFAULT_POLICY, type PolicyConfig } from '../policy/config.js';
-import { writeInputBlockers } from '../policy/inputPolicy.js';
+import { approvalRequestBlockers } from '../policy/inputPolicy.js';
 import type { Clock, IdGen } from '../runtime/clock.js';
 import type { DispatchAuthoritySource } from './fastPathDispatch.js';
 import { BaseMcpGuide } from './BaseMcpGuide.js';
@@ -71,6 +71,11 @@ export class GitHubMcpGuide extends BaseMcpGuide {
       'PR 승인(submit_approval 등 쓰기)은 반드시 head SHA가 확인된 뒤 Guide 확인 절차(requiresPermission)를 거쳐 실행하세요.',
       'PR 기본+변경+검사+리뷰를 한 번에 읽을 때는 여러 도구를 순차 호출하는 대신 `github_fast_review_context` Fast-Path 도구를 우선 활용하면 효율적입니다.',
     ];
+    if (this.cfg.offerApprovalAfterReview) {
+      rules.push(
+        '리뷰 조회 결과 approvalBlockers가 비어 있으면 리뷰를 마치고 `github_fast_submit_approval`을 호출해 Guide 확인 절차를 통해 사용자에게 승인 여부를 물어보세요.',
+      );
+    }
     if (ctx.context.target?.kind === 'github_pr') {
       const t = ctx.context.target;
       rules.push(`현재 문맥 PR 대상: ${t.repository.owner}/${t.repository.name}#${t.prNumber}`);
@@ -87,13 +92,13 @@ export class GitHubMcpGuide extends BaseMcpGuide {
     if (!tool || !GITHUB_WRITE_TOOL_RE.test(tool)) {
       return { allowed: true, reasons: [] };
     }
-    const blockers = writeInputBlockers(ctx.turn, this.cfg);
+    const blockers = approvalRequestBlockers(ctx.turn, this.cfg);
     if (blockers.length > 0) {
       return {
         allowed: false,
         reasons: blockers,
         clarifyPurpose: 'restate_write_command',
-        clarifyPrompt: '음성 또는 라우팅 신뢰도가 낮아 GitHub PR 승인을 바로 진행할 수 없어요. 대상 저장소와 PR 승인 의사를 다시 말씀해 주시겠어요?',
+        clarifyPrompt: "승인 명령을 정확히 듣지 못했어요. 승인하려면 '승인해'라고 다시 말해 주세요.",
       };
     }
     const lastErr = ctx.observations?.['lastReviewError'];
@@ -152,7 +157,7 @@ export class GitHubMcpGuide extends BaseMcpGuide {
     return {
       kind: 'confirmation',
       purpose: 'confirm_pr_approval',
-      questionText: `${repoObj.owner}/${repoObj.name} PR ${prNumber}번, 현재 커밋 ${headSha.slice(0, 7)}에 승인 리뷰를 등록할까요?`,
+      questionText: `${tokens[0]}을 승인할까요?`,
       scope,
       tokens,
       ...(lastReview ? { facts: { review: lastReview } } : {}),
@@ -250,7 +255,14 @@ function buildGitHubFastPaths(opts: GitHubMcpGuideOptions): Record<string, FastP
                 text: facts ? JSON.stringify(facts) : rev.actionResult?.error?.message ?? rev.error ?? 'PR review read failed',
               },
             ],
-            ...(facts ? { structuredContent: facts as unknown as Record<string, unknown> } : {}),
+            ...(facts
+              ? {
+                  structuredContent: {
+                    ...(facts as unknown as Record<string, unknown>),
+                    ...(opts.config?.offerApprovalAfterReview ? { offerApprovalAfterReview: true } : {}),
+                  },
+                }
+              : {}),
             isError: !ok,
             ...(!ok && (rev.actionResult?.error?.message ?? rev.error)
               ? { error: rev.actionResult?.error?.message ?? rev.error }
@@ -265,6 +277,7 @@ function buildGitHubFastPaths(opts: GitHubMcpGuideOptions): Record<string, FastP
                   facts: {
                     ...(facts ? { review: facts } : {}),
                     ...(rev.error ? { reviewError: rev.error } : {}),
+                    ...(opts.config?.offerApprovalAfterReview ? { offerApprovalAfterReview: true } : {}),
                   },
                 }
               : {}),
@@ -297,7 +310,14 @@ function buildGitHubFastPaths(opts: GitHubMcpGuideOptions): Record<string, FastP
               text: facts ? JSON.stringify(facts) : reviewCtx.error?.message ?? 'PR review read failed',
             },
           ],
-          ...(facts ? { structuredContent: facts as unknown as Record<string, unknown> } : {}),
+          ...(facts
+            ? {
+                structuredContent: {
+                  ...(facts as unknown as Record<string, unknown>),
+                  ...(opts.config?.offerApprovalAfterReview ? { offerApprovalAfterReview: true } : {}),
+                },
+              }
+            : {}),
           isError: !ok,
           ...(reviewCtx.error ? { error: reviewCtx.error.message } : {}),
           observedAt: nowIso(),
@@ -305,7 +325,14 @@ function buildGitHubFastPaths(opts: GitHubMcpGuideOptions): Record<string, FastP
         };
         return {
           result,
-          ...(facts ? { facts: { review: facts } } : {}),
+          ...(facts
+            ? {
+                facts: {
+                  review: facts,
+                  ...(opts.config?.offerApprovalAfterReview ? { offerApprovalAfterReview: true } : {}),
+                },
+              }
+            : {}),
           sources: [{ kind: 'github', ref: `${repo.owner}/${repo.name}#${prNumber}`, observedAt: result.observedAt }],
         };
       },

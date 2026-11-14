@@ -96,12 +96,21 @@ describe('Router(llm / unclear) → IntentTriage 및 Agent Swarm 분기', () => 
     expect(w.github.submitCount).toBe(0);
   });
 
-  it('llm 승인 요청에서도 GitHubMcpGuide 쓰기 신뢰도 기준은 그대로 적용: STT가 낮으면 다시 말해 달라고 한다', async () => {
+  it('승인 요청은 느슨하게(D-39): STT 0.67이어도 확인 질문까지. 답변·strict는 엄격', async () => {
     const w = createWorld();
     await review(w);
     const q = await ask(w, '좋아 그 PR 승인해 줘', 'llm', { stt: 0.67 });
-    expect(q.pending?.purpose).toBe('restate_write_command');
+    expect(q.pending?.purpose).toBe('confirm_pr_approval');
+    // 답변 STT가 낮으면 승인하지 않는다
+    const again = await answer(w, q, '응', { stt: 0.6 });
+    expect(again.pending?.purpose).toBe('confirm_pr_approval');
     expect(w.github.submitCount).toBe(0);
+
+    const w2 = createWorld({ config: { approvalRequestInput: 'strict' } });
+    await review(w2);
+    const q2 = await ask(w2, '좋아 그 PR 승인해 줘', 'llm', { stt: 0.67 });
+    expect(q2.pending?.purpose).toBe('restate_write_command');
+    expect(w2.github.submitCount).toBe(0);
   });
 
   it('mcp.task 진입은 IntentTriage 없이 Swarm Coordinator로 직행한다', async () => {

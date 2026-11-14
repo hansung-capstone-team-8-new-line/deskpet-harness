@@ -12,13 +12,13 @@ import { createWorld } from '../support/world.js';
 
 describe('S-04: low STT confidence blocks approval', () => {
   it('low confidence approve command → restate request, no confirmation, no write', async () => {
-    const w = createWorld();
+    const w = createWorld({ config: { approvalRequestInput: 'strict' } });
     await review(w);
     const r = await askApproval(w, 'req-a', { stt: 0.5 });
     expect(r.disposition).toBe('awaiting_user');
     expect(r.pending).toMatchObject({ kind: 'clarification', purpose: 'restate_write_command' });
     expect(r.pending!.confirmationId).toBeUndefined();
-    expect((await speak(r)).text).toContain('신뢰도가 낮아');
+    expect((await speak(r)).text).toBe("승인 명령을 정확히 듣지 못했어요. 승인하려면 '승인해'라고 다시 말해 주세요.");
     expect(w.github.submitCount).toBe(0);
   });
 

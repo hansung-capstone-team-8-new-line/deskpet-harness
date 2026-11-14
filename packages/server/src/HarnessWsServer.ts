@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import type { IncomingMessage } from 'node:http';
-import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
+import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { clampPayloadDeadline, parseEnvelope, SUPPORTED_MAJOR, type Envelope } from '@deskpet/contracts';
 import type { OperationStore, StoreChange } from '@deskpet/harness';
@@ -9,6 +9,9 @@ import { fromStoreChange, snapshotFromHarness } from '@deskpet/projector';
 import type { HarnessInbound } from './inbound.js';
 import { UnsupportedKindError } from './inbound.js';
 import { CLOSE, ClientFrame, PROTOCOL, type ErrorCode, type Role, type ServerFrame } from './protocol.js';
+import type { HistoryLog } from './history.js';
+import { historyEntryFrom } from './history.js';
+import { createStaticHandler, isSameOriginLiteral, WEB_SECURITY_HEADERS, type StaticHandler } from './staticWeb.js';
 
 /**
  * Harness 서비스 경계 (WebSocket). 근거: message-contracts §Envelope, §Output and Projection, Liability §Ownership.
@@ -31,6 +34,26 @@ export interface HarnessWsServerOptions {
   token: string;
   /** viewer 전용 토큰(선택): 구독만. 브라우저 화면에는 이 토큰만 넣는다 */
   viewerToken?: string;
+  /**
+   * 토큰 없는 보기 전용 접속 허용 (D-45). true면 viewer 역할은 토큰 없이 접속된다(구독만, 실행 불가).
+   * 접속 IP 허용 목록·Origin 검사는 그대로 적용된다. viewerToken과 함께 줄 수 없다
+   */
+  openViewer?: boolean;
+  /**
+   * 관리 토큰 (D-50, 선택, 16자 이상). 웹 화면의 업데이트 버튼 등 관리 동작에만 쓴다. 다른 토큰과 달라야 한다.
+   * 없으면 관리 동작을 받지 않는다
+   */
+  adminToken?: string;
+  /** 관리 동작 처리. adminToken이 맞을 때만 부른다 */
+  admin?: (action: AdminAction) => Promise<{ ok: boolean; message: string }>;
+  /** 사용자 설정 저장 (D-52, 승인 허용 저장소). 접속한 연결 누구나 (viewer 포함) */
+  settings?: (s: { allowedRepositories: string[] }) => Promise<{ ok: boolean; message: string }>;
+  /** 세션 기록 (D-47). 주면 실행 요청 결과를 남기고 viewer에게 보여 준다 */
+  history?: HistoryLog;
+  /** 서버 정보 (D-49): 접속 직후 보내고, publishInfo()로 다시 보낸다 */
+  info?: () => unknown;
+  /** 현황 (D-51): 접속 직후 보내고 publishOverview()로 다시 보낸다. 연결이 overview.refresh를 보내면 refresh() */
+  overview?: { get(): unknown; refresh(): Promise<void> };
   host?: string;
   port?: number;
   allowedOrigins?: string[];
@@ -41,6 +64,12 @@ export interface HarnessWsServerOptions {
   allowedClients?: string[];
   /** wss(TLS) 인증서·키 (PEM 문자열). 주면 wss://로 연다 (D-25) */
   tls?: { cert: string; key: string };
+  /**
+   * 웹 화면 서빙 (D-42). 빌드한 웹(apps/web/dist)을 같은 주소·포트의 HTTP로 내보낸다.
+   * 켜면 그 화면의 Origin(같은 IP·localhost 주소)은 allowedOrigins에 없어도 WebSocket 접속을 받는다.
+   * HTTP 요청도 WebSocket과 같은 클라이언트 주소 규칙(allowedClients)을 따른다.
+   */
+  web?: { root: string };
   maxPayloadBytes?: number;
   maxInFlightPerConnection?: number;
   maxBufferedBytes?: number;
@@ -67,6 +96,8 @@ export interface HarnessWsServerOptions {
   onCompleted?: (info: { kind: string; requestId: string; ms: number; ok: boolean; payload?: unknown }) => void;
 }
 
+export type AdminAction = 'update.check' | 'update.apply';
+
 export type Lane = 'work' | 'eureka' | 'control';
 const CONTROL_KINDS = new Set(['pipeline.event', 'harness.cancel', 'harness.reconcile', 'eureka.reconcile']);
 export function laneOf(kind: string): Lane {
@@ -84,6 +115,10 @@ interface Conn {
   subscribed: boolean;
   /** snapshot 전송 전에 들어온 이벤트 */
   pendingEvents: unknown[] | null;
+  /** 세션 기록을 읽은 연결 → 새 기록을 보낸다 */
+  wantsHistory?: boolean;
+  /** 틀린 관리 토큰 횟수 */
+  adminFailures?: number;
 }
 
 interface CachedReply {
@@ -93,7 +128,7 @@ interface CachedReply {
 
 export class HarnessWsServer {
   private wss?: WebSocketServer;
-  private https?: HttpsServer;
+  private http?: HttpServer;
   private readonly conns = new Set<Conn>();
   private readonly inFlight = new Set<Promise<unknown>>();
   private readonly laneInFlight: Record<Lane, number> = { work: 0, eureka: 0, control: 0 };
@@ -101,6 +136,8 @@ export class HarnessWsServer {
   private readonly heldNotices: { notice: unknown; resultText: string; at: number }[] = [];
   private readonly tokenDigest: Buffer;
   private readonly viewerDigest?: Buffer;
+  private readonly adminDigest?: Buffer;
+  private unsubscribeHistory?: () => void;
   private readonly epoch = Date.now();
   private unsubscribe?: () => void;
   private stopping = false;
@@ -110,10 +147,16 @@ export class HarnessWsServer {
   constructor(private readonly o: HarnessWsServerOptions) {
     if (!o.token || o.token.length < 16) throw new Error('server token must be at least 16 characters');
     this.tokenDigest = digest(o.token);
+    if (o.openViewer && o.viewerToken !== undefined) throw new Error('openViewer and viewerToken cannot be used together');
     if (o.viewerToken !== undefined) {
       if (o.viewerToken.length < 16) throw new Error('viewer token must be at least 16 characters');
       if (o.viewerToken === o.token) throw new Error('viewer token must differ from the pipeline token');
       this.viewerDigest = digest(o.viewerToken);
+    }
+    if (o.adminToken !== undefined) {
+      if (o.adminToken.length < 16) throw new Error('admin token must be at least 16 characters');
+      if (o.adminToken === o.token || o.adminToken === o.viewerToken) throw new Error('admin token must differ from the other tokens');
+      this.adminDigest = digest(o.adminToken);
     }
     this.log = o.log ?? (() => {});
   }
@@ -129,30 +172,44 @@ export class HarnessWsServer {
         return done(false, 403, 'client address not allowed');
       }
       const origin = info.origin;
-      if (origin && !allowed.has(origin)) {
+      // 이 서버가 내보낸 웹 화면(같은 IP·localhost 주소)은 Origin 목록 없이 받는다 (D-42)
+      const sameOrigin = !!this.o.web && !!origin && isSameOriginLiteral(origin, info.req.headers.host, !!this.o.tls);
+      if (origin && !allowed.has(origin) && !sameOrigin) {
         this.log(`거부: 허용되지 않은 Origin ${origin}`);
         return done(false, 403, 'origin not allowed');
       }
       done(true);
     };
     const common = { maxPayload: this.o.maxPayloadBytes ?? 256 * 1024, verifyClient };
-    if (this.o.tls) {
-      this.https = createHttpsServer({ cert: this.o.tls.cert, key: this.o.tls.key });
-      this.wss = new WebSocketServer({ ...common, server: this.https });
-      await new Promise<void>((resolve, reject) => {
-        this.https!.once('error', reject);
-        this.https!.listen(this.o.port ?? 8787, host, () => resolve());
+    const web: StaticHandler | undefined = this.o.web ? createStaticHandler(this.o.web) : undefined;
+    const onHttp = (req: IncomingMessage, res: ServerResponse) => {
+      const ip = normalizeIp(req.socket.remoteAddress ?? '');
+      if (!isLoopback(ip) && !clients.some((r) => r(ip))) {
+        this.log(`거부(HTTP): 허용되지 않은 클라이언트 주소 ${ip || '(알 수 없음)'}`);
+        res.writeHead(403, { ...WEB_SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' });
+        return void res.end('client address not allowed');
+      }
+      if (!web) {
+        res.writeHead(426, { ...WEB_SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8', Upgrade: 'websocket' });
+        return void res.end(`DeskPet Harness WebSocket server (${PROTOCOL})`);
+      }
+      web(req, res).catch(() => {
+        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end();
       });
-    } else {
-      this.wss = new WebSocketServer({ ...common, host, port: this.o.port ?? 8787 });
-      await new Promise<void>((resolve, reject) => {
-        this.wss!.once('listening', resolve);
-        this.wss!.once('error', reject);
-      });
-    }
+    };
+    this.http = this.o.tls ? createHttpsServer({ cert: this.o.tls.cert, key: this.o.tls.key }, onHttp) : createHttpServer(onHttp);
+    this.wss = new WebSocketServer({ ...common, server: this.http });
+    await new Promise<void>((resolve, reject) => {
+      this.http!.once('error', reject);
+      this.http!.listen(this.o.port ?? 8787, host, () => resolve());
+    });
     this.wss.on('connection', (ws) => this.onConnection(ws));
     this.unsubscribe = this.o.store.subscribe((c) => this.broadcast(c));
-    const addr = (this.https ? this.https.address() : this.wss.address()) as AddressInfo;
+    this.unsubscribeHistory = this.o.history?.onAppend((entry) => {
+      for (const conn of this.conns) if (conn.role && conn.wantsHistory) this.send(conn, { type: 'history.appended', entry });
+    });
+    const addr = this.http.address() as AddressInfo;
     this.log(`Harness WebSocket 서버 ${this.o.tls ? 'wss' : 'ws'}://${host}:${addr.port} (protocol ${PROTOCOL}, epoch ${this.epoch})`);
     return { host, port: addr.port };
   }
@@ -161,13 +218,17 @@ export class HarnessWsServer {
   async stop(drainMs = 30_000): Promise<void> {
     this.stopping = true;
     this.unsubscribe?.();
+    this.unsubscribeHistory?.();
     const wss = this.wss;
     if (!wss) return;
     const drained = Promise.allSettled([...this.inFlight]);
     await Promise.race([drained, new Promise((r) => setTimeout(r, drainMs))]);
     for (const c of this.conns) c.ws.close(CLOSE.shuttingDown, 'server shutting down');
     await new Promise<void>((resolve) => wss.close(() => resolve()));
-    if (this.https) await new Promise<void>((resolve) => this.https!.close(() => resolve()));
+    if (this.http) {
+      this.http.closeAllConnections?.();
+      await new Promise<void>((resolve) => this.http!.close(() => resolve()));
+    }
     this.log('Harness WebSocket 서버 종료');
   }
 
@@ -175,6 +236,25 @@ export class HarnessWsServer {
   get connectionCount(): number {
     return this.conns.size;
   }
+  /** 처리 중인 요청 수 (업데이트 전 확인용) */
+  get inFlightCount(): number {
+    return this.inFlight.size;
+  }
+
+  /** 서버 정보가 바뀌었을 때(업데이트 상태 등) 접속한 모든 연결에 다시 보낸다 (D-49) */
+  publishInfo(): void {
+    if (!this.o.info) return;
+    const info = this.o.info();
+    for (const conn of this.conns) if (conn.role) this.send(conn, { type: 'server.info', info });
+  }
+
+  /** 현황이 바뀌었을 때 접속한 모든 연결에 보낸다 (D-51) */
+  publishOverview(): void {
+    if (!this.o.overview) return;
+    const overview = this.o.overview.get();
+    for (const conn of this.conns) if (conn.role) this.send(conn, { type: 'overview', overview });
+  }
+
   inFlightIdle(): Promise<void> {
     return Promise.allSettled([...this.inFlight]).then(() => undefined);
   }
@@ -218,7 +298,7 @@ export class HarnessWsServer {
       // pipeline 토큰은 두 역할 모두, viewer 토큰은 viewer 역할만 허용한다 (역할은 토큰이 정한다)
       const d = digest(frame.token);
       const isPipeline = timingSafeEqual(d, this.tokenDigest);
-      const isViewer = !!this.viewerDigest && timingSafeEqual(d, this.viewerDigest);
+      const isViewer = (!!this.viewerDigest && timingSafeEqual(d, this.viewerDigest)) || (!!this.o.openViewer && frame.role === 'viewer');
       if (!isPipeline && !(isViewer && frame.role === 'viewer')) {
         this.log(`거부: 토큰 불일치 (#${conn.id})`);
         this.send(conn, { type: 'error', code: 'unauthorized', message: 'invalid token' });
@@ -227,6 +307,8 @@ export class HarnessWsServer {
       conn.role = frame.role;
       this.log(`연결 #${conn.id} 인증됨 (${frame.role}${frame.client ? `, ${frame.client}` : ''})`);
       this.send(conn, { type: 'welcome', protocol: PROTOCOL, schemaVersion: `${SUPPORTED_MAJOR}.0`, role: frame.role, epoch: this.epoch, serverTime: new Date().toISOString() });
+      if (this.o.info) this.send(conn, { type: 'server.info', info: this.o.info() });
+      if (this.o.overview) this.send(conn, { type: 'overview', overview: this.o.overview.get() });
       if (frame.role === 'pipeline') this.flushHeldNotices(conn);
       return;
     }
@@ -240,6 +322,50 @@ export class HarnessWsServer {
         return this.subscribe(conn);
       case 'request':
         return this.onRequest(conn, frame.envelope);
+      case 'history': {
+        conn.wantsHistory = true;
+        const page = this.o.history?.page({ ...(frame.beforeId ? { beforeId: frame.beforeId } : {}), ...(frame.limit ? { limit: frame.limit } : {}) }) ?? { entries: [], hasMore: false };
+        return this.send(conn, { type: 'history', entries: page.entries, hasMore: page.hasMore, sessionId: this.o.history?.sessionId ?? '' });
+      }
+      case 'admin':
+        return this.onAdmin(conn, frame);
+      case 'settings.set': {
+        const reply = (ok: boolean, message: string) => this.send(conn, { type: 'settings.result', ...(frame.id ? { id: frame.id } : {}), ok, message });
+        if (!this.o.settings) return reply(false, 'settings_disabled');
+        this.log(`설정 저장 요청 (#${conn.id}, ${conn.role})`);
+        try {
+          const r = await this.o.settings(frame.settings);
+          return reply(r.ok, r.message);
+        } catch {
+          return reply(false, 'internal');
+        }
+      }
+      case 'overview.refresh':
+        // 결과는 publishOverview로 모든 연결에 간다
+        if (this.o.overview) void this.o.overview.refresh().catch(() => undefined);
+        return;
+    }
+  }
+
+  // ---------------------------------------------------------------------- admin
+  private async onAdmin(conn: Conn, frame: { token: string; action: AdminAction; id?: string }) {
+    const reply = (ok: boolean, message: string) => this.send(conn, { type: 'admin.result', ...(frame.id ? { id: frame.id } : {}), action: frame.action, ok, message });
+    if (!this.adminDigest || !this.o.admin) return reply(false, 'admin_disabled');
+    if (!timingSafeEqual(digest(frame.token), this.adminDigest)) {
+      conn.adminFailures = (conn.adminFailures ?? 0) + 1;
+      this.log(`거부: 관리 토큰 불일치 (#${conn.id}, ${conn.adminFailures}회)`);
+      reply(false, 'admin_unauthorized');
+      // 토큰을 계속 바꿔 보는 연결은 닫는다
+      if (conn.adminFailures >= 5) conn.ws.close(CLOSE.unauthorized, 'too many admin failures');
+      return;
+    }
+    this.log(`관리 동작 ${frame.action} (#${conn.id})`);
+    try {
+      const r = await this.o.admin(frame.action);
+      reply(r.ok, r.message);
+    } catch (e) {
+      this.log(`관리 동작 오류 ${frame.action}: ${e instanceof Error ? e.message : 'error'}`);
+      reply(false, 'internal');
     }
   }
 
@@ -283,6 +409,13 @@ export class HarnessWsServer {
     const started = Date.now();
     const reply = this.execute(clampPayloadDeadline(env));
     void reply.then((f) => {
+      try {
+        const ms = Date.now() - started;
+        const h = this.o.history && historyEntryFrom(env, f.type === 'reply' && f.ok ? { ok: true, payload: f.payload } : { ok: false, code: f.type === 'reply' && !f.ok ? f.error.code : 'internal' }, ms);
+        if (h) this.o.history!.append(h);
+      } catch {
+        // 기록 실패는 응답에 영향을 주지 않는다
+      }
       try {
         this.o.onCompleted?.({ kind: env.kind, requestId: env.requestId, ms: Date.now() - started, ok: f.type === 'reply' && f.ok, ...(f.type === 'reply' && f.ok ? { payload: f.payload } : {}) });
       } catch {

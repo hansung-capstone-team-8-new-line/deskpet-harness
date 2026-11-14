@@ -55,11 +55,11 @@ describe('FileWikiReader', () => {
   });
 
   it('비밀값처럼 보이는 줄은 발췌에서 지운다', async () => {
-    const root = vault({ 'wiki/setup.md': doc('Setup', { 'Eureka 연결': 'Eureka 연결 방법을 정리한다.\nEUREKA_API_KEY: abcd1234secret\n개발 환경은 flw-d1 이다.' }) });
+    const root = vault({ 'wiki/setup.md': doc('Setup', { 'Eureka 연결': 'Eureka 연결 방법을 정리한다.\nEUREKA_API_KEY: abcd1234secret\n주소는 api.eureka.codes 이다.' }) });
     const r = await new FileWikiReader({ root }).search('Eureka 연결 방법', 'all', DL);
     expect(r.outcome).toBe('found');
     expect(r.excerpts[0]!.text).not.toContain('abcd1234secret');
-    expect(r.excerpts[0]!.text).toContain('flw-d1');
+    expect(r.excerpts[0]!.text).toContain('api.eureka.codes');
   });
 
   it('발췌는 최대 3개, 합계 1,500자', async () => {

@@ -53,6 +53,17 @@ export interface PolicyConfig {
    * 목록 밖 저장소 PR은 리뷰(읽기)는 하지만 승인 질문을 만들지 않는다. 서버는 DESKPET_ALLOWED_REPOS로 정한다
    */
   allowedRepositories?: string[];
+  /**
+   * 승인 '요청' 단계의 입력 검사 (D-39, 2026-11-10). 'loose'면 STT·라우터 신뢰도로 막지 않고 확인 질문까지 간다
+   * (질문이 대상을 다시 읽어 주고, 확인 답변 단계는 그대로 엄격). 'strict'면 예전처럼 신뢰도 미달 시 다시 말해 달라고 한다.
+   * STT 정확도가 높아지면 strict로 되돌린다
+   */
+  approvalRequestInput: 'loose' | 'strict';
+  /**
+   * 리뷰 뒤 다음 질문 (D-41, 2026-11-10). 켜면 리뷰 결과 끝에 승인 조건이 맞으면 확인 질문("…을 승인할까요?")을 붙이고,
+   * 승인할 수 없는 PR이면 그 이유를 한 문장 붙인다. 기본 false(라이브러리). 서버는 DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off가 아니면 켠다
+   */
+  offerApprovalAfterReview: boolean;
 }
 
 export const DEFAULT_POLICY: PolicyConfig = {
@@ -75,4 +86,6 @@ export const DEFAULT_POLICY: PolicyConfig = {
   evidenceNote: false,
   intentRecheck: false,
   prChecks: 'enforce',
+  approvalRequestInput: 'loose',
+  offerApprovalAfterReview: false,
 };

@@ -14,18 +14,16 @@
     "lint": "eslint .",
     "check": "pnpm typecheck && pnpm lint && pnpm test",
     "smoke": "tsx scripts/smoke.ts",
-    "demo": "tsx demo/client.ts",
     "demo:adapter": "tsx demo/adapterClient.ts",
     "wiki": "tsx scripts/wiki.ts",
     "db": "tsx scripts/store.ts",
     "harness": "tsx scripts/server.ts",
+    "start": "pnpm web:build && tsx scripts/supervise.ts",
     "eureka:server": "tsx scripts/eureka-server.ts",
     "web:dev": "pnpm --filter @deskpet/web dev",
     "web:build": "pnpm --filter @deskpet/web build",
     "web:fixture": "tsx scripts/web-fixture.ts",
-    "eureka:fields": "tsx scripts/eureka-fields.ts",
-    "eureka:check": "tsx scripts/eureka-check.ts",
-    "web:dev:lan": "pnpm --filter @deskpet/web dev --host 0.0.0.0"
+    "eureka:check": "tsx scripts/eureka-check.ts"
   },
   "devDependencies": {
     "@deskpet/contracts": "workspace:*",

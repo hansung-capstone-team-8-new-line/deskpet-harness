@@ -1,5 +1,5 @@
 import type { GitHubPrTarget, GuideDecision, GuideInput } from '@deskpet/contracts';
-import { writeInputBlockers } from '../policy/inputPolicy.js';
+import { approvalRequestBlockers } from '../policy/inputPolicy.js';
 import type { PolicyConfig } from '../policy/config.js';
 import type { ReviewFacts } from '../facts.js';
 
@@ -77,11 +77,22 @@ export class RuleBasedGuide implements Guide {
           },
         };
       }
+      // D-41: 리뷰 뒤 승인 조건이 맞으면 확인 질문을 바로 붙인다 (답변 단계 규칙은 그대로 엄격). 안 맞으면 출력이 이유를 한 문장 붙인다
+      const rv = facts.review;
+      if (this.cfg.offerApprovalAfterReview && rv.headSha && rv.approvalBlockers.length === 0) {
+        return {
+          ...base,
+          kind: 'ask_user',
+          reasonRefs: ['review_collected', 'approval_offered'],
+          payload: { purpose: 'confirm_pr_approval', questionKind: 'confirmation', requiredSlots: [], targetActionVersion: { action: 'submit_approval', target: pr, headSha: rv.headSha } },
+        };
+      }
       return { ...base, kind: 'finish', payload: { reason: 'review_collected', outputFactRefs: ['review'] } };
     }
 
     // ---- pr.approve
-    const inputBlockers = writeInputBlockers(input.goal.currentTurn, this.cfg);
+    // D-39: 요청 단계는 느슨하게(loose 기본). 확인 답변 단계는 classifyAnswer가 엄격하게 본다
+    const inputBlockers = approvalRequestBlockers(input.goal.currentTurn, this.cfg);
     if (inputBlockers.length > 0) {
       // S-04: 낮은/확인 불가 신뢰도에서 승인 차단, 대상과 행위를 다시 말하도록 요청
       return {

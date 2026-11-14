@@ -128,7 +128,7 @@ describe('IntentTriage (unclear → 4방향 자율 분기)', () => {
   it('4) delegate_swarm: llm과 unclear(delegate_swarm) 모두 동일한 Agent Swarm + GitHubMcpGuide 안전 규칙을 따른다', async () => {
     // Low STT / route confidence still triggers GitHubMcpGuide clarification before write
     for (const opts of [{ routeConfidence: 0.52 }, { stt: 0.45 }]) {
-      const w = createWorld();
+      const w = createWorld({ config: { approvalRequestInput: 'strict' } });
       const r = await w.harness.handle(
         harnessRequest(`req-low-${++seq}`, voiceTurn(`t-low-${seq}`, '그 PR 승인해줘', { intention: 'unclear', ...opts })),
       );
