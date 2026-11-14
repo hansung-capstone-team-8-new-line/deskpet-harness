@@ -115,6 +115,12 @@ export class FakeEurekaServer implements HttpClient {
       if (typeof body?.dueAt === 'number') it.dueAt = body.dueAt;
       return ok({ id: it.id, name: it.name, dueAt: it.dueAt });
     }
+    if (req.method === 'DELETE' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/))) {
+      const it = this.items.get(decodeURIComponent(m[1]!));
+      if (!it) return { status: 404, bodyText: `.id[${m[1]}] not found` };
+      this.items.delete(it.id);
+      return ok({ id: it.id, deletedAt: this.now() });
+    }
     if (req.method === 'POST' && req.path === '/_api_/items/0/start') {
       const body = req.body as { processId?: unknown; name?: unknown; dueAt?: unknown };
       if (typeof body?.processId !== 'string') return { status: 500, bodyText: '.processId is required' };

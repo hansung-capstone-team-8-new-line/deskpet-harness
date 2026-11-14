@@ -304,6 +304,20 @@ export class EurekaGateway implements EurekaGatewayPort {
     );
   }
 
+  /**
+   * 업무 삭제 (2026-11-14 추가). DELETE /_api_/items/{id} — 위키 API 목록에는 없어 실제 시험으로 확인한다.
+   * 2xx면 삭제로 본다(응답 본문이 비어도). 404면 이미 없거나 경로가 다름, 405면 Eureka가 삭제를 받지 않음
+   */
+  deleteItem(cmd: { itemId: string }, handle: DispatchHandle, c: CallConstraints) {
+    return this.sendWrite(
+      { method: 'DELETE', path: `/_api_/items/${enc(cmd.itemId)}` },
+      handle,
+      c,
+      (b) => ({ response: { itemId: cmd.itemId, ...(b && typeof b === 'object' ? { deletedAt: (b as { deletedAt?: unknown }).deletedAt ?? null } : {}) }, externalRefs: [{ system: 'eureka' as const, kind: 'item_delete', id: cmd.itemId }] }),
+      { action: 'delete_item', target: `item ${cmd.itemId}` },
+    );
+  }
+
   /** 미정: 템플릿 목록 */
   async listProcesses(c: CallConstraints): Promise<ReadOutcome<{ id: string; name: string }[]>> {
     const res = await this.read({ method: 'GET', path: '/_api_/processes/0/list', query: { sites: '', detail: 'true', limit: '50' } }, c);

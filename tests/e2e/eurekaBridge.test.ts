@@ -128,7 +128,7 @@ describe('EurekaAdapter — 쓰기 (직접 경로)', () => {
 
   it('지원하지 않는 의도·빠진 슬롯·시간대 없는 마감은 보내지 않는다', async () => {
     const { bridge, server } = setup();
-    expect(await bridge.execute(req('eureka.delete', { name: '보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
+    expect(await bridge.execute(req('eureka.hold', { name: '보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
     expect(await bridge.execute(req('eureka.postpone', { name: '보고서 제출', dueAt: '2026-10-09 23:59' }, { mutationApproved: true }))).toMatchObject({ status: 'needs_clarification' });
     expect(server.writeCount('/')).toBe(0);
   });
@@ -156,16 +156,31 @@ describe('EurekaAdapter — 라우터 Operation 라벨 (wiki small-router-model,
 
   it('지원하지 않는 라벨은 실행하지 않고, 무엇을 안 했는지·지원 범위를 말한다', async () => {
     const { bridge, server } = setup();
-    for (const op of ['delete', 'hold', 'update_priority', 'move_stage_up', 'nonsense']) {
+    for (const op of ['hold', 'update_priority', 'move_stage_up', 'nonsense']) {
       const r = await bridge.execute(req('eureka', { operation: op, name: '보고서 제출' }, { mutationApproved: true }));
       // 라우터 24개 라벨 중 미구현은 EUREKA_OPERATION_NOT_IMPLEMENTED, 목록에 없는 값은 POLICY_BLOCKED
       expect(r).toMatchObject({ status: 'failed', error: { code: op === 'nonsense' ? 'POLICY_BLOCKED' : 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
-      expect(r.facts['resultText']).toContain('실행하지 않았어요. 지금은 업무 조회·등록·기한 변경·완료와 단계 기록 추가를 할 수 있어요.');
+      expect(r.facts['resultText']).toContain('실행하지 않았어요. 지금은 업무 조회·등록·기한 변경·완료·삭제와 단계 기록 추가를 할 수 있어요.');
     }
-    expect((await bridge.execute(req('eureka', { operation: 'delete' }))).facts['resultText']).toContain('업무 삭제는 아직 지원하지 않아');
     expect((await bridge.execute(req('eureka', { operation: 'hold' }))).facts['resultText']).toContain('업무 보류는 아직');
     expect((await bridge.execute(req('eureka', { operation: 'update_stage' }))).facts['resultText']).toContain('단계 상태 변경은 아직');
     expect(server.calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
+  });
+
+  it('delete (2026-11-14): 되돌릴 수 없다고 묻고, 승인 뒤 DELETE 1번. 완료된 업무도 지울 수 있고 다시 보내지 않는다', async () => {
+    const { bridge, server } = setup();
+    const q = await bridge.execute(req('eureka', { operation: 'delete', name: '끝난 업무' }));
+    expect(q).toMatchObject({ status: 'needs_clarification' });
+    expect(q.facts['question']).toBe("'끝난 업무' 업무를 삭제할까요? 삭제하면 되돌릴 수 없어요.");
+    expect(server.calls.filter((c) => c.method === 'DELETE')).toHaveLength(0);
+    const r = await bridge.execute(req('eureka', { operation: 'delete', name: '끝난 업무' }, { mutationApproved: true, requestId: 'REQ-DEL', operationId: 'OP-DEL' }));
+    expect(r).toMatchObject({ status: 'succeeded', facts: { action: 'delete_item', resultText: "'끝난 업무' 업무를 삭제했어요." } });
+    expect(server.items.has('2003')).toBe(false);
+    // 같은 operationId 재요청은 기록된 결과를 돌려주고 다시 지우지 않는다
+    expect(await bridge.execute(req('eureka', { operation: 'delete', name: '끝난 업무' }, { mutationApproved: true, requestId: 'REQ-DEL', operationId: 'OP-DEL' }))).toMatchObject({ status: 'succeeded' });
+    expect(server.calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
+    // 없는 업무는 묻지도 않는다
+    expect(await bridge.execute(req('eureka', { operation: 'delete', name: '끝난 업무' }))).toMatchObject({ status: 'failed', error: { code: 'EUREKA_NOT_FOUND' } });
   });
 
   it('add_note: 확인 질문 → 승인 뒤 진행 중 단계에 기록 1건. 같은 operationId 재요청은 다시 쓰지 않는다', async () => {

@@ -61,7 +61,7 @@ export interface EurekaBridgeDeps {
   timezone?: string;
 }
 
-type DirectWrite = Extract<ActionName, 'register_item' | 'postpone_item' | 'complete_item' | 'add_stage_note'>;
+type DirectWrite = Extract<ActionName, 'register_item' | 'postpone_item' | 'complete_item' | 'delete_item' | 'add_stage_note'>;
 type Kind = 'list' | 'query' | 'status' | 'processes' | DirectWrite;
 
 /**
@@ -78,6 +78,7 @@ const OPS: Record<string, Kind> = {
   register: 'register_item',
   create: 'register_item',
   complete: 'complete_item',
+  delete: 'delete_item',
   add_note: 'add_stage_note',
   query_processes: 'processes',
 };
@@ -89,7 +90,6 @@ const UNSUPPORTED_OPS: Record<string, string> = {
   update_item: '업무 정보 변경',
   hold: '업무 보류',
   resume: '업무 재개',
-  delete: '업무 삭제',
   start_stage: '단계 시작',
   reset_stage: '단계 되돌리기',
   skip_stage: '단계 건너뛰기',
@@ -105,7 +105,7 @@ const UNSUPPORTED_OPS: Record<string, string> = {
 };
 
 /** 미지원 응답 (wiki deskpet-operation-policies §3): 실행하지 않음 → 지원 범위 → 대안 */
-const SUPPORTED_SCOPE = '지금은 업무 조회·등록·기한 변경·완료와 단계 기록 추가를 할 수 있어요.';
+const SUPPORTED_SCOPE = '지금은 업무 조회·등록·기한 변경·완료·삭제와 단계 기록 추가를 할 수 있어요.';
 function unsupportedSentence(what?: string): string {
   return `${what ? `${what}${topic(what)} 아직 지원하지 않아` : '그 요청은'} 실행하지 않았어요. ${SUPPORTED_SCOPE}`;
 }
@@ -188,6 +188,8 @@ export class EurekaBridge {
     if (itemId) {
       const list = await this.d.eureka.listTasks({ limit: 100 }, { deadlineAt: a.deadlineAt });
       const t = list.ok ? list.data!.items.find((x) => x.itemId === itemId) : undefined;
+      // 삭제: 목록에서 사라졌으면 삭제됐을 가능성이 높다 (인과는 후보 수준)
+      if (op.action === 'delete_item' && list.ok && list.data!.completeness === 'complete') observation['linkage'] = t ? 'none' : 'candidate_only';
       if (t) {
         observation['currentState'] = t.computedState;
         if (t.dueAtMs !== undefined) observation['currentDueAt'] = this.offsetIso(t.dueAtMs);
@@ -390,8 +392,16 @@ export class EurekaBridge {
     });
   }
 
-  private async itemWrite(a: PipelineEurekaActionRequest, kind: 'postpone_item' | 'complete_item', t: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
+  private async itemWrite(a: PipelineEurekaActionRequest, kind: 'postpone_item' | 'complete_item' | 'delete_item', t: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
     const target = { kind: 'eureka_item' as const, itemId: t.itemId };
+    if (kind === 'delete_item') {
+      // 되돌릴 수 없으므로 질문에 그렇게 말한다. 완료된 업무도 지울 수 있다 (시연 업무 정리 등)
+      if (!a.mutationApproved) return confirm(a.operationId, `'${t.name}' 업무를 삭제할까요? 삭제하면 되돌릴 수 없어요.`, { itemId: t.itemId });
+      return this.write(a, kind, target, { itemId: t.itemId, itemName: t.name }, (h) => this.d.eureka.deleteItem({ itemId: t.itemId }, h, c), {
+        ok: `'${t.name}' 업무를 삭제했어요.`,
+        what: `'${t.name}' 업무 삭제`,
+      });
+    }
     if (kind === 'postpone_item') {
       const due = parseDue(a);
       if (due === undefined || due === 'invalid') return clarify(a.operationId, { missing: 'dueAt', itemId: t.itemId }, `'${t.name}' 업무 마감을 언제로 바꿀까요?`);

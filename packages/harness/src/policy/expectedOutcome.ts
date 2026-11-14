@@ -36,6 +36,7 @@ export function expectedOutcomeFor(action: ActionName, target: Target, opts: { h
     case 'register_item':
     case 'postpone_item':
     case 'complete_item':
+    case 'delete_item':
     case 'add_stage_note':
       // 직접 Eureka 경로 (파이프라인 Eureka 모듈 소유). 멱등키가 없어 응답 유실 시 인과 연결은 후보 수준 (README C-09)
       return {

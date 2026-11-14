@@ -41,7 +41,7 @@ pnpm harness                     # 쓰기 허용이 기본 (D-38)
 | 3-4 | 같은 명령 | 응 | `succeeded`, 마감 11/21 18:00. 웹에서도 바뀜 |
 | 3-5 | `pnpm demo:adapter eureka note "DeskPet 시험 1109" "PR: https://github.com/<owner>/<repo>/pull/<번호>"` | 응 | `succeeded`, `stageId`·`noteId` 있음. **웹에서 그 단계 기록이 보이는지** 확인 |
 | 3-6 | `pnpm demo:adapter links <3-1의 itemId>` | — | `status: linked`, 3-5의 PR과 단계 |
-| 3-7 | `pnpm demo:adapter eureka unsupported` | — | `EUREKA_OPERATION_NOT_IMPLEMENTED`, "업무 삭제는 아직 지원하지 않아 …" |
+| 3-7 | `pnpm demo:adapter eureka unsupported` | — | `EUREKA_OPERATION_NOT_IMPLEMENTED`, "업무 보류는 아직 지원하지 않아 …" |
 
 ## 4. 작업 번호·결과 조회
 
@@ -74,7 +74,7 @@ pnpm eureka:server               # 쓰기 허용이 기본. EUREKA_STORE_PATH �
 
 ## 정리
 
-- 시험 업무 "DeskPet 시험 1109"는 Harness로 지울 수 없다(삭제 미지원). 5-1에서 완료 처리되므로 목록에서는 빠진다. 필요하면 Eureka 웹에서 지운다
+- 시험 업무는 `pnpm demo:adapter eureka delete "DeskPet 시험 1109"` → 응으로 지운다 (2026-11-14 삭제 추가, `DELETE /_api_/items/{id}` — 첫 실제 시험 결과를 `docs/connection-test-issues.md`에 남긴다)
 - `--approve`를 붙이면 확인 질문에 답을 묻지 않고 승인한다 (예전 명령과 같은 동작)
 
 ## 기록
