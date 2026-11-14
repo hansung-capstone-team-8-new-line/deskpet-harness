@@ -208,7 +208,8 @@ export class OverviewService {
       if (this.opt.github) {
         try {
           const b = await this.opt.github.read({ kind: 'open_prs', repository: r, perPage: 20 }, { timeoutMs: TIMEOUT_MS });
-          repo.openPrs = b.prs;
+          // 본문은 웹으로 보내지 않는다 (Eureka 표시 찾기는 서버 안에서만)
+          repo.openPrs = b.prs.map(({ body: _body, ...p }) => p);
           repo.hasMore = b.hasMore;
         } catch (e) {
           repo.error = (e as { kind?: string }).kind === 'not_found' ? '저장소를 찾지 못했어요 (이름·토큰 권한 확인)' : '열린 PR을 읽지 못했어요';

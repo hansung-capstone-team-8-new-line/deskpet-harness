@@ -22,6 +22,7 @@ import './quietWarnings.js';
  *   HARNESS_UPDATE_CHECK (기본 on — git fetch로 새 버전 확인, off로 끔), HARNESS_UPDATE_CHECK_MINUTES (기본 30) (D-49)
  *   HARNESS_WEB_ADMIN_TOKEN (선택, 16자 이상·다른 토큰과 다름 — 웹 설정에 넣으면 업데이트 버튼 사용) (D-50)
  *   현황의 Eureka 링크는 Eureka 웹 내 업무 화면, 저장소는 승인 허용 저장소(웹 설정에서 관리, 처음 값은 DESKPET_ALLOWED_REPOS → settings.json, D-52)
+ *   DESKPET_PR_AUTO_LINK (기본 on — PR 제목·본문·브랜치의 EU-<업무번호>[.<단계순서>]로 단계 기록에 PR 주소 자동 기록, D-57), DESKPET_PR_AUTO_LINK_MINUTES (기본 5)
  *   DESKPET_OVERVIEW_MINUTES (기본 10), DESKPET_REMINDER_DAYS (기본 7), DESKPET_OVERVIEW=off로 끔 (D-51)
  *   HARNESS_WEB (기본 on — 빌드한 웹 화면을 같은 주소·포트로 내보냄, off로 끔), HARNESS_WEB_DIR (기본 apps/web/dist, 상대경로는 app 폴더 기준) (D-42)
  *   GITHUB_TOKEN, EUREKA_API_KEY, EUREKA_BASE_URL, DESKPET_REQUIRED_CHECKS, DESKPET_STORE_PATH, LLM_* (기존과 같음)
@@ -41,7 +42,7 @@ import { DEFAULT_POLICY, FileWikiReader, HarnessService, InMemoryOperationStore,
 import { createLlmFromEnv } from '@deskpet/llm';
 import { OutputService, fallbackText, mapHarnessResult } from '@deskpet/output';
 import { ConcurrencyLimiter, parseAllowedRepositories, type FollowUpNotice } from '@deskpet/contracts';
-import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, type AdminAction, HistoryLog, OverviewService, parseRepoList, PipelineBridge } from '@deskpet/server';
+import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, PrAutoLinker, type AdminAction, HistoryLog, OverviewService, parseRepoList, PipelineBridge } from '@deskpet/server';
 
 try {
   process.loadEnvFile('.env');
@@ -249,15 +250,34 @@ const overview = overviewOn
 const pipelineBridge = new PipelineBridge({ harness, store, output });
 // 직접 Eureka 요청을 별도 프로세스(pnpm eureka:server, D-31)로 옮겼으면 이 서버는 eureka.*를 받지 않는다 (기록 권위를 한 곳에)
 const eurekaBridgeMode = (env['DESKPET_EUREKA_BRIDGE'] ?? 'internal').trim().toLowerCase() === 'external' ? 'external' : 'internal';
+const eurekaBridge =
+  eurekaBridgeMode === 'internal'
+    ? new EurekaBridge({ eureka, store, clock: systemClock, holderId: `server-${process.pid}-eureka`, allowedRepositories: allowedRepos, ...(env['EUREKA_DEFAULT_PROCESS_ID']?.trim() ? { defaultProcessId: env['EUREKA_DEFAULT_PROCESS_ID'].trim() } : {}) })
+    : undefined;
+// PR ↔ Eureka 자동 연결 (D-57): 승인 허용 저장소의 열린 PR에 EU-<업무번호> 표시가 있으면 그 업무 단계 기록에 PR 주소를 남긴다
+const autoLinkOn = (env['DESKPET_PR_AUTO_LINK'] ?? 'on').trim().toLowerCase() !== 'off';
+const autoLinkMinutes = positive(env['DESKPET_PR_AUTO_LINK_MINUTES'], 5);
+const autoLinker =
+  autoLinkOn && eurekaBridge && allowEurekaWrites
+    ? new PrAutoLinker({
+        github: githubTransport,
+        bridge: eurekaBridge,
+        repos: () => parseRepoList(allowedRepos.join(',')),
+        allowedRepositories: allowedRepos,
+        log: (l) => console.log(`[pr-link] ${l}`),
+        onResult: (r) => {
+          if (r.some((x) => x.outcome === 'written')) void overview?.refresh(true);
+        },
+      })
+    : undefined;
+
 const server: HarnessWsServer = new HarnessWsServer({
   // 파이프라인 문서 형식(harness.run 등)도 같은 서버에서 받는다 (docs/pipeline-bridge.md)
   inbound: new DirectHarnessInbound({
     harness,
     output,
     bridge: pipelineBridge,
-    ...(eurekaBridgeMode === 'internal'
-      ? { eurekaBridge: new EurekaBridge({ eureka, store, clock: systemClock, holderId: `server-${process.pid}-eureka`, allowedRepositories: allowedRepos, ...(env['EUREKA_DEFAULT_PROCESS_ID']?.trim() ? { defaultProcessId: env['EUREKA_DEFAULT_PROCESS_ID'].trim() } : {}) }) }
-      : {}),
+    ...(eurekaBridge ? { eurekaBridge } : {}),
   }),
   store,
   token,
@@ -381,7 +401,10 @@ async function main() {
     },
     {
       title: '현황',
-      rows: [['', overview ? `${overviewMinutes}분마다 Eureka·GitHub 조회` : '꺼짐 (DESKPET_OVERVIEW=off)']],
+      rows: [
+        ['', overview ? `${overviewMinutes}분마다 Eureka·GitHub 조회` : '꺼짐 (DESKPET_OVERVIEW=off)'],
+        ['', `PR 자동 연결(EU-업무번호): ${autoLinker ? `${autoLinkMinutes}분마다 · 저장소 ${allowedRepos.length ? allowedRepos.join(', ') : '없음 — 웹 설정 > 승인 허용 저장소'}` : !autoLinkOn ? '꺼짐 (DESKPET_PR_AUTO_LINK=off)' : !eurekaBridge ? '꺼짐 — Eureka 요청을 이 서버에서 받지 않음' : '꺼짐 — Eureka 쓰기 꺼짐'}`],
+      ],
     },
     {
       title: '업데이트',
@@ -394,6 +417,7 @@ async function main() {
   recovery.start();
   if (updateCheck && cur) updater.start(updateCheckMinutes * 60_000);
   overview?.start(overviewMinutes * 60_000);
+  autoLinker?.start(autoLinkMinutes * 60_000);
   const now = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
   console.log(
     renderBanner({
@@ -468,6 +492,7 @@ async function shutdown(sig: string, exitCode = 0) {
   console.log(`\n${sig} 수신 — 처리 중인 요청을 마치고 종료합니다 (최대 30초)`);
   updater.stop();
   overview?.stop();
+  autoLinker?.stop();
   await recovery.stop();
   await server.stop(30_000);
   await harness.drainBackground();
