@@ -21,7 +21,7 @@ import './quietWarnings.js';
  *   DESKPET_HISTORY_PATH (세션 기록 JSONL, 기본 DESKPET_STORE_PATH와 같은 폴더의 history.jsonl, off로 끔) (D-47)
  *   HARNESS_UPDATE_CHECK (기본 on — git fetch로 새 버전 확인, off로 끔), HARNESS_UPDATE_CHECK_MINUTES (기본 30) (D-49)
  *   HARNESS_WEB_ADMIN_TOKEN (선택, 16자 이상·다른 토큰과 다름 — 웹 설정에 넣으면 업데이트 버튼 사용) (D-50)
- *   현황의 Eureka 링크는 EUREKA_BASE_URL, 저장소는 승인 허용 저장소(웹 설정에서 관리, 처음 값은 DESKPET_ALLOWED_REPOS → settings.json, D-52)
+ *   현황의 Eureka 링크는 Eureka 웹 내 업무 화면, 저장소는 승인 허용 저장소(웹 설정에서 관리, 처음 값은 DESKPET_ALLOWED_REPOS → settings.json, D-52)
  *   DESKPET_OVERVIEW_MINUTES (기본 10), DESKPET_REMINDER_DAYS (기본 7), DESKPET_OVERVIEW=off로 끔 (D-51)
  *   HARNESS_WEB (기본 on — 빌드한 웹 화면을 같은 주소·포트로 내보냄, off로 끔), HARNESS_WEB_DIR (기본 apps/web/dist, 상대경로는 app 폴더 기준) (D-42)
  *   GITHUB_TOKEN, EUREKA_API_KEY, EUREKA_BASE_URL, DESKPET_REQUIRED_CHECKS, DESKPET_STORE_PATH, LLM_* (기존과 같음)
@@ -230,9 +230,9 @@ const history = historyRaw?.toLowerCase() === 'off' ? undefined : new HistoryLog
 // 웹 현황 (D-51): 진행 중 업무·리마인더·링크. 시작 때와 DESKPET_OVERVIEW_MINUTES(기본 10)분마다 Eureka·GitHub를 읽기만 한다
 const overviewOn = (env['DESKPET_OVERVIEW'] ?? 'on').trim().toLowerCase() !== 'off';
 const overviewMinutes = positive(env['DESKPET_OVERVIEW_MINUTES'], 10);
-// 현황 링크·열린 PR은 승인 허용 저장소를 쓴다 (웹 설정에서 관리). Eureka 링크는 EUREKA_BASE_URL
+// 현황 링크·열린 PR은 승인 허용 저장소를 쓴다 (웹 설정에서 관리). Eureka 링크는 Eureka 웹의 내 업무 화면 (2026-11-14 사용자 지정)
 const overviewRepos = () => parseRepoList(allowedRepos.join(','));
-const eurekaWebUrl = eurekaBase;
+const eurekaWebUrl = 'https://flow.eureka.codes/apps/process#/my-work';
 const overview = overviewOn
   ? new OverviewService({
       eureka,
