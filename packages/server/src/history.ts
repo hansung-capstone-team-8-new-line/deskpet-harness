@@ -144,8 +144,10 @@ export function historyEntryFrom(
     const intention = d.headOutputs?.intention?.value;
     Object.assign(base, clean({ conversationId: str(p['conversationId']) ?? str(p['context']?.stamp?.conversationId), input: text(p['transcript']?.text), inputChannel: 'voice', sttConfidence: num(p['transcript']?.sttConfidence), route: str(intention) ?? str(d.route) }));
   } else if (env.kind === 'eureka.execute') {
+    // 라우터 결정의 operation을 의도로 보여 준다 (eureka list 등). 발화 문장은 transcript가 있으면 (Harness 확장, 선택)
     const d = p['decision'] ?? {};
-    Object.assign(base, clean({ route: str(d.headOutputs?.intention?.value) ?? str(d.route) }));
+    const op = str(d.headOutputs?.operation?.value);
+    Object.assign(base, clean({ input: text(p['transcript']?.text), inputChannel: p['transcript'] ? 'voice' : undefined, sttConfidence: num(p['transcript']?.sttConfidence), route: op ? `eureka.${op}` : (str(d.headOutputs?.intention?.value) ?? str(d.route)) }));
   }
 
   if (!reply.ok) return { ...base, status: 'rejected', errorCode: reply.code };
@@ -170,7 +172,7 @@ export function historyEntryFrom(
   const a = (r['action'] ?? r) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
   const s = String(a['status'] ?? '');
   const status: HistoryStatus = s === 'needs_clarification' ? 'question' : s === 'succeeded' || s === 'failed' || s === 'unknown' || s === 'cancelled' ? s : 'unknown';
-  const resultText = str(r['question']) ?? str(r['resultText']) ?? str(a['facts']?.resultText);
+  const resultText = str(r['question']) ?? str(r['resultText']) ?? str(a['facts']?.question) ?? str(a['facts']?.resultText);
   return { ...base, status, ...clean({ resultText: text(resultText), errorCode: str(a['error']?.code) }) };
 }
 

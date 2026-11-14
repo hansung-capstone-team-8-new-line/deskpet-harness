@@ -15,6 +15,7 @@
     "check": "pnpm typecheck && pnpm lint && pnpm test",
     "smoke": "tsx scripts/smoke.ts",
     "demo:adapter": "tsx demo/adapterClient.ts",
+    "demo:seed": "tsx demo/seed.ts",
     "wiki": "tsx scripts/wiki.ts",
     "db": "tsx scripts/store.ts",
     "harness": "tsx scripts/server.ts",

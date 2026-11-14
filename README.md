@@ -64,6 +64,7 @@ pnpm web:dev             # 터미널 3: 웹 화면 http://127.0.0.1:5173 (보기
 | `pnpm demo:adapter [--fixture] <명령>` | 파이프라인 문서 형식(adapter) 시험 클라이언트: `reminders`, `reminder <itemId>`, `eureka list`, `eureka status "업무"`, `eureka postpone "업무" <ISO+09:00> [--approve]`, `links <itemId>`, `harness [PR] [--item <itemId>]`. `--fixture`는 `pnpm web:fixture` 서버(가짜 GitHub·Eureka)에 붙음 |
 | `pnpm wiki "질의" [--dir <vault>]` | LLM Wiki 검색 확인 (읽기 전용). Guide에 넘길 발췌·출처를 그대로 보여 줌 |
 | `pnpm db [ops\|op <id>\|pending\|dedup\|turns\|raw …]` | 저장소 조회 (읽기 전용, 기록을 바꾸지 않음) |
+| `pnpm demo:seed [--reminders]` | 시연용 실행 기록: 켜 둔 서버에 업무 목록·상태·없는 업무·삭제(미지원)·등록 질문·PR 리뷰·승인 질문→거절을 보내 기록 탭에 여러 결과를 남긴다(외부 변경 없음). `--reminders`면 리마인더 예시 업무 3개(마감 1·3·6일 뒤, 이름 앞에 [시연])를 Eureka에 등록 — 쓰기 |
 | `pnpm start [옵션]` | 웹 화면 빌드 + Harness 서버. 서버가 빌드한 화면을 같은 주소·포트(`http://<주소>:8787`)로 내보낸다 (D-42). 옵션은 `pnpm harness`와 같음. 감시 프로세스로 띄워 웹에서 업데이트하면 자동 재시작 (D-50) |
 | `pnpm web:dev` / `pnpm web:build` | 웹 화면 개발 서버 / 빌드 |
 | `pnpm web:fixture` | 실제 API 없이 여러 상태를 만든 fixture 서버 (웹 화면 확인용) |
