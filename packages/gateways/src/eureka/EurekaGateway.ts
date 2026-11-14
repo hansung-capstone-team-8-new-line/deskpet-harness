@@ -353,7 +353,7 @@ export class EurekaGateway implements EurekaGatewayPort {
   /**
    * 단계 목록 편집 (2026-11-14, Eureka 웹 '전체 단계 편집' 요청으로 확인): PUT /_api_/items/{id}/stages
    * 본문 {stages:[{id?, name, actorId, toolId, dueAt, guideText, isRequired}]} — 단계 목록 전체. 배열 순서가 단계 순서,
-   * id 없는 항목은 새 단계, 빠진 기존 단계는 지워진다. 응답은 업무 전체(stage$$ 포함).
+   * id 없는 항목은 새 단계. 기존 단계를 빼면 409 "stageIds changed"로 거절된다(삭제는 deleteStage). 응답은 업무 전체(stage$$ 포함).
    * 응답의 단계 이름 순서가 보낸 것과 같을 때만 반영 확인
    */
   replaceStages(cmd: { itemId: string; stages: StageEdit[] }, handle: DispatchHandle, c: CallConstraints) {
@@ -365,6 +365,20 @@ export class EurekaGateway implements EurekaGatewayPort {
         ? { response: { itemId: String(item.id), stageIds: got!.map((s) => String(s.id)) }, externalRefs: [{ system: 'eureka' as const, kind: 'item_stages', id: `${String(item.id)}@${got!.map((s) => String(s.id)).join(',')}` }] }
         : { response: { raw: b } };
     }, { action: 'edit_stages', target: `item ${cmd.itemId}` });
+  }
+
+  /**
+   * 단계 삭제 (2026-11-14). 단계 목록 PUT에서 단계를 빼면 Eureka가 409 "stageIds changed"로 거절해서(실제 확인) 단계 하나를 지우는
+   * DELETE /_api_/stages/{id}를 쓴다 — 경로는 다른 삭제(DELETE /items/{id})와 같은 모양으로 추정, 실제 시험 필요. 2xx면 삭제로 본다
+   */
+  deleteStage(cmd: { itemId: string; stageId: string }, handle: DispatchHandle, c: CallConstraints) {
+    return this.sendWrite(
+      { method: 'DELETE', path: `/_api_/stages/${enc(cmd.stageId)}` },
+      handle,
+      c,
+      () => ({ response: { stageId: cmd.stageId }, externalRefs: [{ system: 'eureka' as const, kind: 'stage_delete', id: cmd.stageId }] }),
+      { action: 'edit_stages', target: `stage ${cmd.stageId}` },
+    );
   }
 
   /**

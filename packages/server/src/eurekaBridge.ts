@@ -450,7 +450,12 @@ export class EurekaBridge {
    * 단계 목록 편집 (2026-11-14): 추가(name·task 헤드 = 새 단계 이름, dueAt 헤드 = 단계 마감, 끝에 붙임)·삭제·순서 위/아래·단계 마감.
    * Eureka API는 단계 목록 전체를 받으므로, 지금 목록을 그대로 두고 바꿀 곳만 고쳐 보낸다. 단계 값을 다 읽지 못했으면 보내지 않는다
    */
-  private async stageList(a: PipelineEurekaActionRequest, kind: StageListOp | 'stages:due', t: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
+  private async stageList(a: PipelineEurekaActionRequest, kind: StageListOp | 'stages:due', listed: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
+    // 목록 응답에는 단계 마감·안내문 등이 빠져 있어 그대로 다시 보내면 지워진다 (2026-11-14 실제로 단계 마감이 0이 됨).
+    // 단계 목록을 고칠 때는 항상 업무 한 건 조회로 전체 값을 다시 읽는다
+    const fresh = await this.d.eureka.getItem(listed.itemId, c);
+    if (!fresh.ok) return fromError(a.operationId, fresh.result.error, `'${listed.name}' 업무의 단계 정보를 읽지 못해서 바꾸지 않았어요.`);
+    const t = fresh.data!;
     const stages = [...t.stages].sort((x, y) => (x.order ?? 0) - (y.order ?? 0));
     if (stages.some((s) => !s.edit)) return fail(a.operationId, 'POLICY_BLOCKED', 'stage fields incomplete', `'${t.name}' 업무의 단계 정보를 다 읽지 못해서 바꾸지 않았어요.`);
     const list: StageEdit[] = stages.map((s) => ({ id: s.stageId, name: s.name, actorId: s.edit!.actorId, toolId: s.edit!.toolId, dueAt: s.dueAtMs ?? 0, guideText: s.edit!.guideText, isRequired: s.edit!.isRequired }));
@@ -498,6 +503,10 @@ export class EurekaBridge {
     }
     if (!a.mutationApproved) return confirm(a.operationId, question, { itemId: t.itemId });
     const target = { kind: 'eureka_item' as const, itemId: t.itemId };
+    if (kind === 'stages:delete') {
+      const st = stages[idx]!;
+      return this.write(a, 'edit_stages', target, { itemId: t.itemId, stageId: st.stageId, stageNames: list.map((s) => s.name) }, (h) => this.d.eureka.deleteStage({ itemId: t.itemId, stageId: st.stageId }, h, c), { ok, what });
+    }
     return this.write(a, 'edit_stages', target, { itemId: t.itemId, stageNames: list.map((s) => s.name), stageDue: list.map((s) => s.dueAt) }, (h) => this.d.eureka.replaceStages({ itemId: t.itemId, stages: list }, h, c), { ok, what });
   }
 
@@ -621,7 +630,11 @@ export class EurekaBridge {
           ? `${text.what} 결과를 아직 확인하지 못했어요. 다시 보내지 않고 상태를 확인할게요.`
           : /writes disabled/.test(g.error?.message ?? '')
             ? `쓰기가 꺼져 있어서 ${text.what} 요청은 보내지 않았어요.`
-            : `${text.what}을 하지 못했어요.`;
+            : (g.error?.provisionalCode === 'EUREKA_NOT_FOUND' || /^405/.test(g.error?.message ?? '')) && /단계 삭제$/.test(text.what)
+              ? `Eureka가 단계 삭제 요청을 받지 않아서 ${eulReul(text.what)} 하지 못했어요. 단계 삭제는 Eureka 웹에서 해 주세요.`
+              : g.error?.provisionalCode === 'EUREKA_CONFLICT' && action === 'edit_stages' && /stageIds changed/.test(g.error.message)
+              ? `Eureka가 단계 목록 변경을 받지 않아서 ${eulReul(text.what)} 하지 못했어요.`
+              : `${eulReul(text.what)} 하지 못했어요.`;
     return { ...out, facts: { ...out.facts, resultText: sentence } };
   }
 
@@ -667,6 +680,13 @@ export class EurekaBridge {
 function copula(word: string): string {
   const c = word.charCodeAt(word.length - 1) - 0xac00;
   return `${word}${c >= 0 && c <= 11171 && c % 28 !== 0 ? '이에요' : '예요'}`;
+}
+
+/** 을/를: 마지막 글자 받침 */
+function eulReul(word: string): string {
+  const c = word.charCodeAt(word.length - 1) - 0xac00;
+  if (c < 0 || c > 11171) return `${word}을(를)`;
+  return `${word}${c % 28 === 0 ? '를' : '을'}`;
 }
 
 function ro(word: string): string {

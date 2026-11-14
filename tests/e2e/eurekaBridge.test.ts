@@ -218,6 +218,11 @@ describe('EurekaAdapter — 라우터 Operation 라벨 (wiki small-router-model,
     expect((await bridge.execute(req('eureka', { operation: 'delete_stage', modelIntention: 'eureka', name: '가' }, T5))).facts['question']).toContain('되돌릴 수 없어요');
     expect(await bridge.execute(req('eureka', { operation: 'delete_stage', modelIntention: 'eureka', name: '가' }, { ...T5, mutationApproved: true }))).toMatchObject({ status: 'succeeded' });
     expect(server.items.get('2005')!.stages.map((s) => s.name)).toEqual(['다', '나']);
+    // 단계 삭제는 목록 PUT이 아니라 DELETE /stages/{id} (목록에서 빼면 Eureka가 409로 거절)
+    expect(server.calls.filter((c) => c.method === 'DELETE' && c.path === '/_api_/stages/e1')).toHaveLength(1);
+    // 목록을 고칠 때는 업무 한 건을 다시 읽어 단계 마감 등을 그대로 보낸다
+    const lastPut = server.calls.filter((c) => c.method === 'PUT' && c.path.endsWith('/stages')).at(-1)!;
+    expect((lastPut.body as { stages: { name: string; dueAt: number }[] }).stages.find((s) => s.name === '다')!.dueAt).toBe(Date.parse(due));
     // 이미 있는 이름은 추가하지 않는다
     expect(await bridge.execute(req('eureka', { operation: 'add_stage', modelIntention: 'eureka', name: '나' }, { ...T5, mutationApproved: true }))).toMatchObject({ status: 'failed' });
   });

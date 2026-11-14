@@ -131,6 +131,9 @@ export class FakeEurekaServer implements HttpClient {
       const body = req.body as { stages?: { id?: string; name?: string; dueAt?: number; guideText?: string; actorId?: string; toolId?: string; isRequired?: boolean }[] };
       if (!Array.isArray(body?.stages)) return { status: 500, bodyText: '.stages is required' };
       const old = new Map(it.stages.map((s) => [s.id, s]));
+      // 실제 Eureka처럼: 기존 단계를 빼면 거절 (2026-11-14 확인)
+      const sentIds = new Set(body.stages.map((x) => x.id).filter(Boolean));
+      if ([...old.keys()].some((id) => !sentIds.has(id))) return { status: 409, bodyText: `409 CONFLICT - item:${it.id} stageIds changed @saveItemStages(${it.id})` };
       it.stages = body.stages.map((x, i) => {
         const prev = x.id ? old.get(x.id) : undefined;
         if (x.id && !prev) throw new Error(`unknown stage ${x.id}`);
@@ -147,6 +150,17 @@ export class FakeEurekaServer implements HttpClient {
       if (typeof body?.name === 'string') it.name = body.name;
       if (body?.status === 'hold' || body?.status === 'todo' || body?.status === 'doing') it.status = body.status;
       return ok({ id: it.id, name: it.name, dueAt: it.dueAt, ...(it.priority ? { priority: it.priority } : {}), ...(it.status ? { status: it.status } : {}) });
+    }
+    if (req.method === 'DELETE' && (m = req.path.match(/^\/_api_\/stages\/([^/]+)$/))) {
+      const id = decodeURIComponent(m[1]!);
+      for (const it of this.items.values()) {
+        const i = it.stages.findIndex((s) => s.id === id);
+        if (i < 0) continue;
+        it.stages.splice(i, 1);
+        it.stages.forEach((s, k) => (s.order = k + 1));
+        return ok({ id, deletedAt: this.now() });
+      }
+      return { status: 404, bodyText: `.id[${id}] not found` };
     }
     if (req.method === 'DELETE' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/))) {
       const it = this.items.get(decodeURIComponent(m[1]!));

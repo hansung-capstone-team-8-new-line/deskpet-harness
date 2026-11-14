@@ -131,7 +131,7 @@ async function main() {
       if (existing.includes(stage)) await eureka(`${stage} 단계 마감 ${days}일 뒤로 바꿔 줘`, 'postpone', { name: stage, dueAt: at(days) }, true, target);
       else await eureka(`${stage} 단계 ${days}일 뒤 마감으로 추가해 줘`, 'add_stage', { name: stage, dueAt: at(days) }, true, target);
     }
-    // 업무 템플릿에서 따라온 기본 단계는 지운다
+    // 업무 템플릿에서 따라온 기본 단계를 지운다 (단계가 하나도 없으면 안 되므로 실행 단계를 넣은 뒤에)
     for (const stage of existing.filter((x) => !plan.some(([p]) => p === x))) await eureka(`${stage} 단계는 지워 줘`, 'delete_stage', { name: stage }, true, target);
   }
 
