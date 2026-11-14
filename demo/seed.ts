@@ -8,7 +8,7 @@
  *   pnpm demo:seed --reminder       # + 리마인더 예시: 업무 1개 '[시연] 캡스톤 최종 발표 준비'에 단계 3개(마감 1·3·6일 뒤) — Eureka 쓰기
  *   pnpm demo:seed --fixture        # pnpm web:fixture 서버(가짜 GitHub·Eureka)로
  *
- * 기록에 남는 결과: 완료(업무 목록·업무 상태·PR 리뷰), 질문함(업무 등록·PR 승인 확인), 실패(없는 업무·지원하지 않는 담당자 조회), 거절 답변
+ * 기록에 남는 결과: 완료(업무 목록·업무 상태·PR 리뷰), 질문함(업무 등록·PR 승인 확인), 실패(없는 업무), 거절 답변
  * 시연 업무 정리: pnpm demo:adapter eureka delete "[시연] 캡스톤 최종 발표 준비" → 응
  * .env: HARNESS_WS_URL(기본 ws://127.0.0.1:8787), HARNESS_WS_TOKEN, GITHUB_TEST_REPO(owner/name), GITHUB_TEST_PR
  */
@@ -96,7 +96,6 @@ async function main() {
   }
   if (firstName) await eureka(`${firstName} 업무 어디까지 했어?`, 'query', { target: firstName });
   await eureka('우주선 발사 준비 업무 상태 알려줘', 'query', { target: '우주선 발사 준비' });
-  await eureka('이 업무 담당자 누구야?', 'query_actors', { target: '아무 업무' });
   // 확인 질문까지만: 답을 거절하므로 등록하지 않는다
   await eureka('발표 리허설 업무 새로 만들어 줘', 'create', { task: '발표 리허설', dueAt: new Date(Date.now() + 3 * 86_400_000).toISOString() });
 
@@ -109,21 +108,31 @@ async function main() {
       return d.toISOString();
     };
     const itemName = '[시연] 캡스톤 최종 발표 준비';
-    const q = await eureka('캡스톤 최종 발표 준비 업무 6일 뒤 마감으로 등록해 줘', 'create', { task: itemName, dueAt: at(6) });
-    const created = q.r.status === 'needs_clarification' ? await q.again('응, 등록해') : q.r;
-    line('응, 등록해', created.error ? `${created.status} (${created.error.code})` : created.status, created.facts['resultText']);
-    const itemId = created.facts['itemId'];
-    if (created.status !== 'succeeded' || !itemId) throw new Error('업무 등록이 끝나지 않아 단계를 넣지 않았어요');
+    // 이미 있으면(지난번 실행) 다시 만들지 않고 그 업무의 단계만 맞춘다
+    const found = await eureka(`${itemName} 업무 있어?`, 'query', { target: itemName });
+    let itemId = found.r.status === 'succeeded' ? found.r.facts['itemId'] : undefined;
+    if (!itemId) {
+      const q = await eureka('캡스톤 최종 발표 준비 업무 6일 뒤 마감으로 등록해 줘', 'create', { task: itemName, dueAt: at(6) });
+      const created = q.r.status === 'needs_clarification' ? await q.again('응, 등록해') : q.r;
+      line('응, 등록해', created.error ? `${created.status} (${created.error.code})` : created.status, created.facts['resultText']);
+      itemId = created.facts['itemId'];
+      if (created.status !== 'succeeded' || !itemId) throw new Error('업무 등록이 끝나지 않아 단계를 넣지 않았어요');
+    }
     const target = { kind: 'eureka_item', itemId };
-    const st = await eureka('방금 만든 업무 단계 보여 줘', 'query', {}, false, target);
-    const template = (JSON.parse(st.r.facts['stages'] ?? '[]') as { name: string }[]).map((x) => x.name);
+    const st = await eureka('그 업무 단계 보여 줘', 'query', {}, false, target);
+    if (st.r.status !== 'succeeded') throw new Error(`방금 만든 업무(${itemId})를 다시 읽지 못했어요`);
+    const existing = (JSON.parse(st.r.facts['stages'] ?? '[]') as { name: string }[]).map((x) => x.name);
     const plan: [string, number][] = [
       ['중간 발표 자료 정리', 1],
       ['하드웨어 케이스 출력', 3],
       ['최종 보고서 초안', 6],
     ];
-    for (const [stage, days] of plan) await eureka(`${stage} 단계 ${days}일 뒤 마감으로 추가해 줘`, 'add_stage', { name: stage, dueAt: at(days) }, true, target);
-    for (const stage of template) await eureka(`${stage} 단계는 지워 줘`, 'delete_stage', { name: stage }, true, target);
+    for (const [stage, days] of plan) {
+      if (existing.includes(stage)) await eureka(`${stage} 단계 마감 ${days}일 뒤로 바꿔 줘`, 'postpone', { name: stage, dueAt: at(days) }, true, target);
+      else await eureka(`${stage} 단계 ${days}일 뒤 마감으로 추가해 줘`, 'add_stage', { name: stage, dueAt: at(days) }, true, target);
+    }
+    // 업무 템플릿에서 따라온 기본 단계는 지운다
+    for (const stage of existing.filter((x) => !plan.some(([p]) => p === x))) await eureka(`${stage} 단계는 지워 줘`, 'delete_stage', { name: stage }, true, target);
   }
 
   const [owner, name] = (env['GITHUB_TEST_REPO'] ?? '').split('/');

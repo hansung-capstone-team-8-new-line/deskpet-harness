@@ -78,19 +78,43 @@ export class EurekaGateway implements EurekaGatewayPort {
   }
 
   // ================================================================ reads
-  async listTasks(query: { onlyOpen?: boolean; limit?: number }, c: CallConstraints): Promise<ReadOutcome<TaskList>> {
-    const res = await this.read(
-      { method: 'GET', path: '/_api_/items/0/list', query: { sites: '', detail: 'true', limit: String(query.limit ?? 100) } },
-      c,
-    );
-    if (!res.ok) return { ok: false, result: res.result };
-    const body = safeJson(res.response.bodyText) as { total?: number; list?: unknown[] } | undefined;
-    if (!body || !Array.isArray(body.list)) {
-      return { ok: false, result: readFailure('EUREKA_SERVER_ERROR', 'unexpected list body', 'none') };
+  /**
+   * 업무 목록. 업무가 limit보다 많으면 page를 넘겨 total까지 모은다 (2026-11-14: 100개를 넘으면 새 업무가 목록에 없어
+   * 방금 만든 업무를 못 찾던 문제). 서버가 page를 무시하면(같은 업무만 다시 오면) 멈추고 partial로 둔다. 최대 maxPages쪽
+   */
+  async listTasks(query: { onlyOpen?: boolean; limit?: number; maxPages?: number }, c: CallConstraints): Promise<ReadOutcome<TaskList>> {
+    const limit = query.limit ?? 100;
+    const seen = new Map<string, unknown>();
+    let total: number | undefined;
+    for (let page = 0; page < (query.maxPages ?? 10); page++) {
+      const res = await this.read(
+        { method: 'GET', path: '/_api_/items/0/list', query: { sites: '', detail: 'true', limit: String(limit), ...(page > 0 ? { page: String(page) } : {}) } },
+        c,
+      );
+      if (!res.ok) {
+        if (page === 0) return { ok: false, result: res.result };
+        break; // 첫 쪽은 받았으니 받은 만큼으로 partial
+      }
+      const body = safeJson(res.response.bodyText) as { total?: number; list?: unknown[] } | undefined;
+      if (!body || !Array.isArray(body.list)) {
+        if (page === 0) return { ok: false, result: readFailure('EUREKA_SERVER_ERROR', 'unexpected list body', 'none') };
+        break;
+      }
+      if (typeof body.total === 'number') total = body.total;
+      let added = 0;
+      for (const raw of body.list) {
+        const id = String((raw as { id?: unknown })?.id ?? '');
+        if (id && !seen.has(id)) {
+          seen.set(id, raw);
+          added++;
+        }
+      }
+      if (total === undefined || seen.size >= total || body.list.length === 0 || added === 0) break;
     }
-    const all = body.list.map(normalizeItem);
+    const all = [...seen.values()].map(normalizeItem);
     const items = query.onlyOpen ? all.filter((i) => i.computedState !== 'done' && i.computedState !== 'hold') : all;
-    const completeness = typeof body.total === 'number' ? (body.list.length < body.total ? 'partial' : 'complete') : 'unknown';
+    const completeness = typeof total === 'number' ? (seen.size < total ? 'partial' : 'complete') : 'unknown';
+    const body = { total };
     const observedAt = this.iso();
     const data: TaskList = { items, completeness, observedAt, ...(typeof body.total === 'number' ? { total: body.total } : {}) };
     return {
@@ -98,6 +122,16 @@ export class EurekaGateway implements EurekaGatewayPort {
       data,
       result: gr({ mode: 'read', dispatchState: 'sent', outcome: 'response', respondedAt: observedAt, completeness, response: { count: items.length } }),
     };
+  }
+
+  /** 업무 한 건 (stage$$ 포함). 번호를 아는 업무는 목록 대신 이것으로 찾는다 (2026-11-14) */
+  async getItem(itemId: string, c: CallConstraints): Promise<ReadOutcome<TaskSummary>> {
+    const res = await this.read({ method: 'GET', path: `/_api_/items/${enc(itemId)}` }, c);
+    if (!res.ok) return { ok: false, result: res.result };
+    const body = safeJson(res.response.bodyText) as { id?: unknown; deletedAt?: unknown } | undefined;
+    if (!body?.id || (typeof body.deletedAt === 'number' && body.deletedAt > 0)) return { ok: false, result: readFailure('EUREKA_NOT_FOUND', `item ${itemId} not found`, 'none') };
+    const item = normalizeItem(body);
+    return { ok: true, data: item, result: gr({ mode: 'read', dispatchState: 'sent', outcome: 'response', respondedAt: this.iso() }) };
   }
 
   async getTaskState(query: { itemId: string; stageId?: string }, c: CallConstraints): Promise<ReadOutcome<TaskState>> {

@@ -334,6 +334,12 @@ export class EurekaBridge {
 
   private async resolveItem(a: PipelineActionRequest, name: string | undefined, c: { deadlineAt: string }): Promise<{ task: TaskSummary } | { result: PipelineActionResult }> {
     const target = Target.safeParse(a.decision.resolvedTarget);
+    // 업무 번호를 알면 한 건만 읽는다 (목록에 없을 수 있는 새 업무도 찾는다, 2026-11-14)
+    if (target.success && target.data.kind === 'eureka_item') {
+      const one = await this.d.eureka.getItem(target.data.itemId, c);
+      if (one.ok) return { task: one.data! };
+      if (one.result.error?.provisionalCode === 'EUREKA_NOT_FOUND') return { result: fail(a.operationId, 'EUREKA_NOT_FOUND', `item ${target.data.itemId} not found`, '그 업무를 찾지 못했어요.') };
+    }
     const list = await this.d.eureka.listTasks({ limit: 100 }, c);
     if (!list.ok) return { result: fromError(a.operationId, list.result.error, '업무 목록을 가져오지 못했어요.') };
     const all = list.data!.items;

@@ -78,20 +78,31 @@ export class FakeEurekaServer implements HttpClient {
     return f.fault;
   }
 
+  private itemJson(i: FakeItem) {
+    return {
+      id: i.id,
+      name: i.name,
+      ...(i.description ? { description: i.description } : {}),
+      dueAt: i.dueAt,
+      priority: i.priority,
+      ...(i.status ? { status: i.status } : {}),
+      'stage$$': i.stages.map((s) => ({ id: s.id, name: s.name, status: s.status, order: s.order, dueAt: s.dueAt ?? 0, actorId: s.actorId ?? '', toolId: s.toolId ?? '', guideText: s.guideText ?? '', isRequired: s.isRequired ?? true, noteIds: (s.notes ?? []).map((n) => n.id), 'note$$': (s.notes ?? []).map((n) => ({ id: n.id, stereo: 'comment' })) })),
+      };
+  }
+
   private route(req: HttpRequest): HttpResponse {
     const ok = (b: unknown) => ({ status: 200, bodyText: JSON.stringify(b) });
     let m: RegExpMatchArray | null;
     if (req.method === 'GET' && req.path === '/_api_/items/0/list') {
-      const list = [...this.items.values()].map((i) => ({
-        id: i.id,
-        name: i.name,
-        ...(i.description ? { description: i.description } : {}),
-        dueAt: i.dueAt,
-        priority: i.priority,
-        ...(i.status ? { status: i.status } : {}),
-        'stage$$': i.stages.map((s) => ({ id: s.id, name: s.name, status: s.status, order: s.order, dueAt: s.dueAt ?? 0, actorId: s.actorId ?? '', toolId: s.toolId ?? '', guideText: s.guideText ?? '', isRequired: s.isRequired ?? true, noteIds: (s.notes ?? []).map((n) => n.id), 'note$$': (s.notes ?? []).map((n) => ({ id: n.id, stereo: 'comment' })) })),
-      }));
-      return ok({ total: list.length, list });
+      const all = [...this.items.values()].map((i) => this.itemJson(i));
+      const limit = Number(req.query?.['limit'] ?? 100);
+      const page = Number(req.query?.['page'] ?? 0);
+      return ok({ total: all.length, limit, page, list: all.slice(page * limit, page * limit + limit) });
+    }
+    if (req.method === 'GET' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/)) && m[1] !== '0') {
+      const it = this.items.get(decodeURIComponent(m[1]!));
+      if (!it) return { status: 404, bodyText: `.id[${m[1]}] not found` };
+      return ok(this.itemJson(it));
     }
     if (req.method === 'GET' && (m = req.path.match(/^\/_api_\/items\/([^/]+)\/status$/))) {
       const it = this.items.get(decodeURIComponent(m[1]!));

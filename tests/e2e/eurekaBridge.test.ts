@@ -330,3 +330,18 @@ describe('EurekaAdapter — 새 헤드 의미 (wiki interface-contracts 2026-11-
     expect(await bridge.execute(req('eureka.status', { name: '보고서 제출' }))).toMatchObject({ status: 'succeeded', facts: { itemId: '2001' } });
   });
 });
+
+describe('업무가 100개를 넘을 때 (2026-11-14)', () => {
+  it('목록은 page를 넘겨 다 모으고, 번호로 고른 업무는 한 건 조회로 찾는다', async () => {
+    const { bridge, server } = setup();
+    for (let i = 0; i < 120; i++) server.addItem({ id: `9${String(i).padStart(4, '0')}`, name: `채우기 ${i}`, stages: [{ id: `9${i}s`, name: '끝', status: 'done', order: 1 }] });
+    server.addItem({ id: '7777', name: '맨 뒤 새 업무', stages: [{ id: '7777s', name: '시작', status: 'todo', order: 1 }] });
+    // 이름으로: 첫 쪽(100개)에 없어도 찾는다
+    expect(await bridge.execute(req('eureka', { operation: 'query', modelIntention: 'eureka', target: '맨 뒤 새 업무' }))).toMatchObject({ status: 'succeeded', facts: { itemId: '7777' } });
+    // 번호로: 한 건 조회
+    const before = server.calls.length;
+    expect(await bridge.execute(req('eureka', { operation: 'query', modelIntention: 'eureka' }, { resolvedTarget: { kind: 'eureka_item', itemId: '7777' } }))).toMatchObject({ status: 'succeeded' });
+    expect(server.calls.slice(before).some((c) => c.method === 'GET' && c.path === '/_api_/items/7777')).toBe(true);
+    expect(await bridge.execute(req('eureka', { operation: 'query', modelIntention: 'eureka' }, { resolvedTarget: { kind: 'eureka_item', itemId: '0404' } }))).toMatchObject({ status: 'failed', error: { code: 'EUREKA_NOT_FOUND' } });
+  });
+});
