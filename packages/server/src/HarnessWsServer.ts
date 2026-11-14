@@ -50,6 +50,8 @@ export interface HarnessWsServerOptions {
   history?: HistoryLog;
   /** 서버 정보 (D-49): 접속 직후 보내고, publishInfo()로 다시 보낸다 */
   info?: () => unknown;
+  /** 현황 (D-51): 접속 직후 보내고 publishOverview()로 다시 보낸다. 연결이 overview.refresh를 보내면 refresh() */
+  overview?: { get(): unknown; refresh(): Promise<void> };
   host?: string;
   port?: number;
   allowedOrigins?: string[];
@@ -242,6 +244,13 @@ export class HarnessWsServer {
     for (const conn of this.conns) if (conn.role) this.send(conn, { type: 'server.info', info });
   }
 
+  /** 현황이 바뀌었을 때 접속한 모든 연결에 보낸다 (D-51) */
+  publishOverview(): void {
+    if (!this.o.overview) return;
+    const overview = this.o.overview.get();
+    for (const conn of this.conns) if (conn.role) this.send(conn, { type: 'overview', overview });
+  }
+
   inFlightIdle(): Promise<void> {
     return Promise.allSettled([...this.inFlight]).then(() => undefined);
   }
@@ -295,6 +304,7 @@ export class HarnessWsServer {
       this.log(`연결 #${conn.id} 인증됨 (${frame.role}${frame.client ? `, ${frame.client}` : ''})`);
       this.send(conn, { type: 'welcome', protocol: PROTOCOL, schemaVersion: `${SUPPORTED_MAJOR}.0`, role: frame.role, epoch: this.epoch, serverTime: new Date().toISOString() });
       if (this.o.info) this.send(conn, { type: 'server.info', info: this.o.info() });
+      if (this.o.overview) this.send(conn, { type: 'overview', overview: this.o.overview.get() });
       if (frame.role === 'pipeline') this.flushHeldNotices(conn);
       return;
     }
@@ -315,6 +325,10 @@ export class HarnessWsServer {
       }
       case 'admin':
         return this.onAdmin(conn, frame);
+      case 'overview.refresh':
+        // 결과는 publishOverview로 모든 연결에 간다
+        if (this.o.overview) void this.o.overview.refresh().catch(() => undefined);
+        return;
     }
   }
 

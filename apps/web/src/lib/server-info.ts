@@ -108,3 +108,66 @@ export function formatDateTime(iso: string): string {
   if (Number.isNaN(t)) return '-';
   return new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(t);
 }
+
+// ------------------------------------------------------------ 현황 (D-51)
+export interface OverviewPr {
+  owner: string;
+  name: string;
+  prNumber: number;
+  url: string;
+  stageName?: string;
+  state?: 'open' | 'merged' | 'closed';
+  title?: string;
+  draft?: boolean;
+}
+
+export interface OverviewItem {
+  itemId: string;
+  name: string;
+  state: string;
+  description?: string;
+  priority?: string;
+  dueAt?: string;
+  stages: { stageId: string; name: string; status: string }[];
+  doneStages: number;
+  currentStage?: string;
+  prs: OverviewPr[];
+}
+
+export interface OpenPullRequest {
+  number: number;
+  title: string;
+  author: string;
+  url: string;
+  draft: boolean;
+  updatedAt?: string;
+  reviewRequested: boolean;
+}
+
+export interface Overview {
+  state: 'loading' | 'ok' | 'partial' | 'failed';
+  observedAt?: string;
+  items: OverviewItem[];
+  autoFocusId?: string;
+  reminders: { itemId: string; name: string; dueAt: string; overdue: boolean; daysLeft: number }[];
+  links: { eurekaWebUrl?: string; repos: { owner: string; name: string; url: string; openPrs?: OpenPullRequest[]; hasMore?: boolean; error?: string }[] };
+  problems: string[];
+  refreshing?: boolean;
+}
+
+export const STAGE_LABEL: Record<string, string> = { todo: '대기', doing: '진행 중', done: '완료', skip: '건너뜀', unknown: '알 수 없음' };
+export const ITEM_STATE_LABEL: Record<string, string> = { todo: '시작 전', doing: '진행 중', done: '완료', hold: '보류' };
+export const PR_STATE_LABEL: Record<string, string> = { open: '열림', merged: '병합됨', closed: '닫힘' };
+
+/** 마감까지 남은 날: D-3, D-day, 2일 지남 */
+export function dDay(dueAt: string, now = Date.now()): string {
+  const due = new Date(dueAt);
+  const start = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((start(due) - start(new Date(now))) / 86_400_000);
+  return days === 0 ? 'D-day' : days > 0 ? `D-${days}` : `${-days}일 지남`;
+}
+
+/** 웹에서 고른 업무가 아직 열려 있으면 그것, 아니면 서버가 자동으로 고른 업무 */
+export function pickFocus(o: Overview, chosen?: string): OverviewItem | undefined {
+  return o.items.find((i) => i.itemId === chosen) ?? o.items.find((i) => i.itemId === o.autoFocusId) ?? o.items[0];
+}

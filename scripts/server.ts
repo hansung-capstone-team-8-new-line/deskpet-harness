@@ -21,6 +21,8 @@ import './quietWarnings.js';
  *   DESKPET_HISTORY_PATH (세션 기록 JSONL, 기본 DESKPET_STORE_PATH와 같은 폴더의 history.jsonl, off로 끔) (D-47)
  *   HARNESS_UPDATE_CHECK (기본 on — git fetch로 새 버전 확인, off로 끔), HARNESS_UPDATE_CHECK_MINUTES (기본 30) (D-49)
  *   HARNESS_WEB_ADMIN_TOKEN (선택, 16자 이상·다른 토큰과 다름 — 웹 설정에 넣으면 업데이트 버튼 사용) (D-50)
+ *   EUREKA_WEB_URL (웹 현황의 Eureka 링크), DESKPET_GITHUB_REPOS (현황에 보일 저장소 owner/name, 비우면 DESKPET_ALLOWED_REPOS),
+ *   DESKPET_OVERVIEW_MINUTES (기본 10), DESKPET_REMINDER_DAYS (기본 7), DESKPET_OVERVIEW=off로 끔 (D-51)
  *   HARNESS_WEB (기본 on — 빌드한 웹 화면을 같은 주소·포트로 내보냄, off로 끔), HARNESS_WEB_DIR (기본 apps/web/dist, 상대경로는 app 폴더 기준) (D-42)
  *   GITHUB_TOKEN, EUREKA_API_KEY, EUREKA_BASE_URL, DESKPET_REQUIRED_CHECKS, DESKPET_STORE_PATH, LLM_* (기존과 같음)
  * 비밀값은 출력하지 않는다. 쓰기는 기본으로 켜져 있고 사용자 확인 답변으로만 보낸다. 서버 콘솔 yes 확인은 없앴다 (사용자 결정 2026-10-24, D-22).
@@ -38,7 +40,7 @@ import { DEFAULT_POLICY, FileWikiReader, HarnessService, InMemoryOperationStore,
 import { createLlmFromEnv } from '@deskpet/llm';
 import { OutputService, fallbackText, mapHarnessResult } from '@deskpet/output';
 import { ConcurrencyLimiter, parseAllowedRepositories, type FollowUpNotice } from '@deskpet/contracts';
-import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, HistoryLog, PipelineBridge } from '@deskpet/server';
+import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, HistoryLog, OverviewService, parseRepoList, PipelineBridge } from '@deskpet/server';
 
 try {
   process.loadEnvFile('.env');
@@ -163,8 +165,9 @@ const githubLimiter = new ConcurrencyLimiter('github', positive(env['GITHUB_MAX_
 const eurekaLimiter = new ConcurrencyLimiter('eureka', positive(env['EUREKA_MAX_CONCURRENT'], 4));
 // PR CI 검사 (D-30): 기본은 조회하지 않고 승인 조건에서도 뺀다 (사용자 결정 2026-11-03). enforce로 되돌린다
 const prChecks: 'enforce' | 'skip' = (env['DESKPET_PR_CHECKS'] ?? 'skip').trim().toLowerCase() === 'enforce' ? 'enforce' : 'skip';
+const githubTransport = new RestGitHubTransport({ token: githubToken, allowWrites: allowGithubWrites, limiter: githubLimiter });
 const github = new GitHubReviewGateway({
-  transport: new RestGitHubTransport({ token: githubToken, allowWrites: allowGithubWrites, limiter: githubLimiter }),
+  transport: githubTransport,
   now: () => Date.now(),
   requiredChecksFallback: parseRequiredChecksFallback(env['DESKPET_REQUIRED_CHECKS']),
   checksPolicy: prChecks,
@@ -187,6 +190,24 @@ const historyRaw = env['DESKPET_HISTORY_PATH']?.trim();
 const historyPath = historyRaw?.toLowerCase() === 'off' ? undefined : historyRaw ? (isAbsolute(historyRaw) ? historyRaw : resolve(appRoot, historyRaw)) : storePath ? resolve(dirname(isAbsolute(storePath) ? storePath : resolve(appRoot, storePath)), 'history.jsonl') : undefined;
 const history = historyRaw?.toLowerCase() === 'off' ? undefined : new HistoryLog({ ...(historyPath ? { path: historyPath } : {}), log: (l) => console.log(`! ${l}`) });
 
+// 웹 현황 (D-51): 진행 중 업무·리마인더·링크. 시작 때와 DESKPET_OVERVIEW_MINUTES(기본 10)분마다 Eureka·GitHub를 읽기만 한다
+const overviewOn = (env['DESKPET_OVERVIEW'] ?? 'on').trim().toLowerCase() !== 'off';
+const overviewMinutes = positive(env['DESKPET_OVERVIEW_MINUTES'], 10);
+const overviewRepos = env['DESKPET_GITHUB_REPOS']?.trim() ? parseRepoList(env['DESKPET_GITHUB_REPOS']) : parseRepoList(allowed.repos.join(','));
+const eurekaWebUrl = env['EUREKA_WEB_URL']?.trim() || undefined;
+const overview = overviewOn
+  ? new OverviewService({
+      eureka,
+      github: githubTransport,
+      repos: overviewRepos,
+      ...(allowed.repos.length ? { allowedRepositories: allowed.repos } : {}),
+      ...(eurekaWebUrl ? { eurekaWebUrl } : {}),
+      reminderDays: positive(env['DESKPET_REMINDER_DAYS'], 7),
+      onChange: () => server.publishOverview(),
+      log: (l) => console.log(`[overview] ${l}`),
+    })
+  : undefined;
+
 const pipelineBridge = new PipelineBridge({ harness, store, output });
 // 직접 Eureka 요청을 별도 프로세스(pnpm eureka:server, D-31)로 옮겼으면 이 서버는 eureka.*를 받지 않는다 (기록 권위를 한 곳에)
 const eurekaBridgeMode = (env['DESKPET_EUREKA_BRIDGE'] ?? 'internal').trim().toLowerCase() === 'external' ? 'external' : 'internal';
@@ -207,6 +228,7 @@ const server: HarnessWsServer = new HarnessWsServer({
   ...(adminToken ? { adminToken, admin: (action: 'update.check' | 'update.apply'): Promise<{ ok: boolean; message: string }> => (action === 'update.apply' ? updater.apply() : updater.check().then((s: UpdateStatus) => ({ ok: s.state !== 'check_failed', message: s.message ?? s.state }))) } : {}),
   ...(history ? { history } : {}),
   info: () => serverInfo(),
+  ...(overview ? { overview } : {}),
   host: wsHost,
   allowedClients,
   ...(tls ? { tls } : {}),
@@ -317,6 +339,10 @@ async function main() {
       ],
     },
     {
+      title: '현황',
+      rows: [['', overview ? `${overviewMinutes}분마다 Eureka·GitHub 조회 · 저장소 ${overviewRepos.length ? overviewRepos.map((r) => `${r.owner}/${r.name}`).join(', ') : '없음 (DESKPET_GITHUB_REPOS)'}${eurekaWebUrl ? '' : ' · Eureka 링크 없음 (EUREKA_WEB_URL)'}` : '꺼짐 (DESKPET_OVERVIEW=off)']],
+    },
+    {
       title: '업데이트',
       rows: [['', `${updateCheck && cur ? `${updateCheckMinutes}분마다 확인` : '확인 꺼짐'} · 웹 버튼 ${adminToken ? (supervised ? '켜짐 (자동 재시작)' : '켜짐 (재시작은 직접 — pnpm start면 자동)') : '꺼짐 (HARNESS_WEB_ADMIN_TOKEN 없음)'}`]],
     },
@@ -326,6 +352,7 @@ async function main() {
   await server.start();
   recovery.start();
   if (updateCheck && cur) updater.start(updateCheckMinutes * 60_000);
+  overview?.start(overviewMinutes * 60_000);
   const now = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
   console.log(
     renderBanner({
@@ -399,6 +426,7 @@ async function shutdown(sig: string, exitCode = 0) {
   closing = true;
   console.log(`\n${sig} 수신 — 처리 중인 요청을 마치고 종료합니다 (최대 30초)`);
   updater.stop();
+  overview?.stop();
   await recovery.stop();
   await server.stop(30_000);
   await harness.drainBackground();

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { ConnectForm } from '@/components/connect-form';
 import { DetailPanel } from '@/components/detail-panel';
 import { HistoryView } from '@/components/history-view';
+import { CurrentWorkCard, RemindersAndLinks } from '@/components/overview';
 import { SettingsView, adminMessage } from '@/components/settings-view';
 import { TaskTable } from '@/components/task-table';
 import { UpdateBanner } from '@/components/update-banner';
@@ -216,6 +217,7 @@ function TasksView({ conn, view, hideFinished }: { conn: HarnessConnection; view
 
   return (
     <>
+      <CurrentWorkCard conn={conn} overview={view.overview} />
       <div className="mt-5 flex flex-wrap items-center gap-2">
         <div className="relative w-full sm:w-72">
           <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
@@ -267,6 +269,7 @@ function TasksView({ conn, view, hideFinished }: { conn: HarnessConnection; view
           )}
         </div>
       </div>
+      <RemindersAndLinks overview={view.overview} />
     </>
   );
 }

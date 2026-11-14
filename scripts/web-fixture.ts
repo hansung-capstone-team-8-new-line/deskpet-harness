@@ -8,7 +8,7 @@
  *   pnpm demo:adapter --fixture reminders   # 파이프라인 문서 형식(adapter)도 이 fixture로 시험 (실행용 토큰 fixture-pipeline-token-123)
  */
 import { OutputService } from '@deskpet/output';
-import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, HistoryLog, PipelineBridge } from '@deskpet/server';
+import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, HistoryLog, OverviewService, PipelineBridge } from '@deskpet/server';
 import { answer, askApproval, review } from '../tests/support/flows.js';
 import { createWorld } from '../tests/support/world.js';
 
@@ -71,8 +71,23 @@ let update: Record<string, unknown> = {
 };
 const info = () => ({ startedAt: history.sessionId, version: update['current'], update, admin: true, history: { persistent: false }, supervised: false });
 
+// 현황(D-51) 확인용: 가짜 Eureka 업무 + 가짜 GitHub 열린 PR
+w.github.openPrs = [
+  { number: 42, title: 'feat: 승인 흐름 정리', author: 'hansol', url: 'https://github.com/NewLine/DeskPet/pull/42', draft: false, updatedAt: new Date().toISOString(), reviewRequested: true },
+  { number: 43, title: 'wip: 센서 보정', author: 'jongha', url: 'https://github.com/NewLine/DeskPet/pull/43', draft: true, reviewRequested: false },
+];
+const overview = new OverviewService({
+  eureka: w.eurekaGw,
+  github: w.github,
+  repos: [{ owner: 'NewLine', name: 'DeskPet' }],
+  eurekaWebUrl: 'https://example.invalid/eureka',
+  now: () => w.clock.nowMs(),
+  onChange: () => server.publishOverview(),
+});
+
 const server = new HarnessWsServer({
   history,
+  overview,
   info,
   adminToken: ADMIN,
   admin: async (action) => {
@@ -101,5 +116,6 @@ const server = new HarnessWsServer({
   log: (l) => console.log(`[fixture] ${l}`),
 });
 const { port } = await server.start();
+overview.start(60 * 60_000);
 console.log(`fixture 서버: ws://127.0.0.1:${port}  보기 전용 토큰: ${VIEWER}  실행용 토큰: ${PIPELINE}  관리 토큰: ${ADMIN}  (fixture 전용 값, 실제 토큰 아님)`);
 process.on('SIGINT', () => void server.stop(1_000).then(() => process.exit(0)));

@@ -12,7 +12,9 @@ export type TransportReadQuery =
   | { kind: 'reviews'; repository: Repository; prNumber: number; page: number; perPage: number }
   /** 리뷰의 코드 줄 지적 (REST GET /pulls/{n}/comments). reviews의 본문과 별도로 모은다 */
   | { kind: 'review_comments'; repository: Repository; prNumber: number; page: number; perPage: number }
-  | { kind: 'viewer'; repository: Repository };
+  | { kind: 'viewer'; repository: Repository }
+  /** 열린 PR 목록 (웹 현황, 2026-11-14). 최근 수정 순 */
+  | { kind: 'open_prs'; repository: Repository; perPage: number };
 
 export interface TransportReadResultMap {
   pr: Omit<PrBasics, 'observedAt'>;
@@ -28,6 +30,18 @@ export interface TransportReadResultMap {
   reviews: { reviews: Omit<ReviewItem, 'source'>[]; hasMore: boolean };
   review_comments: { comments: { reviewId: string; path: string; line?: number; body: string; commitSha?: string; severity?: string }[]; hasMore: boolean };
   viewer: { login: string; permission: ViewerPermission };
+  open_prs: { prs: OpenPullRequest[]; hasMore: boolean };
+}
+
+export interface OpenPullRequest {
+  number: number;
+  title: string;
+  author: string;
+  url: string;
+  draft: boolean;
+  updatedAt?: string;
+  /** 리뷰 요청된 사람·팀이 있음 */
+  reviewRequested: boolean;
 }
 
 export type TransportSubmitResponse =

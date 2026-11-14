@@ -1,6 +1,6 @@
 import type { OperationUpdated, Snapshot, Tombstone } from '@deskpet/contracts';
 import { RequestStateProjector } from '@deskpet/projector';
-import type { HistoryEntry, ServerInfo } from '@/lib/server-info';
+import type { HistoryEntry, Overview, ServerInfo } from '@/lib/server-info';
 
 /**
  * Harness 서버(viewer 역할) 연결. 보기 전용: 실행 요청을 보내지 않는다.
@@ -22,6 +22,8 @@ export interface ConnView {
   version: number;
   /** 서버 정보 (D-49) */
   info?: ServerInfo;
+  /** 현황 (D-51). 서버가 꺼 두었으면 없음 */
+  overview?: Overview;
   /** 이 화면이 처음 받은 서버 버전. 바뀌면 화면을 새로 고쳐야 한다 */
   firstCommit?: string;
   /** 세션 기록 (D-47). 최신 순 */
@@ -88,6 +90,11 @@ export class HarnessConnection {
     this.ws.send(JSON.stringify({ type: 'history', limit: 100, ...(beforeId ? { beforeId } : {}) }));
   }
 
+  /** 현황 다시 읽기 (D-51). 결과는 overview 프레임으로 온다 */
+  refreshOverview() {
+    if (this.view.state === 'connected') this.ws?.send(JSON.stringify({ type: 'overview.refresh' }));
+  }
+
   /** 관리 동작 (D-50). 관리 토큰은 보내기만 하고 저장하지 않는다 */
   admin(token: string, action: 'update.check' | 'update.apply'): Promise<AdminResult> {
     if (this.view.state !== 'connected' || !this.ws) return Promise.resolve({ ok: false, message: 'not_connected' });
@@ -150,6 +157,9 @@ export class HarnessConnection {
         this.resubscribe();
         // 다시 연결되면 기록도 처음부터 다시 받는다 (끊긴 동안 생긴 기록 포함)
         if (this.historyWanted) this.loadHistory();
+        break;
+      case 'overview':
+        this.bump({ overview: f['overview'] as Overview });
         break;
       case 'server.info': {
         const info = f['info'] as ServerInfo;

@@ -26,6 +26,8 @@ export const ClientFrame = z.discriminatedUnion('type', [
    * 관리 동작 (D-50). 관리 토큰(HARNESS_WEB_ADMIN_TOKEN)이 맞아야 한다. 연결 역할과 별개로 매번 토큰을 확인한다.
    * update.check: 지금 새 버전 확인 / update.apply: git pull(빨리 감기만) → 설치 → 웹 빌드 → 재시작
    */
+  /** 현황 다시 읽기 (D-51). viewer도 가능, 서버가 자주 누르는 것을 걸러 낸다 */
+  z.object({ type: z.literal('overview.refresh') }),
   z.object({ type: z.literal('admin'), token: z.string().max(512), action: z.enum(['update.check', 'update.apply']), id: z.string().max(100).optional() }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
@@ -68,6 +70,8 @@ export type ServerFrame =
   | { type: 'history.appended'; entry: unknown }
   /** 서버 정보: 버전·업데이트 상태·관리 기능 여부 (D-49). 접속 직후와 바뀔 때 */
   | { type: 'server.info'; info: unknown }
+  /** 현황: 진행 중 업무·리마인더·링크 (D-51). 접속 직후와 바뀔 때 */
+  | { type: 'overview'; overview: unknown }
   | { type: 'admin.result'; id?: string; action: string; ok: boolean; message: string }
   | { type: 'error'; code: ErrorCode; message: string };
 

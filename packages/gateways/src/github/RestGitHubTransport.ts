@@ -81,6 +81,22 @@ export class RestGitHubTransport implements GitHubTransport {
           ...(b.base?.sha ? { baseSha: String(b.base.sha) } : {}),
         } satisfies TransportReadResultMap['pr'];
       }
+      case 'open_prs': {
+        const b = await this.get(`${repo}/pulls`, c, { state: 'open', sort: 'updated', direction: 'desc', per_page: String(q.perPage) });
+        const list: Gh[] = Array.isArray(b) ? b : [];
+        return {
+          prs: list.map((p) => ({
+            number: Number(p.number),
+            title: String(p.title ?? ''),
+            author: String(p.user?.login ?? ''),
+            url: String(p.html_url ?? ''),
+            draft: Boolean(p.draft),
+            ...(p.updated_at ? { updatedAt: String(p.updated_at) } : {}),
+            reviewRequested: (Array.isArray(p.requested_reviewers) && p.requested_reviewers.length > 0) || (Array.isArray(p.requested_teams) && p.requested_teams.length > 0),
+          })),
+          hasMore: list.length >= q.perPage,
+        } satisfies TransportReadResultMap['open_prs'];
+      }
       case 'files': {
         const b = await this.get(`${repo}/pulls/${q.prNumber}/files`, c, { per_page: String(q.perPage), page: String(q.page) });
         const list = Array.isArray(b) ? b : [];
