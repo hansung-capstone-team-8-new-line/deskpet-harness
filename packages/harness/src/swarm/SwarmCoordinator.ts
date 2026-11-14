@@ -29,6 +29,10 @@ export interface SwarmCoordinatorDeps {
   wiki?: WikiReader;
   worktreeManager?: WorktreeIsolatorPort;
   maxWorkersPerSession?: number;
+  /** 무진행(비활성) 타임아웃(ms). 0 이하이면 비활성 타이머를 두지 않는다. */
+  inactivityTimeoutMs?: number;
+  /** 대기 중인 호출이 없을 때(예: suspend 후 백그라운드 진행 중) 중단/타임아웃 발생 시 통지 콜백 */
+  onBackgroundInterrupted?: (result: HarnessResult) => void;
 }
 
 export interface SwarmStartInput {
@@ -41,10 +45,32 @@ export interface SwarmStartInput {
   signal?: AbortSignal;
 }
 
+export interface TrackedTaskState {
+  taskId: string;
+  workerId: string;
+  goal: string;
+  mcpId: string;
+  status: 'pending' | 'running' | 'waiting_user' | 'completed' | 'failed' | 'blocked' | 'interrupted';
+  stepsCompleted: number;
+  lastActivity: string;
+  lastToolName?: string;
+}
+
 interface ActiveSwarmSession {
   requestId: string;
   promise: Promise<HarnessResult>;
   settled: boolean;
+  hasActiveWaiter: boolean;
+  sessionAbort: AbortController;
+  tasks: Map<string, TrackedTaskState>;
+  runningWorkers: number;
+  waitingForUserCount: number;
+  timedOutIdle: boolean;
+  inactivityMs: number;
+  idleTimer?: ReturnType<typeof setTimeout>;
+  idleTriggered: Promise<'idle_timeout'>;
+  triggerIdle?: () => void;
+  cleanupFns: Set<() => Promise<void>>;
 }
 
 const PLAN_SCHEMA = {
@@ -74,7 +100,7 @@ const PLAN_SCHEMA = {
 } as const;
 
 const COORDINATOR_INSTRUCTIONS = [
-  '당신은 헤드리스 바이브 코딩 플랫폼 DeskPet의 Agent Swarm Coordinator입니다.',
+  '당신은 헤드리스 바이브 코딩 플랫폼 DeskPet의 병렬 작업 조율기입니다.',
   '사용자 목표와 현재 사용 가능한 MCP 서버·Guide 목록을 보고, 작업을 1개의 Worker로 바로 처리할지(`single`), 여러 병렬/순차 Worker로 분해할지(`multi`) 결정하세요.',
   '- 단일 목표나 단일 파일/모듈 수정은 `single`(task 1개)로 두어 불필요한 병합 충돌을 피하세요.',
   '- 서로 독립적인 여러 MCP 작업(예: 서로 다른 모듈 코드 수정, 코드 분석+PR 확인)은 `multi`로 분해해 병렬 실행하세요. 각 Worker는 독립된 `git worktree`에서 실행된 뒤 병합됩니다.',
@@ -82,18 +108,20 @@ const COORDINATOR_INSTRUCTIONS = [
 ].join('\n');
 
 /**
- * Agent Swarm Coordinator.
+ * 병렬 Worker 조율기.
  *
  * - 작업을 분해하고 자율 실행형 `SwarmWorker`들을 단일 또는 의존성 Wave 단위 병렬로 실행한다.
+ * - 진행이 이어지는 동안에는 임의 전체 시간 제한으로 끊지 않고, 아무런 진행 상황이 없이 일정 시간(`inactivityTimeoutMs`)이 지났을 때만 타임아웃 후 중단된 작업 정보를 출력한다.
  * - Worker가 직접 MCP를 호출하고, 허가가 필요한 경우에만 `PipelinePermissionQueue`를 통해 일시 대기한다.
- * - 세션을 보관해 `resume` 이후에도 동일한 실행 컨텍스트와 나머지 병렬 결과를 이어받는다.
  */
 export class SwarmCoordinator {
   private readonly sessions = new Map<string, ActiveSwarmSession>();
   private readonly maxWorkers: number;
+  private readonly inactivityTimeoutMs: number;
 
   constructor(private readonly d: SwarmCoordinatorDeps) {
     this.maxWorkers = d.maxWorkersPerSession ?? 5;
+    this.inactivityTimeoutMs = d.inactivityTimeoutMs ?? 60_000;
   }
 
   hasActiveSession(requestId: string): boolean {
@@ -110,9 +138,33 @@ export class SwarmCoordinator {
       return this.awaitNextSuspensionOrFinish(input.requestId, existing);
     }
 
+    const sessionAbort = new AbortController();
+    const onExternalAbort = () => {
+      sessionAbort.abort(input.signal?.reason ?? new Error('cancelled'));
+    };
+    if (input.signal) {
+      if (input.signal.aborted) sessionAbort.abort(input.signal.reason);
+      else input.signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+
+    let triggerIdle!: () => void;
+    const idleTriggered = new Promise<'idle_timeout'>((resolve) => {
+      triggerIdle = () => resolve('idle_timeout');
+    });
+
     const session: ActiveSwarmSession = {
       requestId: input.requestId,
       settled: false,
+      hasActiveWaiter: true,
+      sessionAbort,
+      tasks: new Map(),
+      runningWorkers: 0,
+      waitingForUserCount: 0,
+      timedOutIdle: false,
+      inactivityMs: this.inactivityTimeoutMs,
+      idleTriggered,
+      triggerIdle,
+      cleanupFns: new Set(),
       promise: Promise.resolve({
         requestId: input.requestId,
         disposition: 'completed',
@@ -123,10 +175,19 @@ export class SwarmCoordinator {
       }),
     };
 
-    session.promise = this.executeSwarmPlan(input).finally(() => {
-      session.settled = true;
-      this.sessions.delete(input.requestId);
-    });
+    session.promise = this.executeSwarmPlan(input, session)
+      .then((res) => {
+        if (!session.hasActiveWaiter && res.facts['interrupted']) {
+          this.d.onBackgroundInterrupted?.(res);
+        }
+        return res;
+      })
+      .finally(() => {
+        this.clearIdleTimer(session);
+        if (input.signal) input.signal.removeEventListener('abort', onExternalAbort);
+        session.settled = true;
+        this.sessions.delete(input.requestId);
+      });
     this.sessions.set(input.requestId, session);
 
     return this.awaitNextSuspensionOrFinish(input.requestId, session);
@@ -138,6 +199,7 @@ export class SwarmCoordinator {
   async continueSession(requestId: string): Promise<HarnessResult | undefined> {
     const session = this.sessions.get(requestId);
     if (!session) return undefined;
+    this.touchSession(session);
     return this.awaitNextSuspensionOrFinish(requestId, session);
   }
 
@@ -145,6 +207,7 @@ export class SwarmCoordinator {
     requestId: string,
     session: ActiveSwarmSession,
   ): Promise<HarnessResult> {
+    session.hasActiveWaiter = true;
     const nextPerm = this.d.permissionQueue.waitForNextPermission(requestId);
     const race = await Promise.race([
       session.promise.then((res) => {
@@ -160,12 +223,77 @@ export class SwarmCoordinator {
       return race.res;
     }
 
+    session.hasActiveWaiter = false;
     return permissionSuspendedResult(requestId, race.entry);
   }
 
-  private async executeSwarmPlan(input: SwarmStartInput): Promise<HarnessResult> {
-    const wikiExcerpts = input.wikiExcerpts ?? (await this.fetchWikiIfAllowed(input));
-    const tasks = await this.decomposeTasks(input);
+  private clearIdleTimer(session: ActiveSwarmSession) {
+    if (session.idleTimer) {
+      clearTimeout(session.idleTimer);
+      session.idleTimer = undefined;
+    }
+  }
+
+  private touchSession(session: ActiveSwarmSession) {
+    this.clearIdleTimer(session);
+    if (session.settled || session.timedOutIdle || session.sessionAbort.signal.aborted) return;
+    if (session.inactivityMs <= 0) return;
+    // 모든 실행 Worker가 사용자 응답 대기 중이면 무진행 타임아웃을 멈춘다 (대기는 Pending TTL이 관리)
+    if (session.runningWorkers > 0 && session.waitingForUserCount >= session.runningWorkers) return;
+
+    session.idleTimer = setTimeout(() => {
+      if (session.settled || session.timedOutIdle) return;
+      session.timedOutIdle = true;
+      for (const task of session.tasks.values()) {
+        if (task.status === 'pending' || task.status === 'running' || task.status === 'waiting_user') {
+          task.status = 'interrupted';
+        }
+      }
+      session.sessionAbort.abort(new Error('inactivity_timeout'));
+      this.d.permissionQueue.abortRequest(session.requestId, 'inactivity_timeout');
+      session.triggerIdle?.();
+    }, session.inactivityMs);
+  }
+
+  private async executeSwarmPlan(input: SwarmStartInput, session: ActiveSwarmSession): Promise<HarnessResult> {
+    this.touchSession(session);
+    session.runningWorkers = 1; // 계획·Wiki 탐색 단계도 무진행 감시 대상
+    this.touchSession(session);
+
+    const raceWithIdle = async <T>(p: Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> => {
+      const winner = await Promise.race([
+        p.then((value) => ({ ok: true as const, value })),
+        session.idleTriggered.then(() => ({ ok: false as const })),
+      ]);
+      return winner;
+    };
+
+    const prep = await raceWithIdle(
+      (async () => {
+        const wikiExcerpts = input.wikiExcerpts ?? (await this.fetchWikiIfAllowed(input, session));
+        this.touchSession(session);
+        const tasks = await this.decomposeTasks(input, session);
+        this.touchSession(session);
+        return { wikiExcerpts, tasks };
+      })(),
+    );
+
+    if (!prep.ok || session.timedOutIdle || session.sessionAbort.signal.aborted) {
+      if (session.tasks.size === 0) {
+        session.tasks.set('task-1', {
+          taskId: 'task-1',
+          workerId: 'coordinator',
+          goal: input.goal,
+          mcpId: '*',
+          status: 'interrupted',
+          stepsCompleted: 0,
+          lastActivity: '작업 계획 수립',
+        });
+      }
+      return this.buildInterruptedResult(input.requestId, session, []);
+    }
+
+    const { wikiExcerpts, tasks } = prep.value;
     const worker = new SwarmWorker({
       mcpManager: this.d.mcpManager,
       guideRegistry: this.d.guideRegistry,
@@ -177,15 +305,32 @@ export class SwarmCoordinator {
 
     const completed = new Map<string, SwarmWorkerOutcome>();
     const pendingTasks = [...tasks.slice(0, this.maxWorkers)];
+    for (const t of pendingTasks) {
+      session.tasks.set(t.taskId, {
+        taskId: t.taskId,
+        workerId: '',
+        goal: t.goal,
+        mcpId: t.mcpId ?? '*',
+        status: 'pending',
+        stepsCompleted: 0,
+        lastActivity: '실행 대기',
+      });
+    }
+    session.runningWorkers = 0;
 
     // Wave execution respecting optional `dependsOn` edges
     while (completed.size < pendingTasks.length) {
+      if (session.timedOutIdle || session.sessionAbort.signal.aborted) break;
+
       const ready = pendingTasks.filter(
         (t) => !completed.has(t.taskId) && (t.dependsOn ?? []).every((dep) => completed.has(dep)),
       );
       if (ready.length === 0) break;
 
-      const outcomes = await Promise.all(
+      session.runningWorkers = ready.length;
+      this.touchSession(session);
+
+      const wavePromise = Promise.all(
         ready.map(async (task) => {
           const depResults: Record<string, WorkerExecutionSummary> = {};
           for (const depId of task.dependsOn ?? []) {
@@ -193,9 +338,22 @@ export class SwarmCoordinator {
             if (dep) depResults[depId] = dep.summary;
           }
           const workerId = this.d.ids.next('wrk');
+          const tracked = session.tasks.get(task.taskId)!;
+          tracked.workerId = workerId;
+          tracked.status = 'running';
+          tracked.lastActivity = 'Worker 시작';
+          this.touchSession(session);
+
           const worktree: WorktreeHandle | null = this.d.worktreeManager
             ? await this.d.worktreeManager.createWorkerWorktree(input.requestId, workerId).catch(() => null)
             : null;
+          let cleanedUp = false;
+          const ensureCleanup = async () => {
+            if (cleanedUp || !worktree || !this.d.worktreeManager) return;
+            cleanedUp = true;
+            await this.d.worktreeManager.cleanupWorktree(worktree).catch(() => undefined);
+          };
+          session.cleanupFns.add(ensureCleanup);
 
           try {
             const outcome = await worker.run({
@@ -208,12 +366,37 @@ export class SwarmCoordinator {
               constraints: input.constraints,
               ...(wikiExcerpts.length ? { wikiExcerpts } : {}),
               ...(Object.keys(depResults).length ? { dependencyResults: depResults } : {}),
-              ...(input.signal ? { signal: input.signal } : {}),
+              signal: session.sessionAbort.signal,
+              stepBudgetMs: Math.max(this.inactivityTimeoutMs * 2, 120_000),
+              onProgress: ({ activity, toolName, stepCompleted }) => {
+                tracked.lastActivity = activity;
+                if (toolName) tracked.lastToolName = toolName;
+                if (stepCompleted !== undefined) tracked.stepsCompleted = stepCompleted;
+                this.touchSession(session);
+              },
+              onWaitingUser: (waiting) => {
+                if (waiting) {
+                  session.waitingForUserCount += 1;
+                  tracked.status = 'waiting_user';
+                } else {
+                  session.waitingForUserCount = Math.max(0, session.waitingForUserCount - 1);
+                  if (tracked.status === 'waiting_user') tracked.status = 'running';
+                }
+                this.touchSession(session);
+              },
             });
+
+            if (session.timedOutIdle || session.sessionAbort.signal.aborted || outcome.summary.interrupted) {
+              tracked.status = 'interrupted';
+              if (outcome.summary.lastActivity) tracked.lastActivity = outcome.summary.lastActivity;
+              await ensureCleanup();
+              return { taskId: task.taskId, outcome };
+            }
 
             if (worktree && this.d.worktreeManager) {
               if (outcome.summary.status === 'completed') {
                 const merge = await this.d.worktreeManager.mergeAndCleanup(worktree);
+                cleanedUp = true;
                 if (merge.changedFiles.length > 0) {
                   outcome.summary.changedFiles = merge.changedFiles;
                 }
@@ -227,29 +410,112 @@ export class SwarmCoordinator {
                   outcome.facts['workspace'] = { ...prevWs, changedFiles: merge.changedFiles, worktreeIsolated: true };
                 }
               } else {
-                await this.d.worktreeManager.cleanupWorktree(worktree);
+                await ensureCleanup();
               }
             }
 
+            tracked.status = outcome.summary.status === 'blocked'
+              ? 'blocked'
+              : outcome.summary.status === 'failed'
+                ? 'failed'
+                : 'completed';
             return { taskId: task.taskId, outcome };
           } catch (err) {
-            if (worktree && this.d.worktreeManager) {
-              await this.d.worktreeManager.cleanupWorktree(worktree);
-            }
+            await ensureCleanup();
             throw err;
+          } finally {
+            session.cleanupFns.delete(ensureCleanup);
           }
         }),
       );
 
-      for (const { taskId, outcome } of outcomes) {
+      const wave = await raceWithIdle(wavePromise);
+      session.runningWorkers = 0;
+
+      if (!wave.ok) {
+        // Hung tool/LLM ignored AbortSignal — clean up open worktrees and abort remaining tasks cleanly
+        await Promise.all([...session.cleanupFns].map((fn) => fn()));
+        session.cleanupFns.clear();
+        break;
+      }
+
+      for (const { taskId, outcome } of wave.value) {
         completed.set(taskId, outcome);
       }
     }
 
-    return this.aggregateOutcomes(input.requestId, [...completed.values()], wikiExcerpts, input.constraints.deadlineAt, input.signal);
+    this.clearIdleTimer(session);
+    if (session.timedOutIdle || session.sessionAbort.signal.aborted || [...session.tasks.values()].some((t) => t.status === 'interrupted')) {
+      return this.buildInterruptedResult(input.requestId, session, [...completed.values()]);
+    }
+
+    return this.aggregateOutcomes(input.requestId, [...completed.values()], wikiExcerpts, input.constraints.deadlineAt, session.sessionAbort.signal);
   }
 
-  private async decomposeTasks(input: SwarmStartInput): Promise<SwarmTask[]> {
+  private buildInterruptedResult(
+    requestId: string,
+    session: ActiveSwarmSession,
+    completedOutcomes: SwarmWorkerOutcome[],
+  ): HarnessResult {
+    const actionResults: ActionResult[] = [];
+    const sources: SourceRef[] = [];
+    const mergedFacts: Record<string, unknown> = {};
+    for (const o of completedOutcomes) {
+      actionResults.push(...o.actionResults);
+      sources.push(...o.sources);
+      Object.assign(mergedFacts, o.facts);
+    }
+
+    const interruptedTasks = [...session.tasks.values()]
+      .filter((t) => t.status !== 'completed' && t.status !== 'blocked')
+      .map((t) => ({
+        taskId: t.taskId,
+        workerId: t.workerId || 'unassigned',
+        goal: t.goal,
+        mcpId: t.mcpId,
+        stepsCompleted: t.stepsCompleted,
+        lastActivity: t.lastActivity,
+        ...(t.lastToolName ? { lastToolName: t.lastToolName } : {}),
+      }));
+
+    const reason = session.timedOutIdle ? 'inactivity_timeout' : 'cancelled';
+    const taskLabels = interruptedTasks
+      .slice(0, 3)
+      .map((t) => (t.lastToolName ? `'${condenseTtsText(t.goal, 40)}' (${t.lastToolName})` : `'${condenseTtsText(t.goal, 40)}'`))
+      .join(', ');
+    const summaryText = session.timedOutIdle
+      ? taskLabels
+        ? `일정 시간 동안 진행 상황이 없어 작업을 중단했어요. 중단된 작업: ${taskLabels}.`
+        : '일정 시간 동안 진행 상황이 없어 작업을 중단했어요.'
+      : taskLabels
+        ? `요청이 취소되어 작업을 중단했어요. 중단된 작업: ${taskLabels}.`
+        : '요청이 취소되어 작업을 중단했어요.';
+
+    mergedFacts['interrupted'] = {
+      reason,
+      ...(session.timedOutIdle ? { idleMs: session.inactivityMs } : {}),
+      tasks: interruptedTasks,
+      summaryText,
+    };
+
+    return {
+      requestId,
+      disposition: session.timedOutIdle ? 'failed' : 'cancelled',
+      actionResults,
+      facts: mergedFacts,
+      sources,
+      processingErrors: [
+        {
+          stage: 'harness.swarm',
+          provisionalCode: session.timedOutIdle ? 'DEADLINE_EXCEEDED' : 'CANCELLED',
+          message: summaryText,
+          nextAction: 'none',
+        },
+      ],
+    };
+  }
+
+  private async decomposeTasks(input: SwarmStartInput, session: ActiveSwarmSession): Promise<SwarmTask[]> {
     const serverIds = this.d.mcpManager.listServerIds();
     const defaultTask: SwarmTask = {
       taskId: 'task-1',
@@ -263,7 +529,8 @@ export class SwarmCoordinator {
     if (!this.d.llm) return [defaultTask];
 
     const nowMs = this.d.clock.nowMs();
-    const planDeadline = new Date(Math.min(Date.parse(input.constraints.deadlineAt), nowMs + 6_000)).toISOString();
+    const callBudgetMs = Math.max(this.inactivityTimeoutMs * 2, 30_000);
+    const planDeadline = new Date(Math.max(Date.parse(input.constraints.deadlineAt) || 0, nowMs + callBudgetMs)).toISOString();
     try {
       const res = await this.d.llm.complete({
         purpose: 'guide',
@@ -277,7 +544,7 @@ export class SwarmCoordinator {
         jsonSchema: PLAN_SCHEMA as { name: string; schema: Record<string, unknown> },
         maxOutputTokens: 512,
         deadlineAt: planDeadline,
-        ...(input.signal ? { signal: input.signal } : {}),
+        signal: session.sessionAbort.signal,
       });
       const parsed = (res.json ?? JSON.parse(res.text)) as { tasks?: SwarmTask[] };
       if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
@@ -294,12 +561,14 @@ export class SwarmCoordinator {
     return [defaultTask];
   }
 
-  private async fetchWikiIfAllowed(input: SwarmStartInput): Promise<{ text: string; ref: string }[]> {
+  private async fetchWikiIfAllowed(input: SwarmStartInput, session: ActiveSwarmSession): Promise<{ text: string; ref: string }[]> {
     if (!this.d.wiki || input.constraints.wikiSearchAllowed === false || !input.turn.rawText.trim()) return [];
+    const deadlineMs = Math.max(Date.parse(input.constraints.deadlineAt) || 0, this.d.clock.nowMs() + Math.max(this.inactivityTimeoutMs, 10_000));
     try {
       const w = await this.d.wiki.search(input.turn.rawText, 'swarm', {
-        deadlineAt: input.constraints.deadlineAt,
+        deadlineAt: new Date(deadlineMs).toISOString(),
       });
+      this.touchSession(session);
       return w.excerpts.slice(0, 3).map((e) => ({ text: e.text.slice(0, 500), ref: e.source.ref }));
     } catch {
       return [];
@@ -420,27 +689,25 @@ export class SwarmCoordinator {
 
     if (this.d.llm) {
       const nowMs = this.d.clock.nowMs();
-      const summaryDeadline = new Date(Math.min(Date.parse(deadlineAt), nowMs + 4_000)).toISOString();
-      if (Date.parse(summaryDeadline) > nowMs + 300) {
-        try {
-          const res = await this.d.llm.complete({
-            purpose: 'guide',
-            instructions:
-              '다음 실행 결과를 음성 TTS 출력용으로 1~2문장(160자 이내)의 간결한 한국어 존댓말로 요약하세요. 코드, 파일 전체 내용, 마크다운 기호, diff 줄은 절대 넣지 마세요.',
-            input: JSON.stringify({
-              summary: raw.slice(0, 2000),
-              changedFileCount: changedFiles.length,
-              changedFiles: changedFiles.slice(0, 10),
-            }),
-            maxOutputTokens: 160,
-            deadlineAt: summaryDeadline,
-            ...(signal ? { signal } : {}),
-          });
-          const candidate = condenseTtsText(res.text, 200);
-          if (candidate) return candidate;
-        } catch {
-          // Deterministic condensation fallback handles any LLM timeout/failure cleanly
-        }
+      const summaryDeadline = new Date(Math.max(Date.parse(deadlineAt) || 0, nowMs + Math.max(this.inactivityTimeoutMs, 10_000))).toISOString();
+      try {
+        const res = await this.d.llm.complete({
+          purpose: 'guide',
+          instructions:
+            '다음 실행 결과를 음성 TTS 출력용으로 1~2문장(160자 이내)의 간결한 한국어 존댓말로 요약하세요. 코드, 파일 전체 내용, 마크다운 기호, diff 줄은 절대 넣지 마세요.',
+          input: JSON.stringify({
+            summary: raw.slice(0, 2000),
+            changedFileCount: changedFiles.length,
+            changedFiles: changedFiles.slice(0, 10),
+          }),
+          maxOutputTokens: 160,
+          deadlineAt: summaryDeadline,
+          ...(signal ? { signal } : {}),
+        });
+        const candidate = condenseTtsText(res.text, 200);
+        if (candidate) return candidate;
+      } catch {
+        // Deterministic condensation fallback handles any LLM timeout/failure cleanly
       }
     }
 

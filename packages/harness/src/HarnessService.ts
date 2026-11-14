@@ -50,7 +50,6 @@ import { DirectEurekaExecutor } from './eureka/DirectEurekaExecutor.js';
 import { McpGuideRegistry } from './guide/BaseMcpGuide.js';
 import type { DispatchAuthoritySource } from './guide/fastPathDispatch.js';
 import { GitHubMcpGuide } from './guide/GitHubMcpGuide.js';
-import type { Guide } from './guide/Guide.js';
 import { WorkspaceMcpGuide } from './guide/WorkspaceMcpGuide.js';
 import { DEFAULT_POLICY, type PolicyConfig } from './policy/config.js';
 import { expectedOutcomeFor } from './policy/expectedOutcome.js';
@@ -65,13 +64,13 @@ import { PipelinePermissionQueue } from './swarm/PipelinePermissionQueue.js';
 import { SwarmCoordinator } from './swarm/SwarmCoordinator.js';
 
 /**
- * HarnessService — 범용 MCP Guide 템플릿 · IntentTriage(`unclear` 4분기) · 자율 실행형 Agent Swarm 조율기.
+ * HarnessService — 범용 MCP Guide 템플릿 · IntentTriage(`unclear` 4분기) · 자율 실행형 병렬 Worker 조율기.
  *
  * 아키텍처 원칙:
- * - Router 진입 의도는 `llm` / `unclear`(및 `mcp.task`)만 전제하며 비합의 `pr.review`/`pr.approve` 강제를 두지 않는다.
+ * - Router 진입 의도는 합의된 `llm` / `unclear`를 기반으로 동작하며 비합의 강제 라우팅을 두지 않는다.
  * - `unclear`는 IntentTriage가 먼저 의도를 파악해 ① 재질문(`clarify`), ② 일상 대화(`reroute_talk`),
  *   ③ 유레카 직접 조작(`direct_eureka`), ④ 코딩/MCP/추론(`delegate_swarm`)로 분기한다.
- * - Swarm Worker는 중앙 승인 병목 없이 MCP 도구를 직접 실행하며, Guide에 명시된 조건에 한해
+ * - Worker는 중앙 승인 병목 없이 MCP 도구를 직접 실행하며, Guide에 명시된 조건에 한해
  *   PipelinePermissionQueue를 통해 사용자 확인을 입력받는다.
  */
 export interface HarnessDeps {
@@ -81,8 +80,6 @@ export interface HarnessDeps {
   clock: Clock;
   ids: IdGen;
   config?: PolicyConfig;
-  /** 레거시 주입 호환용. 신규 구성에서는 guideRegistry 사용을 권장한다 */
-  guide?: Guide;
   mcpManager?: McpClientPort;
   workspace?: WorkspaceGatewayPort;
   worktreeManager?: WorktreeIsolatorPort;
@@ -214,6 +211,10 @@ export class HarnessService {
       permissionQueue: this.permissionQueue,
       clock: d.clock,
       ids: d.ids,
+      inactivityTimeoutMs: this.cfg.swarmInactivityTimeoutMs,
+      onBackgroundInterrupted: (res) => {
+        this.emitNotice('recovery', res, `idle-${res.requestId}`, 'swarm_interrupted', 'failed');
+      },
       ...(d.llm ? { llm: d.llm } : {}),
       ...(d.wiki ? { wiki: d.wiki } : {}),
       ...(d.worktreeManager ? { worktreeManager: d.worktreeManager } : {}),
@@ -260,7 +261,7 @@ export class HarnessService {
           meta,
           'completed',
           [],
-          { reroute: 'talk', triage: t },
+          { reroute: 'talk', ...(t.talkReply ? { talkReply: t.talkReply } : {}), triage: t },
           { sources: outcome.sources },
         );
       }
@@ -322,7 +323,7 @@ export class HarnessService {
       });
     }
 
-    // `llm` / `mcp.task` 및 기타 Harness 진입 요청 → 자율 실행형 Agent Swarm
+    // Router `llm` 및 기타 Harness 진입 요청 → 자율 실행 Worker
     return this.swarm.startAndWait({
       requestId: meta.requestId,
       goal: turn.rawText,

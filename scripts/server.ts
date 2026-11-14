@@ -117,8 +117,7 @@ const webBuilt = existsSync(resolve(webDir, 'index.html'));
 const guideTimeout = Number(env['LLM_GUIDE_TIMEOUT_MS']);
 // 완료 근거 기록 (D-28): 단계 완료 확인에 함께 묻고, 완료되면 단계 기록에 승인 PR 주소를 남긴다. off로 끈다
 const evidenceNote = (env['EUREKA_EVIDENCE_NOTE'] ?? 'on').trim().toLowerCase() !== 'off';
-// 2차 의도 확인 (D-29): llm·unclear 같은 일반 의도를 LLM이 다시 보고 PR 리뷰·승인이면 규칙 경로로. off로 끈다
-const intentRecheck = (env['DESKPET_INTENT_RECHECK'] ?? 'on').trim().toLowerCase() !== 'off';
+const swarmInactivityTimeoutMs = positive(env['SWARM_INACTIVITY_TIMEOUT_MS'], DEFAULT_POLICY.swarmInactivityTimeoutMs);
 // 쓰기(승인 요청·확인 답변) 입력 신뢰도 기준. 기본값은 그대로(STT 0.85, 라우터 0.8). 시연 환경에 맞출 때만 .env로 바꾼다 (0~1)
 const ratio = (v: string | undefined) => {
   const n = Number(v);
@@ -136,7 +135,7 @@ const allowedRepos: string[] = [...allowed.repos];
 const config = {
   ...DEFAULT_POLICY,
   evidenceNote,
-  intentRecheck,
+  swarmInactivityTimeoutMs,
   prChecks: 'enforce' as 'enforce' | 'skip',
   // D-41: 리뷰 뒤 승인 조건이 맞으면 확인 질문을 붙임 (DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off로 끔)
   offerApprovalAfterReview: (env['DESKPET_OFFER_APPROVAL_AFTER_REVIEW'] ?? 'on').trim().toLowerCase() !== 'off',
@@ -393,7 +392,6 @@ async function main() {
   else if (!writeWarnings.length && (!allowGithubWrites || !allowEurekaWrites)) warnings.push(`쓰기 꺼짐: ${[!allowGithubWrites && 'GitHub', !allowEurekaWrites && 'Eureka'].filter(Boolean).join('·')}`);
   if (lan && !tls) warnings.push('TLS 없이 다른 기기 접속을 열었어요. 토큰이 암호화 없이 오가니 믿을 수 있는 네트워크에서만 쓰세요');
   if (lan && !viewerToken) warnings.push(`웹 화면에 토큰이 없어요. 허용 IP(${allowedClients.join(', ')}) 안의 누구나 작업·기록을 볼 수 있어요 (HARNESS_WS_VIEWER_TOKEN)`);
-  if (intentRecheck && !llm.guideClient) warnings.push('2차 의도 확인이 켜져 있지만 LLM이 없어 동작하지 않아요');
   if (webEnabled && !webBuilt) warnings.push(`웹 화면 빌드가 없어요 (${webDirRaw}) → pnpm start로 실행하세요`);
 
   const sections: BannerSection[] = [
@@ -411,7 +409,7 @@ async function main() {
       title: '정책',
       rows: [
         ['', `PR 검사 ${prChecks === 'skip' ? '생략' : '확인'} · 승인 허용 저장소 ${allowedRepos.length ? allowedRepos.join(', ') : '제한 없음'}${settingsSource === 'file' ? ' (웹 설정)' : ''} · 리뷰 뒤 승인 질문 ${on(config.offerApprovalAfterReview)}`],
-        ['', `승인 요청 ${config.approvalRequestInput === 'strict' ? '엄격' : '느슨'} · 신뢰도 STT ${config.minSttConfidenceForWrite} / 라우터 ${config.minRouteConfidenceForWrite} · 의도 재확인 ${on(intentRecheck && !!llm.guideClient)} · 완료 근거 기록 ${on(evidenceNote)}`],
+        ['', `승인 요청 ${config.approvalRequestInput === 'strict' ? '엄격' : '느슨'} · 신뢰도 STT ${config.minSttConfidenceForWrite} / 라우터 ${config.minRouteConfidenceForWrite} · 무진행 타임아웃 ${Math.round(swarmInactivityTimeoutMs / 1000)}s · 완료 근거 기록 ${on(evidenceNote)}`],
       ],
     },
     {
@@ -463,7 +461,7 @@ function printDetails() {
     `리뷰 뒤 승인 질문(D-41): ${config.offerApprovalAfterReview ? '켜짐 — 승인 가능하면 "…승인할까요?"를 붙이고, 아니면 이유를 한 문장 (DESKPET_OFFER_APPROVAL_AFTER_REVIEW=off)' : '꺼짐'}`,
     `승인 요청 입력(D-39): ${config.approvalRequestInput === 'strict' ? '엄격 — 요청부터 신뢰도 기준 적용' : '느슨 — 요청은 신뢰도로 막지 않고 확인 질문까지, 확인 답변에만 기준 적용 (DESKPET_APPROVAL_REQUEST_INPUT=strict로 되돌림)'}`,
     `쓰기 입력 신뢰도 기준: STT ${config.minSttConfidenceForWrite}${minStt !== undefined ? ' (.env로 바꿈)' : ''}, 라우터 ${config.minRouteConfidenceForWrite}${minRoute !== undefined ? ' (.env로 바꿈)' : ''} (DESKPET_MIN_STT_CONFIDENCE / DESKPET_MIN_ROUTE_CONFIDENCE)`,
-    `2차 의도 확인(D-29): ${intentRecheck ? (llm.guideClient ? '켜짐 — llm·unclear 요청을 LLM이 다시 보고 PR 리뷰·승인이면 규칙 경로로' : '켜져 있지만 LLM 없음 (동작 안 함)') : '꺼짐 (DESKPET_INTENT_RECHECK=off)'}`,
+    `무진행 타임아웃: ${swarmInactivityTimeoutMs}ms (SWARM_INACTIVITY_TIMEOUT_MS)`,
     `완료 근거 기록(D-28): ${evidenceNote ? `켜짐 — 단계 완료 확인에 함께 묻고 단계 기록에 PR 주소를 남김${env['EUREKA_NOTE_ACTOR_ID']?.trim() ? ' (작성자 actorId 지정)' : ' (작성자 actorId 없음)'}` : '꺼짐 (EUREKA_EVIDENCE_NOTE=off)'}`,
     `Eureka 주소: ${eurekaBase}`,
     `동시 호출 상한(D-24): GitHub ${githubLimiter.stats().max} / Eureka ${eurekaLimiter.stats().max} (GITHUB_MAX_CONCURRENT / EUREKA_MAX_CONCURRENT)`,
@@ -551,8 +549,6 @@ function timingDetail(p: unknown): string {
   if (unclear) parts.push(`답변 불명확: ${why(unclear)}`);
   const blocked = (f['blocked'] as { reasons?: string[] } | undefined)?.reasons?.join(',') ?? f['blockedReasons'];
   if (blocked) parts.push(`차단: ${why(blocked)}`);
-  const ir = f['intentRecheck'] as { from?: string; to?: string; error?: string } | undefined;
-  if (ir) parts.push(`의도 재확인: ${ir.from}→${ir.to}${ir.error ? ` (${ir.error})` : ''}`);
   const fu = f['followUp'];
   if (fu && (typeof fu === 'string' || (fu as { eligibility?: string }).eligibility !== 'eligible')) parts.push(`Eureka 후속: ${why(fu)}`);
   return parts.length ? ` — ${parts.join(', ')}` : '';

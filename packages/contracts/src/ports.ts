@@ -74,6 +74,7 @@ export interface ChangeOutcomeQuery {
 
 export interface EurekaGatewayPort {
   listTasks(query: { onlyOpen?: boolean; limit?: number }, c: CallConstraints): Promise<ReadOutcome<TaskList>>;
+  getItem?(itemId: string, c: CallConstraints): Promise<ReadOutcome<import('./eureka.js').TaskSummary>>;
   getTaskState(query: { itemId: string; stageId?: string }, c: CallConstraints): Promise<ReadOutcome<TaskState>>;
   completeStage(cmd: CompleteStageCommand, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
   getChangeOutcome(q: ChangeOutcomeQuery, c: CallConstraints): Promise<GatewayResult>;
@@ -81,7 +82,8 @@ export interface EurekaGatewayPort {
   listStageNotes?(query: { stageId: string; limit?: number }, c: CallConstraints): Promise<ReadOutcome<StageNoteList>>;
   /** 단계 기록 작성 (완료 근거 PR 기록, D-28). 없는 구현이면 기록을 남기지 않는다 */
   addStageNote?(cmd: AddStageNoteCommand, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
-  /** Harness `unclear → direct_eureka` 경로에서 사용하는 직접 Eureka 조작 메서드 (EurekaGateway가 구현) */
+  /** 단계 편집 1건 (EurekaGateway.replaceStages와 동일 모양) */
+  checkSession?(c: CallConstraints): Promise<ReadOutcome<{ sid: string; roles: string[] }>>;
   registerItem?(
     cmd: { processId: string; name: string; dueAtMs?: number; priority?: 'low' | 'normal' | 'high' | 'urgent' },
     handle: DispatchHandle,
@@ -89,6 +91,27 @@ export interface EurekaGatewayPort {
   ): Promise<GatewayResult>;
   postponeItem?(cmd: { itemId: string; dueAtMs: number }, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
   completeItem?(cmd: { itemId: string; actorId?: string }, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
+  deleteItem?(cmd: { itemId: string }, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
+  setItemStatus?(cmd: { itemId: string; status: 'hold' | 'todo' | 'doing' }, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
+  updateItemField?(cmd: { itemId: string; field: 'priority' | 'name'; value: string }, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
+  setStageStatus?(cmd: { stageId: string; status: 'todo' | 'doing' | 'done' | 'skip' }, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
+  replaceStages?(
+    cmd: {
+      itemId: string;
+      stages: {
+        id?: string;
+        name: string;
+        actorId: string;
+        toolId: string;
+        dueAt: number;
+        guideText: string;
+        isRequired: boolean;
+      }[];
+    },
+    handle: DispatchHandle,
+    c: CallConstraints,
+  ): Promise<GatewayResult>;
+  deleteStage?(cmd: { itemId: string; stageId: string }, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
   listProcesses?(c: CallConstraints): Promise<ReadOutcome<{ id: string; name: string }[]>>;
 }
 

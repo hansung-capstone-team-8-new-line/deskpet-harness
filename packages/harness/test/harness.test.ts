@@ -4,7 +4,6 @@ import {
   DeterministicSensor,
   GenericMcpGuide,
   McpGuideRegistry,
-  RuleBasedGuide,
   WorkspaceMcpGuide,
   classifyAnswer,
   createDeclarativeMcpGuide,
@@ -96,26 +95,6 @@ describe('Sensor', () => {
   it('response loss is indeterminate + unknown; not_sent with proof is not_executed', () => {
     expect(sensor.inspect(input({ mode: 'write', dispatchState: 'may_have_been_sent', outcome: 'no_response' })).suggestedActionStatus).toBe('unknown');
     expect(sensor.inspect(input({ mode: 'write', dispatchState: 'not_sent', outcome: 'error', notSentProof: 'x' })).verdict).toBe('not_executed');
-  });
-});
-
-describe('Guide', () => {
-  it('asks only for missing target slots instead of guessing (S-01)', () => {
-    const g = new RuleBasedGuide(DEFAULT_POLICY);
-    const ctx = { ...prContext(), target: undefined };
-    const d = g.proposeNext({
-      requestId: 'r',
-      turnId: 't',
-      stateRevision: 1,
-      goal: { currentTurn: voiceTurn('t', '그 PR 리뷰해줘'), intent: 'pr.review', allowedScope: [] },
-      context: { packet: ctx, wiki: { outcome: 'not_queried', excerpts: [] }, unverified: [] },
-      operations: [],
-      confirmations: [],
-      constraints: { deadlineAt: T0, policyVersion: 'p', maxSteps: 3 },
-      facts: {},
-    });
-    expect(d.kind).toBe('ask_user');
-    expect(d.kind === 'ask_user' && d.payload.requiredSlots).toEqual(['repository', 'prNumber']);
   });
 });
 

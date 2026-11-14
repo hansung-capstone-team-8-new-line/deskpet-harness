@@ -39,10 +39,10 @@ export interface PolicyConfig {
    */
   evidenceNote: boolean;
   /**
-   * 라우터가 `llm`·`unclear` 같은 일반 의도로 보낸 요청을 LLM으로 한 번 더 보고 PR 리뷰·승인이면 규칙 경로로 보낸다 (D-29).
-   * 승인은 여전히 확인 질문을 거친다. 기본 false(라이브러리). 서버는 DESKPET_INTENT_RECHECK=off가 아니면 켠다
+   * Worker/Swarm 실행 중 아무런 진행 상황이 없을 때 중단하는 비활성(무진행) 타임아웃(ms).
+   * 병렬/장기 작업이 실제로 단계를 진행하는 동안에는 초기화(reset)되어 끊기지 않는다.
    */
-  intentRecheck: boolean;
+  swarmInactivityTimeoutMs: number;
   /**
    * PR CI 검사 처리 (D-30). 'skip'이면 리뷰·승인 전 확인에서 검사를 조회하지 않고 승인 조건에서도 뺀다.
    * GitHub Gateway의 checksPolicy와 같은 값으로 둔다. 기본 'enforce'(라이브러리). 서버는 DESKPET_PR_CHECKS=enforce가 아니면 skip
@@ -84,7 +84,7 @@ export const DEFAULT_POLICY: PolicyConfig = {
   llmGuideTimeoutMs: 8_000,
   followUpReplyWaitMs: 3_000,
   evidenceNote: false,
-  intentRecheck: false,
+  swarmInactivityTimeoutMs: 60_000,
   prChecks: 'enforce',
   approvalRequestInput: 'loose',
   offerApprovalAfterReview: false,

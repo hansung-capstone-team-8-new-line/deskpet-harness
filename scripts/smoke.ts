@@ -12,7 +12,7 @@
  * 키·토큰 값은 출력하지 않는다.
  */
 import { EurekaGateway, FetchHttpClient, GitHubReviewGateway, RestGitHubTransport, EUREKA_DEFAULT_BASE_URL, parseRequiredChecksFallback } from '@deskpet/gateways';
-import { GUIDE_INSTRUCTIONS, GUIDE_JSON_SCHEMA, InMemoryOperationStore, randomIdGen, reviewFacts, systemClock } from '@deskpet/harness';
+import { InMemoryOperationStore, randomIdGen, reviewFacts, systemClock } from '@deskpet/harness';
 import { EurekaBridge } from '@deskpet/server';
 import { createLlmFromEnv } from '@deskpet/llm';
 import { OUTPUT_INSTRUCTIONS } from '@deskpet/output';
@@ -157,9 +157,17 @@ async function llmCheck() {
   try {
     const r = await s.guideClient!.complete({
       purpose: 'guide',
-      instructions: GUIDE_INSTRUCTIONS,
-      input: ['의도(라우터): pr.summary', '사용자 발화: "이 PR 뭐가 바뀌었어?"', '대상: GitHub PR demo/repo#1', '후보 수: 1', '수집된 사실: 없음', '단계: 1'].join('\n'),
-      jsonSchema: GUIDE_JSON_SCHEMA,
+      instructions: '사용자 발화를 요약해 한 줄 JSON으로 답하세요.',
+      input: ['의도(라우터): llm', '사용자 발화: "이 PR 뭐가 바뀌었어?"', '대상: GitHub PR demo/repo#1'].join('\n'),
+      jsonSchema: {
+        name: 'deskpet_smoke',
+        schema: {
+          type: 'object',
+          properties: { intent: { type: 'string' }, summary: { type: 'string' } },
+          required: ['intent', 'summary'],
+          additionalProperties: false,
+        },
+      },
       maxOutputTokens: 200,
       deadlineAt: new Date(Date.now() + 15_000).toISOString(),
     });

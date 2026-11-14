@@ -17,8 +17,19 @@ interface ReviewFactsLike {
   copilot?: { status: string; comments: unknown[]; blockingComments: number; commentCoverage?: string };
 }
 
-/** 미지원 요청 공통 문장. 실행하지 않았다는 사실, 지원 범위, 대안을 함께 말한다 */
-export const UNSUPPORTED_SENTENCE = '그 요청은 실행하지 않았어요. 지금은 GitHub PR 리뷰와 승인, Eureka 업무 조회·등록·기한 변경·완료를 도와드릴 수 있어요. 이 중에서 필요한 걸 말씀해 주세요.';
+interface InterruptedTaskLike {
+  taskId?: string;
+  goal?: string;
+  lastActivity?: string;
+  lastToolName?: string;
+}
+
+interface InterruptedFactsLike {
+  reason?: string;
+  idleMs?: number;
+  summaryText?: string;
+  tasks?: InterruptedTaskLike[];
+}
 
 export function fallbackText(req: OutputRequest): { text: string; displayText: string; emotion: Emotion } {
   const f = req.facts;
@@ -46,10 +57,32 @@ export function fallbackText(req: OutputRequest): { text: string; displayText: s
   const question = f['question'] as { purpose: string; scope?: ConfirmationScope; target?: { kind: string; prNumber?: number }; questionText?: string } | undefined;
 
   if (f['reroute'] === 'talk') {
-    return { text: '일상 대화로 이어갈게요.', displayText: '일상 대화 재라우팅 (talk)', emotion: 'neutral' };
+    const talkReply = typeof f['talkReply'] === 'string' ? f['talkReply'].trim() : '';
+    const reply = talkReply || '네, 편하게 말씀해 주세요.';
+    return {
+      text: condenseTtsText(reply, req.constraints.maxSpeechChars),
+      displayText: condenseTtsText(reply, 80) || reply,
+      emotion: 'neutral',
+    };
   }
 
-  if (f['processingErrors'] && (f['processingErrors'] as string[]).length > 0 && f['disposition'] === 'failed') {
+  const interrupted = f['interrupted'] as InterruptedFactsLike | undefined;
+  if (interrupted) {
+    const taskList = (interrupted.tasks ?? []).filter((t) => t.goal?.trim());
+    const names = taskList
+      .slice(0, 3)
+      .map((t) => (t.lastToolName ? `${t.goal!.trim()} (${t.lastToolName})` : t.goal!.trim()));
+    const summary =
+      interrupted.summaryText?.trim() ||
+      (names.length > 0
+        ? `진행 상황이 없어 다음 작업을 중단했어요: ${names.join(', ')}.`
+        : '진행 상황이 없어 작업을 중단했어요.');
+    parts.push(summary);
+    display.push(names.length > 0 ? `작업 중단 · ${names.join(', ')}` : '작업 중단 · 진행 없음');
+    emotion = 'sad';
+  }
+
+  if (!interrupted && f['processingErrors'] && (f['processingErrors'] as string[]).length > 0 && f['disposition'] === 'failed') {
     parts.push('요청을 처리하지 못했어요. 외부 작업은 실행하지 않았어요.');
     display.push('처리 실패 · 외부 변경 없음');
     emotion = 'sad';
@@ -192,11 +225,10 @@ export function fallbackText(req: OutputRequest): { text: string; displayText: s
     display.push('확인 만료/처리됨 · 실행 없음');
   }
 
-  // ---------------------------------------------------------------- 직접 Eureka 조작 / Agent Swarm
   const directEureka = f['directEureka'] as { operation?: string; summaryText?: string; ok?: boolean } | undefined;
   if (directEureka?.summaryText && parts.length === 0) {
     parts.push(directEureka.summaryText);
-    display.push(`Eureka ${directEureka.operation ?? '조작'}`);
+    display.push(condenseTtsText(directEureka.summaryText, 60) || '업무 처리');
     emotion = directEureka.ok === false ? 'sad' : 'happy';
   }
 
@@ -206,7 +238,7 @@ export function fallbackText(req: OutputRequest): { text: string; displayText: s
   if (swarm?.summaryText && req.purpose !== 'question' && !blocked && parts.length === 0) {
     parts.push(swarm.summaryText);
     const fileNote = swarm.changedFiles?.length ? ` · 파일 ${swarm.changedFiles.length}개` : '';
-    display.push(swarm.displaySummary?.trim() || `Agent Swarm (${swarm.workerCount ?? 1}개 워커${fileNote})`);
+    display.push(swarm.displaySummary?.trim() || (fileNote ? `작업 완료${fileNote}` : '작업 완료'));
   }
 
   // ---------------------------------------------------------------- 질문
@@ -292,8 +324,6 @@ function blockedSentence(reasons: string[], pr?: number, review?: ReviewFactsLik
   if (reasons.includes('required_checks_partially_verified')) return '필수 검사 설정을 일부만 확인할 수 있어서 승인하지 않았어요.';
   if (reasons.some((r) => r.startsWith('permission'))) return '승인 권한을 확인할 수 없어서 승인하지 않았어요.';
   if (reasons.includes('llm_unavailable')) return '판단을 도와주는 모델에게서 지금 쓸 수 있는 답을 받지 못해 처리하지 못했어요. 외부 작업은 하지 않았어요. 잠시 후 다시 말씀해 주세요.';
-  // 미지원 응답 방식 (wiki deskpet-operation-policies §3): 실행하지 않았음 → 지원 범위 → 대안
-  if (reasons.some((r) => r.startsWith('unsupported_intent'))) return UNSUPPORTED_SENTENCE;
   return `조건이 맞지 않아 실행하지 않았어요 (${reasons.join(', ')}).`;
 }
 

@@ -1,4 +1,5 @@
 import {
+  DirectEurekaOperation,
   TriageResult,
   type ContextPacket,
   type CurrentTurnInput,
@@ -32,10 +33,11 @@ const TRIAGE_JSON_SCHEMA = {
       verdict: { type: 'string', enum: ['clarify', 'reroute_talk', 'direct_eureka', 'delegate_swarm'] },
       rationale: { type: 'string' },
       clarifyQuestion: { type: 'string' },
+      talkReply: { type: 'string' },
       missingSlots: { type: 'array', items: { type: 'string' } },
       eurekaOperation: {
         type: 'string',
-        enum: ['list_tasks', 'get_task_state', 'register_item', 'postpone_item', 'complete_item', 'list_processes'],
+        enum: [...DirectEurekaOperation.options],
       },
       eurekaArgsJson: { type: 'string' },
       swarmGoal: { type: 'string' },
@@ -50,8 +52,8 @@ const TRIAGE_INSTRUCTIONS = [
   '온디바이스 라우터가 `unclear`로 넘긴 발화에 대해 직전 대화, active target, 팀 문서(Wiki), 사용 가능한 MCP 목록을 바탕으로 의도를 정확히 4가지 중 하나로 분류하세요:',
   '',
   '1. `clarify`: 발화가 너무 모호하거나 정보가 부족해 무엇을 원하는지 확실히 파악할 수 없는 경우. 자연스러운 한국어 재질문(`clarifyQuestion`)과 부족한 슬롯(`missingSlots`)을 작성하세요.',
-  '2. `reroute_talk`: 잡담, 감정 표현, 인사, 일상 질문 등 외부 도구나 Eureka 조작이 불필요한 일상 대화인 경우.',
-  '3. `direct_eureka`: Eureka Process 업무/단계/마감일/프로세스 목록 조회·등록·연기·완료 등 유레카 프로세스 조작 요청인 경우. `eurekaOperation`과 `eurekaArgsJson`(JSON 문자열, 예: `{"itemName":"보고서 제출","dueAtIso":"..."}`)을 채우세요.',
+  '2. `reroute_talk`: 잡담, 감정 표현, 인사, 일상 질문 등 외부 도구나 Eureka 조작이 불필요한 일상 대화인 경우. `talkReply`에 자연스럽고 간결한 한국어 존댓말 대화 응답을 작성하세요. (내부 분류·라우팅 전환 안내 문구는 절대 쓰지 마세요)',
+  '3. `direct_eureka`: Eureka 업무/단계/마감/우선순위/이름/보류·재개/삭제/단계 기록(note)/프로세스 목록/세션 조회 등 유레카 조작 요청인 경우. `eurekaOperation`과 `eurekaArgsJson`(JSON 문자열, 예: `{"itemName":"보고서 제출","dueAtIso":"..."}`)을 채우세요.',
   '4. `delegate_swarm`: 코딩, 파일/저장소 작업, GitHub PR 리뷰/승인, 임의의 MCP 도구 활용, 복잡한 분석·추론 작업인 경우. `swarmGoal`에 실행 목표를 구체화해 담으세요.',
   '',
   '주의: 추정으로 섣불리 쓰기를 단정하지 말고, 파악 불가하면 `clarify`, 파악 가능하면 즉시 작업(`direct_eureka` 또는 `delegate_swarm`) 또는 `reroute_talk`를 선택하세요.',
@@ -89,8 +91,6 @@ export class IntentTriage {
       return { triage: heuristicTriage(ctx.turn.rawText, ctx.context), wikiExcerpts, sources };
     }
 
-    const nowMs = this.clock?.nowMs() ?? Date.now();
-    const llmDeadline = new Date(Math.min(Date.parse(ctx.deadlineAt), nowMs + 8_000)).toISOString();
     try {
       const res = await this.llm.complete({
         purpose: 'guide',
@@ -98,7 +98,7 @@ export class IntentTriage {
         input: buildTriageInput(ctx, wikiExcerpts),
         jsonSchema: TRIAGE_JSON_SCHEMA as { name: string; schema: Record<string, unknown> },
         maxOutputTokens: 512,
-        deadlineAt: llmDeadline,
+        deadlineAt: ctx.deadlineAt,
         ...(ctx.signal ? { signal: ctx.signal } : {}),
       });
       const raw = (res.json ?? JSON.parse(res.text)) as Record<string, unknown>;
@@ -117,6 +117,7 @@ export class IntentTriage {
         verdict: raw['verdict'],
         rationale: typeof raw['rationale'] === 'string' ? raw['rationale'] : '',
         ...(typeof raw['clarifyQuestion'] === 'string' ? { clarifyQuestion: raw['clarifyQuestion'] } : {}),
+        ...(typeof raw['talkReply'] === 'string' ? { talkReply: raw['talkReply'] } : {}),
         missingSlots: Array.isArray(raw['missingSlots']) ? raw['missingSlots'] : [],
         ...(raw['eurekaOperation'] ? { eurekaOperation: raw['eurekaOperation'] } : {}),
         ...(eurekaArgs ? { eurekaArgs } : {}),

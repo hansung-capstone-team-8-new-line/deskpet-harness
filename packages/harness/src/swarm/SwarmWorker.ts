@@ -43,6 +43,12 @@ export interface SwarmWorkerRunInput {
   /** Worker에 격리 할당된 작업 디렉토리 (git worktree 경로) */
   workingDir?: string;
   signal?: AbortSignal;
+  /** 개별 단계 LLM/도구 호출에 부여할 최소 호출 창(ms). 진행이 이어지는 한 총 경과 시간으로 끊지 않는다. */
+  stepBudgetMs?: number;
+  /** 진행 상황 heartbeat 콜백 (무진행 타임아웃 초기화 및 중단 작업 추적용) */
+  onProgress?: (info: { activity: string; toolName?: string; stepCompleted?: number }) => void;
+  /** 사용자 응답 대기 시작/종료 알림 (대기 중에는 무진행 타임아웃 정지) */
+  onWaitingUser?: (waiting: boolean) => void;
 }
 
 export interface SwarmWorkerOutcome {
@@ -90,13 +96,37 @@ export class SwarmWorker {
     const workerId = input.workerId ?? this.d.ids.next('wrk');
     const inferredMcpId = input.task.mcpId ?? inferMcpId(input.context, this.d.mcpManager.listServerIds());
     const guide = this.d.guideRegistry.resolve(inferredMcpId);
-
-    const callConstraints: CallConstraints = {
-      deadlineAt: input.constraints.deadlineAt,
-      ...(input.signal ? { signal: input.signal } : {}),
+    const stepBudgetMs = input.stepBudgetMs ?? 120_000;
+    const baseDeadlineMs = Date.parse(input.constraints.deadlineAt);
+    const stepConstraints = (): CallConstraints => {
+      const targetMs = Math.max(Number.isFinite(baseDeadlineMs) ? baseDeadlineMs : 0, this.d.clock.nowMs() + stepBudgetMs);
+      return {
+        deadlineAt: new Date(targetMs).toISOString(),
+        ...(input.signal ? { signal: input.signal } : {}),
+      };
     };
 
-    const mcpTools = await this.discoverTools(callConstraints);
+    let lastActivity = '도구 목록 탐색';
+    let lastToolName: string | undefined;
+    const reportProgress = (activity: string, toolName?: string, stepCompleted?: number) => {
+      lastActivity = activity;
+      if (toolName) lastToolName = toolName;
+      input.onProgress?.({ activity, ...(toolName ? { toolName } : {}), ...(stepCompleted !== undefined ? { stepCompleted } : {}) });
+    };
+
+    const awaitPermission = async (req: Parameters<PipelinePermissionQueue['requestPermission']>[1]) => {
+      reportProgress('사용자 확인 대기');
+      input.onWaitingUser?.(true);
+      try {
+        return await this.d.permissionQueue.requestPermission(input.requestId, req, input.signal);
+      } finally {
+        input.onWaitingUser?.(false);
+        if (!input.signal?.aborted) reportProgress('사용자 응답 수신');
+      }
+    };
+
+    reportProgress('도구 목록 탐색');
+    const mcpTools = await this.discoverTools(stepConstraints());
     const fastPathMap = collectAllFastPaths(this.d.guideRegistry, guide);
     const fastPathDescriptors: FastPathToolDescriptor[] = Object.values(fastPathMap).map((h) => h.descriptor);
 
@@ -133,25 +163,36 @@ export class SwarmWorker {
       return this.buildLlmUnavailableOutcome(workerId, input.task.taskId, inferredMcpId);
     }
 
-    for (let step = 0; step < this.maxSteps; step++) {
-      if (this.d.clock.nowMs() > Date.parse(input.constraints.deadlineAt) || input.signal?.aborted) {
-        return this.finalize(
-          guide,
-          {
-            workerId,
-            taskId: input.task.taskId,
-            mcpId: inferredMcpId,
-            status: 'failed',
-            summary: input.signal?.aborted ? '요청이 취소되어 작업을 중단했어요.' : '제한 시간이 지나 작업을 마치지 못했어요.',
-            toolCalls: recordedCalls,
-            error: input.signal?.aborted ? 'aborted' : 'deadline_exceeded',
-          },
-          actionResults,
-          collectedFacts,
-          collectedSources,
-        );
-      }
+    const interruptedOutcome = (): SwarmWorkerOutcome => {
+      const reason = abortReasonCode(input.signal);
+      const isIdleTimeout = reason === 'inactivity_timeout';
+      const toolNote = lastToolName ? ` (마지막 도구: ${lastToolName})` : '';
+      return this.finalize(
+        guide,
+        {
+          workerId,
+          taskId: input.task.taskId,
+          mcpId: inferredMcpId,
+          status: 'failed',
+          interrupted: true,
+          lastActivity,
+          summary: isIdleTimeout
+            ? `진행 상황이 없어 '${input.task.goal}' 작업을 중단했어요${toolNote}.`
+            : `요청이 취소되어 '${input.task.goal}' 작업을 중단했어요${toolNote}.`,
+          toolCalls: recordedCalls,
+          error: reason,
+        },
+        actionResults,
+        collectedFacts,
+        collectedSources,
+      );
+    };
 
+    for (let step = 0; step < this.maxSteps; step++) {
+      if (input.signal?.aborted) return interruptedOutcome();
+
+      const callConstraints = stepConstraints();
+      reportProgress(`단계 ${step + 1} 계획 중`);
       let decision: {
         kind: 'call_tool' | 'need_user' | 'finish';
         toolName?: string;
@@ -165,6 +206,7 @@ export class SwarmWorker {
       try {
         decision = await this.planNextStep(instructions, input, history, workerCtx.observations, callConstraints);
       } catch (e) {
+        if (input.signal?.aborted) return interruptedOutcome();
         return this.finalize(
           guide,
           {
@@ -172,6 +214,7 @@ export class SwarmWorker {
             taskId: input.task.taskId,
             mcpId: inferredMcpId,
             status: 'failed',
+            lastActivity,
             summary: '작업을 계획하는 중 오류가 발생했어요.',
             toolCalls: recordedCalls,
             error: e instanceof Error ? e.message : String(e),
@@ -181,6 +224,9 @@ export class SwarmWorker {
           collectedSources,
         );
       }
+
+      if (input.signal?.aborted) return interruptedOutcome();
+      reportProgress(`단계 ${step + 1} 결정 (${decision.kind})`, decision.toolName);
 
       if (decision.kind === 'finish') {
         const summary = decision.summary?.trim() || '작업을 완료했어요.';
@@ -204,20 +250,17 @@ export class SwarmWorker {
 
       if (decision.kind === 'need_user') {
         const questionText = decision.questionText?.trim() || '진행을 위해 필요한 정보를 조금 더 알려주시겠어요?';
-        const res = await this.d.permissionQueue.requestPermission(
-          input.requestId,
-          {
-            workerId,
-            mcpId: inferredMcpId,
-            toolName: 'worker_clarification',
-            spec: {
-              kind: 'clarification',
-              purpose: 'worker_clarification',
-              questionText,
-            },
+        const res = await awaitPermission({
+          workerId,
+          mcpId: inferredMcpId,
+          toolName: 'worker_clarification',
+          spec: {
+            kind: 'clarification',
+            purpose: 'worker_clarification',
+            questionText,
           },
-          input.signal,
-        );
+        });
+        if (input.signal?.aborted) return interruptedOutcome();
         history.push({ step, action: 'need_user', question: questionText, resolution: res });
         if (res.updatedContext) {
           input.context = res.updatedContext;
@@ -273,21 +316,18 @@ export class SwarmWorker {
         });
         if (!guard.allowed) {
           if (guard.clarifyPrompt) {
-            const clarifyRes = await this.d.permissionQueue.requestPermission(
-              input.requestId,
-              {
-                workerId,
-                mcpId: targetMcpId,
-                toolName,
-                spec: {
-                  kind: 'clarification',
-                  purpose: guard.clarifyPurpose ?? 'guide_guard_clarification',
-                  ...(guard.clarifySlots ? { requiredSlots: guard.clarifySlots } : {}),
-                  questionText: guard.clarifyPrompt,
-                },
+            const clarifyRes = await awaitPermission({
+              workerId,
+              mcpId: targetMcpId,
+              toolName,
+              spec: {
+                kind: 'clarification',
+                purpose: guard.clarifyPurpose ?? 'guide_guard_clarification',
+                ...(guard.clarifySlots ? { requiredSlots: guard.clarifySlots } : {}),
+                questionText: guard.clarifyPrompt,
               },
-              input.signal,
-            );
+            });
+            if (input.signal?.aborted) return interruptedOutcome();
             history.push({ step, guardBlocked: guard.reasons, userFollowUp: clarifyRes });
             if (clarifyRes.verdict === 'revoked' || clarifyRes.verdict === 'expired') {
               return this.finalize(
@@ -329,19 +369,16 @@ export class SwarmWorker {
       // Guide가 명시적으로 사용자 허가를 요구할 때만 PipelinePermissionQueue 사용
       const permSpec: PermissionSpec | null = activeGuide.requiresPermission?.(plannedCall, workerCtx) ?? null;
       if (permSpec) {
-        const permRes = await this.d.permissionQueue.requestPermission(
-          input.requestId,
-          {
-            workerId,
-            mcpId: effectiveMcpId,
-            toolName,
-            spec: {
-              ...permSpec,
-              facts: { ...collectedFacts, ...(permSpec.facts ?? {}) },
-            },
+        const permRes = await awaitPermission({
+          workerId,
+          mcpId: effectiveMcpId,
+          toolName,
+          spec: {
+            ...permSpec,
+            facts: { ...collectedFacts, ...(permSpec.facts ?? {}) },
           },
-          input.signal,
-        );
+        });
+        if (input.signal?.aborted) return interruptedOutcome();
         if (permSpec.kind === 'clarification') {
           history.push({ step, clarification: permSpec.questionText, resolution: permRes });
           if (permRes.updatedContext) {
@@ -399,27 +436,35 @@ export class SwarmWorker {
 
       // ---- 직접 실행 (Fast-Path 어댑터 우선 매칭, 없으면 McpClientManager.callTool 직접 실행)
       const fastPath = activeGuide.fastPathAdapters?.[toolName] ?? fastPathMap[toolName];
+      reportProgress(`도구 실행 중 (${toolName})`, toolName);
       let callRes: McpCallResult;
       let providedActions: ActionResult[] | undefined;
       let followUpPending: PendingView | undefined;
-      if (fastPath) {
-        const fpOut = await fastPath.execute(parsedArgs, workerCtx, callConstraints);
-        callRes = fpOut.result;
-        if (fpOut.facts) Object.assign(collectedFacts, fpOut.facts);
-        if (fpOut.sources?.length) collectedSources.push(...fpOut.sources);
-        if (fpOut.actionResults !== undefined) providedActions = fpOut.actionResults;
-        if (fpOut.pending) followUpPending = fpOut.pending;
-      } else {
-        callRes = await this.d.mcpManager.callTool(
-          { mcpId: targetMcpId, toolName, arguments: parsedArgs, deadlineAt: input.constraints.deadlineAt },
-          callConstraints,
-        );
-        collectedSources.push({
-          kind: 'mcp',
-          ref: `${targetMcpId}::${toolName}`,
-          observedAt: callRes.observedAt,
-        });
+      try {
+        if (fastPath) {
+          const fpOut = await fastPath.execute(parsedArgs, workerCtx, callConstraints);
+          callRes = fpOut.result;
+          if (fpOut.facts) Object.assign(collectedFacts, fpOut.facts);
+          if (fpOut.sources?.length) collectedSources.push(...fpOut.sources);
+          if (fpOut.actionResults !== undefined) providedActions = fpOut.actionResults;
+          if (fpOut.pending) followUpPending = fpOut.pending;
+        } else {
+          callRes = await this.d.mcpManager.callTool(
+            { mcpId: targetMcpId, toolName, arguments: parsedArgs, deadlineAt: callConstraints.deadlineAt },
+            callConstraints,
+          );
+          collectedSources.push({
+            kind: 'mcp',
+            ref: `${targetMcpId}::${toolName}`,
+            observedAt: callRes.observedAt,
+          });
+        }
+      } catch (e) {
+        if (input.signal?.aborted) return interruptedOutcome();
+        throw e;
       }
+      if (input.signal?.aborted) return interruptedOutcome();
+      reportProgress(`도구 실행 완료 (${toolName})`, toolName, step + 1);
 
       recordedCalls.push({
         toolName,
@@ -597,6 +642,13 @@ export class SwarmWorker {
       sources: [],
     };
   }
+}
+
+function abortReasonCode(signal?: AbortSignal): string {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.message === 'inactivity_timeout') return 'inactivity_timeout';
+  if (typeof reason === 'string' && reason === 'inactivity_timeout') return 'inactivity_timeout';
+  return 'aborted';
 }
 
 function collectAllFastPaths(

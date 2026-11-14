@@ -6,10 +6,10 @@ import { createScriptedSwarmLlm } from '../support/llm.js';
 import { createWorld } from '../support/world.js';
 
 /**
- * Router(`llm` / `unclear`) → IntentTriage · Agent Swarm · GitHubMcpGuide 안전 규칙 검증.
+ * Router(`llm` / `unclear`) → IntentTriage · 병렬 실행 Worker · GitHubMcpGuide 안전 규칙 검증.
  *
- * - Router는 비합의 `pr.review`/`pr.approve` 단축 의도 없이 `llm`·`unclear`(및 `mcp.task`)만 사용한다.
- * - `unclear`는 IntentTriage(재질문 / talk 재라우팅 / 유레카 직접 조작 / Swarm 위임)를 우선 수행한다.
+ * - Router는 비합의 `pr.review`/`pr.approve` 단축 의도 없이 `llm`·`unclear`만 사용한다.
+ * - `unclear`는 IntentTriage(재질문 / 일상 대화 응답 / 유레카 직접 조작 / 병렬 위임)를 우선 수행한다.
  * - 승인 쓰기는 `GitHubMcpGuide`의 확인 질문과 STT/신뢰도 검사 없이는 절대 실행되지 않는다.
  */
 let n = 0;
@@ -36,7 +36,6 @@ describe('Router(llm / unclear) → IntentTriage 및 Agent Swarm 분기', () => 
     const w = createWorld();
     await review(w);
     const q = await ask(w, '좋아 그 PR 승인해 줘', 'llm');
-    expect(q.facts['intentRecheck']).toBeUndefined();
     expect(q.disposition).toBe('awaiting_user');
     expect(q.pending?.purpose).toBe('confirm_pr_approval');
     expect(w.github.submitCount).toBe(0);
@@ -113,7 +112,7 @@ describe('Router(llm / unclear) → IntentTriage 및 Agent Swarm 분기', () => 
     expect(w2.github.submitCount).toBe(0);
   });
 
-  it('mcp.task 진입은 IntentTriage 없이 Swarm Coordinator로 직행한다', async () => {
+  it('llm 진입은 IntentTriage 없이 실행 조율기로 직행한다', async () => {
     const seenSchemas: string[] = [];
     const base = createScriptedSwarmLlm();
     const w = createWorld({
@@ -125,7 +124,7 @@ describe('Router(llm / unclear) → IntentTriage 및 Agent Swarm 분기', () => 
         },
       },
     });
-    const r = await ask(w, '그 PR 리뷰해 줘', 'mcp.task');
+    const r = await ask(w, '그 PR 리뷰해 줘', 'llm');
     expect(r.disposition).toBe('completed');
     expect(seenSchemas).not.toContain('deskpet_intent_triage');
     expect(seenSchemas[0]).toBe('deskpet_swarm_plan');

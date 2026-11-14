@@ -33,7 +33,7 @@ describe('단계별 응답 시간 기록', () => {
     const llm = new ScriptedLlmClient(() => ({ decision: 'ask_clarification', missingSlots: [], reason: 'test' }));
     const w = createWorld({ llm });
     const b = await import('../support/builders.js');
-    const r = await w.harness.handle(b.harnessRequest('req-llm', b.voiceTurn('t-llm', '이 PR 뭐가 바뀌었는지 요약해줘', { intention: 'pr.summary' })));
+    const r = await w.harness.handle(b.harnessRequest('req-llm', b.voiceTurn('t-llm', '이 PR 뭐가 바뀌었는지 요약해줘', { intention: 'llm' })));
     expect((r.facts['timings'] as { stages: { stage: string }[] }).stages.map((s) => s.stage)).toContain('llm.guide');
   });
 

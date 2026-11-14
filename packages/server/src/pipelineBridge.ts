@@ -189,6 +189,7 @@ export class PipelineBridge {
       if (typeof r.facts[k] === 'string' && r.facts[k]) facts[k] = r.facts[k];
     }
     if (r.facts['swarm']) facts['swarmSummary'] = JSON.stringify(r.facts['swarm']);
+    if (r.facts['interrupted']) facts['interrupted'] = JSON.stringify(r.facts['interrupted']);
     if (r.facts['workspace']) facts['workspace'] = JSON.stringify(r.facts['workspace']);
     if (r.facts['directEureka']) facts['directEureka'] = JSON.stringify(r.facts['directEureka']);
     if (r.facts['triage']) facts['triage'] = JSON.stringify(r.facts['triage']);

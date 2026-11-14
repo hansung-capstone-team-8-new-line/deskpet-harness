@@ -66,11 +66,11 @@ export type McpCallResult = z.infer<typeof McpCallResult>;
 
 // ---------------------------------------------------------------- IntentTriage
 /**
- * Router에서 `unclear`가 넘어왔을 때의 4방향 분기 결과.
+ * Router에서 `unclear`가 넘어왔을 때의 분기 결과.
  * - clarify: 의도 파악 불가 → 재질문
- * - reroute_talk: 일상 대화 → pipeline output queue로 재라우팅 (`facts.reroute = 'talk'`)
- * - direct_eureka: 유레카 프로세스 조작 → Harness의 기존 Eureka 직접 조작 경로 실행
- * - delegate_swarm: 코딩 / MCP / 추론 작업 → Agent Swarm 합류 (`llm` 경로와 동일)
+ * - reroute_talk: 일상 대화 → 자연스러운 대화 응답 반환 (`facts.reroute = 'talk'`)
+ * - direct_eureka: 유레카 프로세스 조작 → Harness의 Eureka 직접 조작 실행
+ * - delegate_swarm: 코딩 / MCP / 추론 작업 → 병렬 실행 Worker 합류
  */
 export const TriageVerdict = z.enum(['clarify', 'reroute_talk', 'direct_eureka', 'delegate_swarm']);
 export type TriageVerdict = z.infer<typeof TriageVerdict>;
@@ -78,10 +78,22 @@ export type TriageVerdict = z.infer<typeof TriageVerdict>;
 export const DirectEurekaOperation = z.enum([
   'list_tasks',
   'get_task_state',
+  'list_processes',
+  'check_session',
   'register_item',
   'postpone_item',
   'complete_item',
-  'list_processes',
+  'delete_item',
+  'hold_item',
+  'resume_item',
+  'set_item_priority',
+  'rename_item',
+  'set_stage_status',
+  'add_stage',
+  'delete_stage',
+  'move_stage_up',
+  'move_stage_down',
+  'add_stage_note',
 ]);
 export type DirectEurekaOperation = z.infer<typeof DirectEurekaOperation>;
 
@@ -89,6 +101,7 @@ export const TriageResult = z.object({
   verdict: TriageVerdict,
   rationale: z.string().default(''),
   clarifyQuestion: z.string().optional(),
+  talkReply: z.string().optional(),
   missingSlots: z.array(z.string()).default([]),
   eurekaOperation: DirectEurekaOperation.optional(),
   eurekaArgs: z.record(z.unknown()).optional(),
@@ -156,6 +169,8 @@ export interface WorkerExecutionSummary {
   worktreeConflicts?: string[];
   data?: unknown;
   error?: string;
+  interrupted?: boolean;
+  lastActivity?: string;
   blockedReasons?: string[];
 }
 

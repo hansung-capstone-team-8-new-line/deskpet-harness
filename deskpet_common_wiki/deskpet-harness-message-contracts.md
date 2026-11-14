@@ -190,15 +190,21 @@ operation.updated 등 상태 이벤트는 entity ID, revision, 현재 상태, �
 
 현재 시나리오에 맞춘 MVP에서는 구현의 편의성을 위해서 scope 범위를 source 전체로 제한했다. 차후에 요청단위 구독이 필요해진다면 scope 범위를 더 작게 제한할 수 있다.
 
-### 2026-11-14 범용 MCP · Agent Swarm · Reroute 확장 계약
+### 2026-11-14 범용 MCP · Agent Swarm · Reroute · Pipeline 정합화 확장 계약
 
-`deskpet-pipeline` 무수정 원칙하에 `LLM_test` 내부 계약 및 어댑터 응답을 아래와 같이 확장한다:
+`LLM_test`와 `deskpet-pipeline` 양측의 합의 계약과 경계 동작을 아래와 같이 정렬한다:
 
 1. **`TriageVerdict` (`IntentTriage` 판정 결과):** `clarify` | `reroute_talk` | `direct_eureka` | `delegate_swarm`.
-2. **`unclear` → `talk` 재라우팅 (`facts.reroute = "talk"`):** 일상 대화로 판정되면 `PipelineActionResult.facts`에 `reroute: "talk"`를 담아 즉시 반환하여 파이프라인이 로컬 `outputQueue`로 전환할 수 있도록 신호한다.
-3. **개방형 MCP 도구 계약 (`@deskpet/contracts/src/mcp.ts`):**
-   - `McpServerConfig`, `McpToolDescriptor`, `McpCallRequest`, `McpCallResult`로 임의 MCP 서버(`stdio` / `StreamableHTTP`)의 동적 `tools/list`와 `tools/call` 결과를 표현하며, 기존 `AllowedAction` 폐쇄 enum으로 신규 MCP 도구 사용을 막지 않는다.
-4. **Worker별 허가 큐 계약 (`PermissionRequest` / `PermissionResolution`):**
+2. **`unclear` → `talk` 재라우팅 (`facts.reroute = "talk"`):**
+   - 일상 대화로 판정되면 `PipelineActionResult.facts`에 `reroute: "talk"`를 담아 반환하며, **"일상 대화로 이어갈게요." 같은 내부 라우팅 힌트 문자열은 어떤 라우팅 경로에서도 외부 출력으로 내보내지 않는다.**
+   - 파이프라인은 `ExternalInjectionModule`에서 해당 신호와 현재 턴 유효성을 검증한 뒤 `action = nil`·대화 맥락 `messages` 기반 `OutputRequest`를 조립해 로컬 `outputQueue` → `OutputModel.generate` 일반 대화 경로로 합류시킨다.
+3. **무진행(Inactivity) 타임아웃 및 중단 작업 보고 (`facts.interrupted`):**
+   - 파이프라인은 병렬 실행을 극대화한 구조에 맞춰 내부 실행 시간 제한을 두지 않으며, 반면 병렬 실행기가 아닌 Harness는 실행 중 진행 상황이 일정 시간 없을 때 무진행 타임아웃을 발생시키고 중단된 작업 목록·요약을 `facts["interrupted"]`와 함께 반환해 `ExternalInjectionModule`을 거쳐 사용자에게 출력한다.
+4. **저신뢰 STT 선차단 (`STT_CONFIDENCE_LOW`):**
+   - 파이프라인은 낮은 `sttConfidence` 입력을 `unclear`나 Harness 경로로 넘기지 않고 라우팅 이전에 즉시 `STT_CONFIDENCE_LOW` 오류 이벤트를 발생시킨다.
+5. **개방형 MCP 도구 계약 (`@deskpet/contracts/src/mcp.ts`) 및 DirectEureka:**
+   - `McpServerConfig`, `McpToolDescriptor`, `McpCallRequest`, `McpCallResult`로 임의 MCP 서버(`stdio` / `StreamableHTTP`)의 동적 `tools/list`와 `tools/call` 결과를 표현하며, `DirectEurekaExecutor`는 Router 모델이 지원하는 24개 Eureka Operation 전체를 실행한다.
+6. **Worker별 허가 큐 계약 (`PermissionRequest` / `PermissionResolution`):**
    - `SwarmWorker`가 `McpGuide.requiresPermission` 조건에 의해 사용자 확인이 필요하면 `PipelinePermissionQueue`에 적재한다.
    - 큐는 기존 1건 `Pending` + `needs_clarification` 및 후속 `FollowUpNotice` 경계를 재사용하여 다중 Worker의 확인 요청을 직렬화하고, `resume` 도착 시 `pendingId`에 매핑된 해당 Worker를 재개한다.
 

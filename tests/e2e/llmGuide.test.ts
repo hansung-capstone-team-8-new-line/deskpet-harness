@@ -15,7 +15,7 @@ import { GitWorktreeManager, LocalWorkspaceGateway } from '@deskpet/gateways';
 import { BaseMcpGuide, McpGuideRegistry, StaticWikiReader, type GuardContext, type GuardResult } from '@deskpet/harness';
 import { OutputService, mapHarnessResult, type OutputModel } from '@deskpet/output';
 import { PipelineBridge } from '@deskpet/server';
-import { harnessRequest, prContext, SHA_A, SHA_B, voiceTurn } from '../support/builders.js';
+import { ITEM_ID, harnessRequest, prContext, SHA_A, SHA_B, voiceTurn } from '../support/builders.js';
 import { answer, askApproval, review, speak } from '../support/flows.js';
 import { createScriptedSwarmLlm } from '../support/llm.js';
 import { createWorld } from '../support/world.js';
@@ -79,10 +79,15 @@ describe('IntentTriage (unclear → 4방향 자율 분기)', () => {
     expect(r2.facts['review']).toMatchObject({ headSha: SHA_A });
   });
 
-  it('2) reroute_talk: 일상 대화면 Pipeline output 재라우팅을 위해 facts.reroute=talk만 남기고 외부 쓰기를 하지 않는다', async () => {
+  it('2) reroute_talk: 일상 대화면 외부 쓰기 없이 자연스러운 대화 응답만 내보내고 내부 라우팅 문구를 출력하지 않는다', async () => {
     const llm = customLlm((req) => {
       if (req.jsonSchema?.name === 'deskpet_intent_triage') {
-        return { verdict: 'reroute_talk', rationale: 'casual_greeting', missingSlots: [] };
+        return {
+          verdict: 'reroute_talk',
+          rationale: 'casual_greeting',
+          talkReply: '오늘도 수고 많으셨어요! 궁금한 것이 있으면 편하게 말씀해 주세요.',
+          missingSlots: [],
+        };
       }
       throw new Error('Swarm must not execute on reroute_talk');
     });
@@ -97,9 +102,19 @@ describe('IntentTriage (unclear → 4방향 자율 분기)', () => {
     expect(w.github.submitCount).toBe(0);
     expect(w.eurekaServer.writeCount('/')).toBe(0);
 
+    const out = await speak(r);
+    expect(out.text).toBe('오늘도 수고 많으셨어요! 궁금한 것이 있으면 편하게 말씀해 주세요.');
+    for (const bad of ['일상 대화로', '재라우팅', 'talk', 'unclear']) {
+      expect(out.text).not.toContain(bad);
+      expect(out.displayText).not.toContain(bad);
+    }
+
     const bridge = new PipelineBridge({ harness: w.harness, store: w.store, output: new OutputService() });
     const mapped = await bridge.toPipelineResult(r, 'OP-TALK');
     expect(mapped.action.facts['reroute']).toBe('talk');
+    expect(mapped.resultText).toBe('오늘도 수고 많으셨어요! 궁금한 것이 있으면 편하게 말씀해 주세요.');
+    expect(mapped.resultText).not.toContain('일상 대화로');
+    expect(mapped.resultText).not.toContain('재라우팅');
   });
 
   it('3) direct_eureka: 유레카 프로세스 조작 의도면 Swarm 없이 DirectEurekaExecutor가 직접 실행한다', async () => {
@@ -457,5 +472,136 @@ describe('바이브 코딩 WorkspaceMcpGuide + GitWorktreeManager + TTS 요약 �
     expect(condensed.length).toBeLessThanOrEqual(120);
     expect(condensed).not.toContain('```');
     expect(condensed).not.toContain('const a = 1');
+  });
+});
+
+describe('무진행 타임아웃(Inactivity Timeout) + 중단 작업 출력 + Slop 제거 + 확장 Eureka 직접 조작', () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('단계별 진행이 계속되는 병렬/다단계 작업은 총 소요 시간이 inactivityTimeoutMs를 넘어도 끊기지 않고 완료된다', async () => {
+    let callIdx = 0;
+    const mcpManager: McpClientPort = {
+      listServerIds: () => ['alpha'],
+      hasServer: (id) => id === 'alpha',
+      async listTools() {
+        return [{ mcpId: 'alpha', name: 'step_op', qualifiedName: 'alpha::step_op', description: '단계 실행', inputSchema: { type: 'object' } }];
+      },
+      async callTool(req) {
+        callIdx += 1;
+        await sleep(30);
+        return { mcpId: req.mcpId, toolName: req.toolName, ok: true, content: [{ type: 'text', text: `step-${callIdx}` }], observedAt: new Date().toISOString() };
+      },
+    };
+    let planCount = 0;
+    const llm = customLlm(async (req) => {
+      if (req.jsonSchema?.name === 'deskpet_swarm_plan') {
+        return { mode: 'single', tasks: [{ taskId: 't-active', goal: '다단계 코드 분석', mcpId: 'alpha', dependsOn: [] }] };
+      }
+      if (req.jsonSchema?.name === 'deskpet_swarm_worker_step') {
+        planCount += 1;
+        if (planCount <= 4) {
+          return { kind: 'call_tool', mcpId: 'alpha', toolName: 'step_op', argumentsJson: '{}', reasoning: `step ${planCount}` };
+        }
+        return { kind: 'finish', summary: '4단계 분석을 모두 마쳤어요.', reasoning: 'done' };
+      }
+      return { text: '4단계 분석을 모두 마쳤어요.' };
+    });
+
+    // inactivityTimeoutMs = 70ms이지만 각 단계가 30ms마다 진행되므로 총 ~120ms+ 걸려도 타임아웃 없이 완료되어야 한다
+    const w = createWorld({ mcpManager, llm, config: { swarmInactivityTimeoutMs: 70 } });
+    const r = await w.harness.handle(
+      harnessRequest('req-steady', voiceTurn('t-steady', '다단계 코드 분석해줘'), {
+        ...prContext(),
+        target: { kind: 'mcp_tool', mcpId: 'alpha', toolName: 'step_op' },
+      }),
+    );
+    expect(r.disposition).toBe('completed');
+    expect(r.facts['interrupted']).toBeUndefined();
+    expect(callIdx).toBe(4);
+    const out = await speak(r);
+    expect(out.text).toContain('4단계 분석을 모두 마쳤어요.');
+    expect(out.displayText).not.toContain('Agent Swarm');
+  });
+
+  it('일정 시간 진행이 없으면 무진행 타임아웃이 발생해 중단하고 중단된 작업 정보를 출력한다', async () => {
+    const mcpManager: McpClientPort = {
+      listServerIds: () => ['alpha'],
+      hasServer: (id) => id === 'alpha',
+      async listTools() {
+        return [{ mcpId: 'alpha', name: 'hung_build', qualifiedName: 'alpha::hung_build', description: '빌드 실행', inputSchema: { type: 'object' } }];
+      },
+      async callTool() {
+        // 절대 끝나지 않는 stalled 작업 시뮬레이션
+        return new Promise(() => {});
+      },
+    };
+    const llm = customLlm(async (req) => {
+      if (req.jsonSchema?.name === 'deskpet_swarm_plan') {
+        return { mode: 'single', tasks: [{ taskId: 't-stall', goal: '백엔드 통합 빌드 실행', mcpId: 'alpha', dependsOn: [] }] };
+      }
+      if (req.jsonSchema?.name === 'deskpet_swarm_worker_step') {
+        return { kind: 'call_tool', mcpId: 'alpha', toolName: 'hung_build', argumentsJson: '{}', reasoning: 'run build' };
+      }
+      return { text: '완료' };
+    });
+
+    const w = createWorld({ mcpManager, llm, config: { swarmInactivityTimeoutMs: 60 } });
+    const r = await w.harness.handle(
+      harnessRequest('req-stall', voiceTurn('t-stall', '백엔드 통합 빌드 돌려줘'), {
+        ...prContext(),
+        target: { kind: 'mcp_tool', mcpId: 'alpha', toolName: 'hung_build' },
+      }),
+    );
+    expect(r.disposition).toBe('failed');
+    const interrupted = r.facts['interrupted'] as {
+      reason: string;
+      idleMs: number;
+      summaryText: string;
+      tasks: { taskId: string; goal: string; lastToolName?: string }[];
+    };
+    expect(interrupted.reason).toBe('inactivity_timeout');
+    expect(interrupted.idleMs).toBe(60);
+    expect(interrupted.tasks).toHaveLength(1);
+    expect(interrupted.tasks[0]).toMatchObject({ taskId: 't-stall', goal: '백엔드 통합 빌드 실행', lastToolName: 'hung_build' });
+    expect(interrupted.summaryText).toContain('백엔드 통합 빌드 실행');
+    expect(interrupted.summaryText).toContain('hung_build');
+
+    const out = await speak(r);
+    expect(out.text).toContain('백엔드 통합 빌드 실행');
+    expect(out.displayText).toContain('백엔드 통합 빌드 실행');
+    expect(out.emotion).toBe('sad');
+    expect(out.text).not.toContain('Agent Swarm');
+    expect(out.displayText).not.toContain('Agent Swarm');
+  });
+
+  it('DirectEurekaExecutor: 보류·재개·우선순위·이름변경·단계상태·단계기록 등 확장 유레카 동작을 직접 수행한다', async () => {
+    const runTriage = (op: string, args: Record<string, unknown>) =>
+      customLlm((req) => {
+        if (req.jsonSchema?.name === 'deskpet_intent_triage') {
+          return { verdict: 'direct_eureka', rationale: op, missingSlots: [], eurekaOperation: op, eurekaArgsJson: JSON.stringify(args) };
+        }
+        throw new Error('no swarm expected');
+      });
+
+    const cases: [string, Record<string, unknown>, string][] = [
+      ['hold_item', { itemId: ITEM_ID }, '업무 처리'],
+      ['resume_item', { itemId: ITEM_ID }, '다시 진행'],
+      ['set_item_priority', { itemId: ITEM_ID, priority: '긴급' }, '정보를 변경'],
+      ['rename_item', { itemId: ITEM_ID, newName: '새 이름 보고서' }, '정보를 변경'],
+      ['set_stage_status', { itemId: ITEM_ID, status: '완료' }, '단계 상태를 변경'],
+      ['add_stage_note', { itemId: ITEM_ID, content: 'PR 검토 완료 메모' }, '기록을 추가'],
+    ];
+
+    for (let i = 0; i < cases.length; i++) {
+      const [op, args] = cases[i]!;
+      const wi = createWorld({ llm: runTriage(op, args) });
+      const res = await wi.harness.handle(
+        harnessRequest(`req-de-${i}`, voiceTurn(`t-de-${i}`, '유레카 작업 실행', { intention: 'unclear' })),
+      );
+      expect(res.disposition).toBe('completed');
+      expect(res.facts['directEureka']).toMatchObject({ operation: op, ok: true });
+      const out = await speak(res);
+      expect(out.displayText).not.toContain(`Eureka ${op}`);
+    }
   });
 });
