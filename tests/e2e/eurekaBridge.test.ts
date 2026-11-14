@@ -128,7 +128,7 @@ describe('EurekaAdapter — 쓰기 (직접 경로)', () => {
 
   it('지원하지 않는 의도·빠진 슬롯·시간대 없는 마감은 보내지 않는다', async () => {
     const { bridge, server } = setup();
-    expect(await bridge.execute(req('eureka.update_priority', { name: '보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
+    expect(await bridge.execute(req('eureka.add_task', { name: '보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
     expect(await bridge.execute(req('eureka.postpone', { name: '보고서 제출', dueAt: '2026-10-09 23:59' }, { mutationApproved: true }))).toMatchObject({ status: 'needs_clarification' });
     expect(server.writeCount('/')).toBe(0);
   });
@@ -156,15 +156,47 @@ describe('EurekaAdapter — 라우터 Operation 라벨 (wiki small-router-model,
 
   it('지원하지 않는 라벨은 실행하지 않고, 무엇을 안 했는지·지원 범위를 말한다', async () => {
     const { bridge, server } = setup();
-    for (const op of ['update_priority', 'move_stage_up', 'nonsense']) {
+    for (const op of ['add_task', 'move_stage_up', 'nonsense']) {
       const r = await bridge.execute(req('eureka', { operation: op, name: '보고서 제출' }, { mutationApproved: true }));
       // 라우터 24개 라벨 중 미구현은 EUREKA_OPERATION_NOT_IMPLEMENTED, 목록에 없는 값은 POLICY_BLOCKED
       expect(r).toMatchObject({ status: 'failed', error: { code: op === 'nonsense' ? 'POLICY_BLOCKED' : 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
-      expect(r.facts['resultText']).toContain('실행하지 않았어요. 지금은 업무 조회·등록·기한 변경·완료·보류·재개·삭제와 단계 기록 추가를 할 수 있어요.');
+      expect(r.facts['resultText']).toContain('실행하지 않았어요. 지금은 업무 조회·등록·기한·우선순위·이름 변경·완료·보류·재개·삭제, 단계 시작·되돌리기·건너뛰기와 기록 추가를 할 수 있어요.');
     }
-    expect((await bridge.execute(req('eureka', { operation: 'update_priority' }))).facts['resultText']).toContain('우선순위 변경은 아직');
-    expect((await bridge.execute(req('eureka', { operation: 'update_stage' }))).facts['resultText']).toContain('단계 상태 변경은 아직');
+    expect((await bridge.execute(req('eureka', { operation: 'query_actors' }))).facts['resultText']).toContain('담당자 조회는 아직');
     expect(server.calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
+  });
+
+  it('단계 시작·되돌리기·건너뛰기·update_stage (2026-11-14): 단계를 고르고 묻고 승인 뒤 POST status 1번', async () => {
+    const { bridge, server } = setup();
+    server.addItem({ id: '2004', name: '세 단계 업무', stages: [{ id: 's1', name: '설계', status: 'done', order: 1 }, { id: 's2', name: '구현', status: 'todo', order: 2 }, { id: 's3', name: '검토', status: 'todo', order: 3 }] });
+    // 구형 헤드(modelIntention 없음)라 단계 이름은 stage 헤드. 시작: 이름이 없으면 첫 대기 단계
+    expect((await bridge.execute(req('eureka', { operation: 'start_stage', target: '세 단계 업무' }))).facts['question']).toBe("'세 단계 업무' 업무의 '구현' 단계를 시작할까요?");
+    expect(await bridge.execute(req('eureka', { operation: 'start_stage', target: '세 단계 업무' }, { mutationApproved: true }))).toMatchObject({ status: 'succeeded', facts: { action: 'set_stage_status', resultText: "'구현' 단계를 시작했어요." } });
+    expect(server.items.get('2004')!.stages[1]!.status).toBe('doing');
+    // 건너뛰기: 이름 지정
+    expect(await bridge.execute(req('eureka', { operation: 'skip_stage', target: '세 단계 업무', stage: '검토' }, { mutationApproved: true }))).toMatchObject({ status: 'succeeded' });
+    expect(server.items.get('2004')!.stages[2]!.status).toBe('skip');
+    // 되돌리기: 진행 중 단계
+    expect(await bridge.execute(req('eureka', { operation: 'reset_stage', target: '세 단계 업무' }, { mutationApproved: true }))).toMatchObject({ status: 'succeeded' });
+    expect(server.items.get('2004')!.stages[1]!.status).toBe('todo');
+    // update_stage: 상태 낱말이 없으면 묻고, 있으면 그 상태로
+    expect((await bridge.execute(req('eureka', { operation: 'update_stage', target: '세 단계 업무', stage: '구현' }))).facts['question']).toContain('어떤 상태로');
+    expect(await bridge.execute(req('eureka', { operation: 'update_stage', target: '세 단계 업무', stage: '구현', task: '완료로' }, { mutationApproved: true }))).toMatchObject({ status: 'succeeded' });
+    expect(server.items.get('2004')!.stages[1]!.status).toBe('done');
+    // 이미 그 상태면 보내지 않는다
+    expect(await bridge.execute(req('eureka', { operation: 'update_stage', target: '세 단계 업무', stage: '구현', task: '완료' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'POLICY_BLOCKED' } });
+    expect(server.calls.filter((c) => c.method === 'POST' && c.path.includes('/stages/'))).toHaveLength(4);
+  });
+
+  it('우선순위·이름 변경 (2026-11-14): 묻고 승인 뒤 PUT 1번, 모르는 값은 다시 묻는다', async () => {
+    const { bridge, server } = setup();
+    expect((await bridge.execute(req('eureka', { operation: 'update_priority', target: '보고서 제출', priority: '아무거나' }))).facts['question']).toContain('무엇으로 바꿀까요');
+    expect((await bridge.execute(req('eureka', { operation: 'update_priority', target: '보고서 제출', priority: '높음' }))).facts['question']).toBe("'보고서 제출' 업무 우선순위를 높음으로 바꿀까요?");
+    expect(await bridge.execute(req('eureka', { operation: 'update_priority', target: '보고서 제출', priority: 'high' }, { mutationApproved: true }))).toMatchObject({ status: 'succeeded', facts: { action: 'set_item_priority' } });
+    expect(server.items.get('2001')!.priority).toBe('high');
+    expect((await bridge.execute(req('eureka', { operation: 'update_item', target: '보고서 제출', task: '최종 보고서 제출' }))).facts['question']).toBe("'보고서 제출' 업무 이름을 '최종 보고서 제출'로 바꿀까요?");
+    expect(await bridge.execute(req('eureka', { operation: 'update_item', target: '보고서 제출', task: '최종 보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'succeeded', facts: { action: 'rename_item' } });
+    expect(server.items.get('2001')!.name).toBe('최종 보고서 제출');
   });
 
   it('hold·resume (2026-11-14): 묻고 승인 뒤 PUT status 1번, 이미 보류·완료면 보내지 않는다', async () => {

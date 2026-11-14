@@ -305,6 +305,34 @@ export class EurekaGateway implements EurekaGatewayPort {
   }
 
   /**
+   * 단계 상태 변경 (2026-11-14 추가): 시작(doing)·되돌리기(todo)·건너뛰기(skip)·완료(done).
+   * POST /_api_/stages/{id}/status — done은 확인된 경로, 나머지 값을 받는지는 실제 시험으로 확인한다.
+   * 응답의 stage.status가 보낸 값과 같을 때만 반영 확인
+   */
+  setStageStatus(cmd: { stageId: string; status: 'todo' | 'doing' | 'done' | 'skip' }, handle: DispatchHandle, c: CallConstraints) {
+    return this.sendWrite({ method: 'POST', path: `/_api_/stages/${enc(cmd.stageId)}/status`, body: { status: cmd.status } }, handle, c, (b) => {
+      const st = (b as { stage?: { id?: unknown; status?: unknown } })?.stage;
+      return st?.id && st.status === cmd.status
+        ? { response: { stageId: String(st.id), status: st.status }, externalRefs: [{ system: 'eureka' as const, kind: 'stage_status', id: `${String(st.id)}@${cmd.status}` }] }
+        : { response: { raw: b } };
+    }, { action: 'set_stage_status', target: `stage ${cmd.stageId}` });
+  }
+
+  /**
+   * 업무 정보 변경 (2026-11-14 추가): 우선순위·이름. PUT /_api_/items/{id} — 보낸 필드만 바뀐다 (마감 변경과 같은 경로).
+   * 응답의 같은 필드가 보낸 값과 같을 때만 반영 확인
+   */
+  updateItemField(cmd: { itemId: string; field: 'priority' | 'name'; value: string }, handle: DispatchHandle, c: CallConstraints) {
+    const action = cmd.field === 'priority' ? 'set_item_priority' : 'rename_item';
+    return this.sendWrite({ method: 'PUT', path: `/_api_/items/${enc(cmd.itemId)}`, body: { [cmd.field]: cmd.value } }, handle, c, (b) => {
+      const item = b as Record<string, unknown> | undefined;
+      return item?.['id'] && item[cmd.field] === cmd.value
+        ? { response: { itemId: String(item['id']), [cmd.field]: cmd.value }, externalRefs: [{ system: 'eureka' as const, kind: action, id: `${String(item['id'])}@${cmd.value}` }] }
+        : { response: { raw: b } };
+    }, { action, target: `item ${cmd.itemId}` });
+  }
+
+  /**
    * 업무 보류·재개 (2026-11-14 추가). PUT /_api_/items/{id} {status} — 위키에는 '업무 정보 변경'으로만 있어 실제 시험으로 확인한다.
    * 응답의 status가 보낸 값과 같을 때만 반영 확인으로 본다. 다르거나 없으면 결과 불명(목록으로 확인)
    */

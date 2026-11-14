@@ -102,9 +102,9 @@ export class FakeEurekaServer implements HttpClient {
         if (!s) continue;
         if (it.status === 'hold') return { status: 409, bodyText: 'item is on hold' };
         const body = req.body as { status?: string };
-        if (body?.status !== 'done') return { status: 500, bodyText: `.status[${body?.status}] is invalid` };
-        s.status = 'done';
-        s.completedAt = this.now();
+        if (body?.status !== 'done' && body?.status !== 'doing' && body?.status !== 'todo' && body?.status !== 'skip') return { status: 500, bodyText: `.status[${body?.status}] is invalid` };
+        s.status = body.status;
+        if (s.status === 'done') s.completedAt = this.now();
         return ok({ stage: { id: s.id, status: s.status, completedAt: s.completedAt }, warnings: [] });
       }
       return { status: 404, bodyText: `.id[${id}] not found` };
@@ -112,10 +112,12 @@ export class FakeEurekaServer implements HttpClient {
     if (req.method === 'PUT' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/))) {
       const it = this.items.get(decodeURIComponent(m[1]!));
       if (!it) return { status: 404, bodyText: `.id[${m[1]}] not found` };
-      const body = req.body as { dueAt?: unknown; status?: unknown };
+      const body = req.body as { dueAt?: unknown; status?: unknown; priority?: unknown; name?: unknown };
       if (typeof body?.dueAt === 'number') it.dueAt = body.dueAt;
+      if (typeof body?.priority === 'string') it.priority = body.priority;
+      if (typeof body?.name === 'string') it.name = body.name;
       if (body?.status === 'hold' || body?.status === 'todo' || body?.status === 'doing') it.status = body.status;
-      return ok({ id: it.id, name: it.name, dueAt: it.dueAt, ...(it.status ? { status: it.status } : {}) });
+      return ok({ id: it.id, name: it.name, dueAt: it.dueAt, ...(it.priority ? { priority: it.priority } : {}), ...(it.status ? { status: it.status } : {}) });
     }
     if (req.method === 'DELETE' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/))) {
       const it = this.items.get(decodeURIComponent(m[1]!));

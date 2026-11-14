@@ -61,8 +61,10 @@ export interface EurekaBridgeDeps {
   timezone?: string;
 }
 
-type DirectWrite = Extract<ActionName, 'register_item' | 'postpone_item' | 'complete_item' | 'delete_item' | 'hold_item' | 'resume_item' | 'add_stage_note'>;
-type Kind = 'list' | 'query' | 'status' | 'processes' | DirectWrite;
+type DirectWrite = Extract<ActionName, 'register_item' | 'postpone_item' | 'complete_item' | 'delete_item' | 'hold_item' | 'resume_item' | 'set_stage_status' | 'set_item_priority' | 'rename_item' | 'add_stage_note'>;
+/** 단계 상태 변경 라벨 (2026-11-14): 같은 쓰기(set_stage_status)로 보낸다 */
+type StageOp = 'stage:start' | 'stage:reset' | 'stage:skip' | 'stage:update';
+type Kind = 'list' | 'query' | 'status' | 'processes' | DirectWrite | StageOp;
 
 /**
  * 의도 이름 → 처리. 두 형식을 받는다 (wiki small-router-model: Intention=eureka + Operation 24개 라벨)
@@ -81,18 +83,19 @@ const OPS: Record<string, Kind> = {
   delete: 'delete_item',
   hold: 'hold_item',
   resume: 'resume_item',
+  start_stage: 'stage:start',
+  reset_stage: 'stage:reset',
+  skip_stage: 'stage:skip',
+  update_stage: 'stage:update',
+  update_priority: 'set_item_priority',
+  priority: 'set_item_priority',
+  update_item: 'rename_item',
   add_note: 'add_stage_note',
   query_processes: 'processes',
 };
 
 /** 아직 지원하지 않는 라우터 Operation 라벨의 한국어 이름 (미지원 응답에 쓴다) */
 const UNSUPPORTED_OPS: Record<string, string> = {
-  update_stage: '단계 상태 변경',
-  update_priority: '우선순위 변경',
-  update_item: '업무 정보 변경',
-  start_stage: '단계 시작',
-  reset_stage: '단계 되돌리기',
-  skip_stage: '단계 건너뛰기',
   complete_task: '체크리스트 완료',
   query_actors: '담당자 조회',
   query_workspace: '워크스페이스 조회',
@@ -105,7 +108,7 @@ const UNSUPPORTED_OPS: Record<string, string> = {
 };
 
 /** 미지원 응답 (wiki deskpet-operation-policies §3): 실행하지 않음 → 지원 범위 → 대안 */
-const SUPPORTED_SCOPE = '지금은 업무 조회·등록·기한 변경·완료·보류·재개·삭제와 단계 기록 추가를 할 수 있어요.';
+const SUPPORTED_SCOPE = '지금은 업무 조회·등록·기한·우선순위·이름 변경·완료·보류·재개·삭제, 단계 시작·되돌리기·건너뛰기와 기록 추가를 할 수 있어요.';
 function unsupportedSentence(what?: string): string {
   return `${what ? `${what}${topic(what)} 아직 지원하지 않아` : '그 요청은'} 실행하지 않았어요. ${SUPPORTED_SCOPE}`;
 }
@@ -171,6 +174,9 @@ export class EurekaBridge {
     if ('result' in item) return item.result;
     if (kind === 'status' || kind === 'query') return this.status(a, item.task, c);
     if (kind === 'add_stage_note') return this.addNote(a, item.task, c);
+    if (kind === 'stage:start' || kind === 'stage:reset' || kind === 'stage:skip' || kind === 'stage:update') return this.stageStatus(a, kind, item.task, c);
+    if (kind === 'set_item_priority' || kind === 'rename_item') return this.itemField(a, kind, item.task, c);
+    if (kind === 'set_stage_status') return fail(a.operationId, 'POLICY_BLOCKED', 'internal action', unsupportedSentence());
     return this.itemWrite(a, kind, item.task, c);
   }
 
@@ -392,6 +398,62 @@ export class EurekaBridge {
     });
   }
 
+  /**
+   * 단계 상태 변경 (2026-11-14): 시작 → doing, 되돌리기 → todo, 건너뛰기 → skip, update_stage는 말한 상태(task·note 헤드의 낱말)로.
+   * 단계 이름(name 헤드)이 없으면 시작은 첫 대기 단계, 되돌리기는 진행 중 단계, 건너뛰기는 진행 중 → 첫 대기 단계
+   */
+  private async stageStatus(a: PipelineEurekaActionRequest, kind: StageOp, t: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
+    if (t.computedState === 'hold') return fail(a.operationId, 'POLICY_BLOCKED', 'item on hold', `'${t.name}' 업무가 보류 중이라 단계를 바꾸지 않았어요. 먼저 다시 진행해 주세요.`);
+    const status: 'todo' | 'doing' | 'done' | 'skip' | undefined = kind === 'stage:start' ? 'doing' : kind === 'stage:reset' ? 'todo' : kind === 'stage:skip' ? 'skip' : statusWordOf(a);
+    if (!status) return clarify(a.operationId, { missing: 'status', itemId: t.itemId }, `'${t.name}' 업무의 단계를 어떤 상태로 바꿀까요? (시작·완료·건너뛰기·대기)`);
+    const stages = [...t.stages].sort((x, y) => (x.order ?? 0) - (y.order ?? 0));
+    const wanted = stageNameOf(a);
+    const stage = wanted
+      ? stages.find((s) => s.name === wanted)
+      : status === 'doing'
+        ? stages.find((s) => s.status === 'todo')
+        : status === 'todo'
+          ? stages.find((s) => s.status === 'doing')
+          : (stages.find((s) => s.status === 'doing') ?? stages.find((s) => s.status === 'todo'));
+    if (!stage) {
+      return wanted
+        ? clarify(a.operationId, { missing: 'stage', itemId: t.itemId }, `'${t.name}' 업무에서 '${wanted}' 단계를 찾지 못했어요. 어느 단계인가요?`)
+        : clarify(a.operationId, { missing: 'stage', itemId: t.itemId }, `'${t.name}' 업무의 어느 단계를 바꿀까요?`);
+    }
+    if (stage.status === status) return fail(a.operationId, 'POLICY_BLOCKED', 'stage already in that status', `'${stage.name}' 단계는 이미 ${STAGE_WORD[status]} 상태예요. 바꾸지 않았어요.`);
+    const verb = status === 'doing' ? '시작할까요?' : status === 'todo' ? '대기로 되돌릴까요?' : status === 'skip' ? '건너뛸까요?' : '완료로 처리할까요?';
+    if (!a.mutationApproved) return confirm(a.operationId, `'${t.name}' 업무의 '${stage.name}' 단계를 ${verb}`, { itemId: t.itemId, stageId: stage.stageId });
+    const target = { kind: 'eureka_stage' as const, itemId: t.itemId, stageId: stage.stageId };
+    const done = status === 'doing' ? '시작했어요' : status === 'todo' ? '대기로 되돌렸어요' : status === 'skip' ? '건너뛰었어요' : '완료로 처리했어요';
+    return this.write(a, 'set_stage_status', target, { itemId: t.itemId, stageId: stage.stageId, stageName: stage.name, from: stage.status, status }, (h) => this.d.eureka.setStageStatus({ stageId: stage.stageId, status }, h, c), {
+      ok: `'${stage.name}' 단계를 ${done}.`,
+      what: `'${stage.name}' 단계 상태 변경`,
+    });
+  }
+
+  /** 우선순위·이름 변경 (2026-11-14). 우선순위는 priority 헤드(낮음·보통·높음·긴급 또는 low~urgent), 새 이름은 task 헤드 */
+  private async itemField(a: PipelineEurekaActionRequest, kind: 'set_item_priority' | 'rename_item', t: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
+    const target = { kind: 'eureka_item' as const, itemId: t.itemId };
+    if (kind === 'set_item_priority') {
+      const p = priorityOf(headString(a, 'priority'));
+      if (!p) return clarify(a.operationId, { missing: 'priority', itemId: t.itemId }, `'${t.name}' 업무 우선순위를 무엇으로 바꿀까요? (낮음·보통·높음·긴급)`);
+      if (t.priority === p) return fail(a.operationId, 'POLICY_BLOCKED', 'same priority', `'${t.name}' 업무는 이미 우선순위 ${PRIORITY_WORD[p]}이에요. 바꾸지 않았어요.`);
+      if (!a.mutationApproved) return confirm(a.operationId, `'${t.name}' 업무 우선순위를 ${ro(PRIORITY_WORD[p])} 바꿀까요?`, { itemId: t.itemId, priority: p });
+      return this.write(a, kind, target, { itemId: t.itemId, priority: p }, (h) => this.d.eureka.updateItemField({ itemId: t.itemId, field: 'priority', value: p }, h, c), {
+        ok: `'${t.name}' 업무 우선순위를 ${ro(PRIORITY_WORD[p])} 바꿨어요.`,
+        what: `'${t.name}' 업무 우선순위 변경`,
+      });
+    }
+    const name = headString(a, 'task');
+    if (!name || name === t.name) return clarify(a.operationId, { missing: 'task', itemId: t.itemId }, `'${t.name}' 업무 이름을 무엇으로 바꿀까요?`);
+    if (name.length > 200) return clarify(a.operationId, { missing: 'task', itemId: t.itemId }, '새 이름이 너무 길어요. 조금 줄여서 말씀해 주세요.');
+    if (!a.mutationApproved) return confirm(a.operationId, `'${t.name}' 업무 이름을 ${ro(`'${name}'`)} 바꿀까요?`, { itemId: t.itemId, name });
+    return this.write(a, kind, target, { itemId: t.itemId, name }, (h) => this.d.eureka.updateItemField({ itemId: t.itemId, field: 'name', value: name }, h, c), {
+      ok: `업무 이름을 ${ro(`'${name}'`)} 바꿨어요.`,
+      what: `'${t.name}' 업무 이름 변경`,
+    });
+  }
+
   private async itemWrite(a: PipelineEurekaActionRequest, kind: 'postpone_item' | 'complete_item' | 'delete_item' | 'hold_item' | 'resume_item', t: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
     const target = { kind: 'eureka_item' as const, itemId: t.itemId };
     if (kind === 'hold_item' || kind === 'resume_item') {
@@ -574,6 +636,28 @@ function newItemNameOf(a: PipelineActionRequest): string | undefined {
 /** 단계 이름: 새 형식은 name, 구형은 stage·checkpoint */
 function stageNameOf(a: PipelineActionRequest): string | undefined {
   return legacyHeads(a) ? (headString(a, 'stage') ?? headString(a, 'checkpoint')) : headString(a, 'name');
+}
+
+const STAGE_WORD: Record<string, string> = { todo: '대기', doing: '진행 중', done: '완료', skip: '건너뜀' };
+/** update_stage: task·note 헤드에 상태 낱말이 있으면 그 상태 */
+function statusWordOf(a: PipelineActionRequest): 'todo' | 'doing' | 'done' | 'skip' | undefined {
+  const t = `${headString(a, 'task') ?? ''} ${headString(a, 'note') ?? ''} ${headString(a, 'status') ?? ''}`;
+  if (/건너|스킵|skip/i.test(t)) return 'skip';
+  if (/완료|끝|done/i.test(t)) return 'done';
+  if (/대기|되돌|취소|todo/i.test(t)) return 'todo';
+  if (/시작|진행|doing/i.test(t)) return 'doing';
+  return undefined;
+}
+
+const PRIORITY_WORD: Record<'low' | 'normal' | 'high' | 'urgent', string> = { low: '낮음', normal: '보통', high: '높음', urgent: '긴급' };
+function priorityOf(v: string | undefined): 'low' | 'normal' | 'high' | 'urgent' | undefined {
+  if (!v) return undefined;
+  const s = v.trim().toLowerCase();
+  if (['low', '낮음', '낮게', '낮은'].includes(s) || s.startsWith('낮')) return 'low';
+  if (['normal', 'medium', '보통', '중간'].includes(s) || s.startsWith('보통')) return 'normal';
+  if (['urgent', '긴급', '급함', '매우 높음'].includes(s) || s.startsWith('긴급')) return 'urgent';
+  if (['high', '높음', '높게', '높은'].includes(s) || s.startsWith('높')) return 'high';
+  return undefined;
 }
 
 function headString(a: PipelineActionRequest, key: string): string | undefined {

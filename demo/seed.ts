@@ -8,7 +8,7 @@
  *   pnpm demo:seed --reminders      # + 리마인더 예시용 시험 업무 3개를 Eureka에 등록 (쓰기 — 마감 1·3·6일 뒤)
  *   pnpm demo:seed --fixture        # pnpm web:fixture 서버(가짜 GitHub·Eureka)로
  *
- * 기록에 남는 결과: 완료(업무 목록·업무 상태·PR 리뷰), 질문함(업무 등록·PR 승인 확인), 실패(없는 업무·지원하지 않는 우선순위 변경), 거절 답변
+ * 기록에 남는 결과: 완료(업무 목록·업무 상태·PR 리뷰), 질문함(업무 등록·PR 승인 확인), 실패(없는 업무·지원하지 않는 담당자 조회), 거절 답변
  * 시연 업무 정리: pnpm demo:adapter eureka delete "[시연] 중간 발표 자료 정리" → 응
  * .env: HARNESS_WS_URL(기본 ws://127.0.0.1:8787), HARNESS_WS_TOKEN, GITHUB_TEST_REPO(owner/name), GITHUB_TEST_PR
  */
@@ -96,7 +96,7 @@ async function main() {
   }
   if (firstName) await eureka(`${firstName} 업무 어디까지 했어?`, 'query', { target: firstName });
   await eureka('우주선 발사 준비 업무 상태 알려줘', 'query', { target: '우주선 발사 준비' });
-  await eureka('그 업무 우선순위 높여 줘', 'update_priority', { target: '아무 업무' });
+  await eureka('이 업무 담당자 누구야?', 'query_actors', { target: '아무 업무' });
   // 확인 질문까지만: 답을 거절하므로 등록하지 않는다
   await eureka('발표 리허설 업무 새로 만들어 줘', 'create', { task: '발표 리허설', dueAt: new Date(Date.now() + 3 * 86_400_000).toISOString() });
 
