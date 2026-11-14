@@ -200,7 +200,7 @@ if (loadedSettings.error) writeWarnings.push(loadedSettings.error);
 let settingsSource: 'file' | 'env' = loadedSettings.source;
 let settingsUpdatedAt = loadedSettings.settings.updatedAt;
 
-/** 웹 설정 저장 (관리 토큰 확인 뒤 서버가 부른다) */
+/** 웹 설정 저장 (D-52). 접속한 화면 누구나 부를 수 있다 */
 async function applySettings(s: { allowedRepositories: string[] } | undefined): Promise<{ ok: boolean; message: string }> {
   if (!s) return { ok: false, message: '바꿀 설정이 없어요' };
   const parsed = parseAllowedRepositories(s.allowedRepositories.join(','));
@@ -263,9 +263,11 @@ const server: HarnessWsServer = new HarnessWsServer({
   token,
   // D-45: 보기 전용 토큰을 비우면 웹 화면은 토큰 없이 접속 (구독만, 실행 불가)
   ...(env['HARNESS_WS_VIEWER_TOKEN']?.trim() ? { viewerToken: env['HARNESS_WS_VIEWER_TOKEN'].trim() } : { openViewer: true }),
-  ...(adminToken ? { adminToken, admin: (action: AdminAction, payload?: { settings?: { allowedRepositories: string[] } }): Promise<{ ok: boolean; message: string }> => (action === 'settings.set' ? applySettings(payload?.settings) : action === 'update.apply' ? updater.apply() : updater.check().then((s: UpdateStatus) => ({ ok: s.state !== 'check_failed', message: s.message ?? s.state }))) } : {}),
+  ...(adminToken ? { adminToken, admin: (action: AdminAction): Promise<{ ok: boolean; message: string }> => (action === 'update.apply' ? updater.apply() : updater.check().then((s: UpdateStatus) => ({ ok: s.state !== 'check_failed', message: s.message ?? s.state }))) } : {}),
   ...(history ? { history } : {}),
   info: () => serverInfo(),
+  // 승인 허용 저장소는 사용자가 웹 설정에서 바꾼다 (관리 토큰 없이, 사용자 결정 2026-11-14)
+  settings: (s) => applySettings(s),
   ...(overview ? { overview } : {}),
   host: wsHost,
   allowedClients,

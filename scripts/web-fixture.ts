@@ -93,15 +93,15 @@ const server = new HarnessWsServer({
   overview,
   info,
   adminToken: ADMIN,
-  admin: async (action, payload) => {
+  settings: async (s) => {
+    repos.splice(0, repos.length, ...s.allowedRepositories);
+    settingsAt = new Date().toISOString();
+    server.publishInfo();
+    void overview.refresh(true);
+    return { ok: true, message: '적용했어요 (fixture — 파일에 저장하지 않음)' };
+  },
+  admin: async (action) => {
     if (action === 'update.check') return { ok: true, message: 'checked' };
-    if (action === 'settings.set') {
-      repos.splice(0, repos.length, ...(payload?.settings?.allowedRepositories ?? []));
-      settingsAt = new Date().toISOString();
-      server.publishInfo();
-      void overview.refresh(true);
-      return { ok: true, message: '적용했어요 (fixture — 파일에 저장하지 않음)' };
-    }
     for (const step of ['새 코드 받기', '웹 화면 빌드']) {
       update = { ...update, state: 'updating', step };
       server.publishInfo();

@@ -45,7 +45,9 @@ export interface HarnessWsServerOptions {
    */
   adminToken?: string;
   /** 관리 동작 처리. adminToken이 맞을 때만 부른다 */
-  admin?: (action: AdminAction, payload?: { settings?: { allowedRepositories: string[] } }) => Promise<{ ok: boolean; message: string }>;
+  admin?: (action: AdminAction) => Promise<{ ok: boolean; message: string }>;
+  /** 사용자 설정 저장 (D-52, 승인 허용 저장소). 접속한 연결 누구나 (viewer 포함) */
+  settings?: (s: { allowedRepositories: string[] }) => Promise<{ ok: boolean; message: string }>;
   /** 세션 기록 (D-47). 주면 실행 요청 결과를 남기고 viewer에게 보여 준다 */
   history?: HistoryLog;
   /** 서버 정보 (D-49): 접속 직후 보내고, publishInfo()로 다시 보낸다 */
@@ -94,7 +96,7 @@ export interface HarnessWsServerOptions {
   onCompleted?: (info: { kind: string; requestId: string; ms: number; ok: boolean; payload?: unknown }) => void;
 }
 
-export type AdminAction = 'update.check' | 'update.apply' | 'settings.set';
+export type AdminAction = 'update.check' | 'update.apply';
 
 export type Lane = 'work' | 'eureka' | 'control';
 const CONTROL_KINDS = new Set(['pipeline.event', 'harness.cancel', 'harness.reconcile', 'eureka.reconcile']);
@@ -327,6 +329,17 @@ export class HarnessWsServer {
       }
       case 'admin':
         return this.onAdmin(conn, frame);
+      case 'settings.set': {
+        const reply = (ok: boolean, message: string) => this.send(conn, { type: 'settings.result', ...(frame.id ? { id: frame.id } : {}), ok, message });
+        if (!this.o.settings) return reply(false, 'settings_disabled');
+        this.log(`설정 저장 요청 (#${conn.id}, ${conn.role})`);
+        try {
+          const r = await this.o.settings(frame.settings);
+          return reply(r.ok, r.message);
+        } catch {
+          return reply(false, 'internal');
+        }
+      }
       case 'overview.refresh':
         // 결과는 publishOverview로 모든 연결에 간다
         if (this.o.overview) void this.o.overview.refresh().catch(() => undefined);
@@ -335,7 +348,7 @@ export class HarnessWsServer {
   }
 
   // ---------------------------------------------------------------------- admin
-  private async onAdmin(conn: Conn, frame: { token: string; action: AdminAction; id?: string; settings?: { allowedRepositories: string[] } }) {
+  private async onAdmin(conn: Conn, frame: { token: string; action: AdminAction; id?: string }) {
     const reply = (ok: boolean, message: string) => this.send(conn, { type: 'admin.result', ...(frame.id ? { id: frame.id } : {}), action: frame.action, ok, message });
     if (!this.adminDigest || !this.o.admin) return reply(false, 'admin_disabled');
     if (!timingSafeEqual(digest(frame.token), this.adminDigest)) {
@@ -348,7 +361,7 @@ export class HarnessWsServer {
     }
     this.log(`관리 동작 ${frame.action} (#${conn.id})`);
     try {
-      const r = await this.o.admin(frame.action, frame.settings ? { settings: frame.settings } : undefined);
+      const r = await this.o.admin(frame.action);
       reply(r.ok, r.message);
     } catch (e) {
       this.log(`관리 동작 오류 ${frame.action}: ${e instanceof Error ? e.message : 'error'}`);

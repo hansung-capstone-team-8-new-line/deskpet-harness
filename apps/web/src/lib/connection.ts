@@ -96,7 +96,16 @@ export class HarnessConnection {
   }
 
   /** 관리 동작 (D-50). 관리 토큰은 보내기만 하고 저장하지 않는다 */
-  admin(token: string, action: 'update.check' | 'update.apply' | 'settings.set', extra?: { settings: { allowedRepositories: string[] } }): Promise<AdminResult> {
+  /** 사용자 설정 저장 (D-52) */
+  saveSettings(settings: { allowedRepositories: string[] }): Promise<AdminResult> {
+    return this.call({ type: 'settings.set', settings });
+  }
+
+  admin(token: string, action: 'update.check' | 'update.apply'): Promise<AdminResult> {
+    return this.call({ type: 'admin', token, action });
+  }
+
+  private call(frame: Record<string, unknown>): Promise<AdminResult> {
     if (this.view.state !== 'connected' || !this.ws) return Promise.resolve({ ok: false, message: 'not_connected' });
     const id = `a${++this.adminSeq}`;
     const ws = this.ws;
@@ -109,7 +118,7 @@ export class HarnessConnection {
         clearTimeout(timer);
         resolve(r);
       });
-      ws.send(JSON.stringify({ type: 'admin', token, action, id, ...(extra ?? {}) }));
+      ws.send(JSON.stringify({ ...frame, id }));
     });
   }
 
@@ -178,6 +187,7 @@ export class HarnessConnection {
         this.bump({ history: { ...this.view.history, entries: [e, ...this.view.history.entries] } });
         break;
       }
+      case 'settings.result':
       case 'admin.result': {
         const id = String(f['id'] ?? '');
         const w = this.adminWaiters.get(id);

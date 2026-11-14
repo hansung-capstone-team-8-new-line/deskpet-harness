@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { OutputService } from '@deskpet/output';
-import { DirectHarnessInbound, HarnessWsServer, type AdminAction } from '@deskpet/server';
+import { DirectHarnessInbound, HarnessWsServer } from '@deskpet/server';
 import { loadRuntimeSettings, saveRuntimeSettings } from '../../scripts/runtimeSettings.js';
 import { createWorld } from '../support/world.js';
 
@@ -32,8 +32,8 @@ describe('설정 파일', () => {
   });
 });
 
-describe('settings.set 관리 동작', () => {
-  it('관리 토큰이 맞으면 설정 값을 그대로 넘긴다', async () => {
+describe('settings.set', () => {
+  it('관리 토큰 없이 보기 전용 연결도 저장할 수 있다 (사용자 결정 2026-11-14)', async () => {
     const w = createWorld();
     const got: unknown[] = [];
     const server = new HarnessWsServer({
@@ -42,9 +42,8 @@ describe('settings.set 관리 동작', () => {
       token: 'test-token-0123456789abcdef',
       openViewer: true,
       port: 0,
-      adminToken: 'admin-token-0123456789abcd',
-      admin: async (action: AdminAction, payload) => {
-        got.push([action, payload]);
+      settings: async (s) => {
+        got.push(s);
         return { ok: true, message: '저장했어요' };
       },
     });
@@ -55,12 +54,12 @@ describe('settings.set 관리 동작', () => {
       ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'hello', token: '', role: 'viewer' })));
       ws.addEventListener('message', (e) => {
         const f = JSON.parse(String(e.data)) as Record<string, unknown>;
-        if (f['type'] === 'welcome') ws.send(JSON.stringify({ type: 'admin', token: 'admin-token-0123456789abcd', action: 'settings.set', id: 's', settings: { allowedRepositories: ['NewLine/DeskPet'] } }));
-        if (f['type'] === 'admin.result') resolve(f);
+        if (f['type'] === 'welcome') ws.send(JSON.stringify({ type: 'settings.set', id: 's', settings: { allowedRepositories: ['NewLine/DeskPet'] } }));
+        if (f['type'] === 'settings.result') resolve(f);
       });
     });
     ws.close();
     expect(reply).toMatchObject({ ok: true, message: '저장했어요' });
-    expect(got).toEqual([['settings.set', { settings: { allowedRepositories: ['NewLine/DeskPet'] } }]]);
+    expect(got).toEqual([{ allowedRepositories: ['NewLine/DeskPet'] }]);
   });
 });

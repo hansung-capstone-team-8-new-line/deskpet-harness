@@ -115,7 +115,7 @@ export function SettingsView({
         </form>
       </Section>
 
-      <RepoSettings conn={conn} view={view} adminToken={adminToken} />
+      <RepoSettings conn={conn} view={view} />
 
       <Section title="표시" desc="이 브라우저에만 저장됩니다.">
         <div className="space-y-3">
@@ -186,8 +186,8 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
-/** 승인 허용 저장소 (D-36·D-52). 모두 볼 수 있고, 저장은 관리 토큰이 있는 화면에서만 */
-function RepoSettings({ conn, view, adminToken }: { conn: HarnessConnection; view: ConnView; adminToken: string }) {
+/** 승인 허용 저장소 (D-36·D-52). 사용자가 직접 관리한다 (관리 토큰 없이) */
+function RepoSettings({ conn, view }: { conn: HarnessConnection; view: ConnView }) {
   const server = view.info?.settings;
   const [draft, setDraft] = useState<string[] | null>(null);
   const [input, setInput] = useState('');
@@ -195,7 +195,6 @@ function RepoSettings({ conn, view, adminToken }: { conn: HarnessConnection; vie
   const [saving, setSaving] = useState(false);
   const list = draft ?? server?.allowedRepositories ?? [];
   const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(server?.allowedRepositories ?? []);
-  const canSave = !!view.info?.admin && !!adminToken;
 
   const add = () => {
     const v = input.trim().replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '');
@@ -221,57 +220,49 @@ function RepoSettings({ conn, view, adminToken }: { conn: HarnessConnection; vie
                   <a href={`https://github.com/${r}`} target="_blank" rel="noreferrer noopener" className="underline-offset-2 hover:underline">
                     {r}
                   </a>
-                  {canSave && (
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(list.filter((x) => x !== r))} aria-label={`${r} 빼기`}>
-                      빼기
-                    </Button>
-                  )}
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(list.filter((x) => x !== r))} aria-label={`${r} 빼기`}>
+                    빼기
+                  </Button>
                 </li>
               ))}
             </ul>
           )}
-          {canSave ? (
-            <>
-              <form
-                className="flex gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  add();
-                }}
-              >
-                <Input aria-label="추가할 저장소" placeholder="owner/name 또는 GitHub 주소" value={input} onChange={(e) => setInput(e.target.value)} autoComplete="off" spellCheck={false} />
-                <Button type="submit" size="sm" variant="outline" disabled={!input.trim()}>
-                  추가
-                </Button>
-              </form>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={!dirty || saving || view.state !== 'connected'}
-                  onClick={() => {
-                    setSaving(true);
-                    void conn
-                      .admin(adminToken, 'settings.set', { settings: { allowedRepositories: list } })
-                      .then((r) => {
-                        setMsg(r.ok ? r.message : adminMessage(r.message));
-                        if (r.ok) setDraft(null);
-                      })
-                      .finally(() => setSaving(false));
-                  }}
-                >
-                  {saving ? '저장 중' : '저장'}
-                </Button>
-                {dirty && (
-                  <Button type="button" size="sm" variant="ghost" onClick={() => setDraft(null)}>
-                    되돌리기
-                  </Button>
-                )}
-              </div>
-            </>
-          ) : (
-            <p className="text-xs text-muted-foreground">{view.info?.admin ? '바꾸려면 위 연결에서 관리 토큰을 넣으세요.' : '서버에 관리 토큰(HARNESS_WEB_ADMIN_TOKEN)이 없어 웹에서 바꿀 수 없어요.'}</p>
-          )}
+          <form
+            className="flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              add();
+            }}
+          >
+            <Input aria-label="추가할 저장소" placeholder="owner/name 또는 GitHub 주소" value={input} onChange={(e) => setInput(e.target.value)} autoComplete="off" spellCheck={false} />
+            <Button type="submit" size="sm" variant="outline" disabled={!input.trim()}>
+              추가
+            </Button>
+          </form>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              disabled={!dirty || saving || view.state !== 'connected'}
+              onClick={() => {
+                setSaving(true);
+                void conn
+                  .saveSettings({ allowedRepositories: list })
+                  .then((r) => {
+                    setMsg(r.ok ? r.message : adminMessage(r.message));
+                    if (r.ok) setDraft(null);
+                  })
+                  .finally(() => setSaving(false));
+              }}
+            >
+              {saving ? '저장 중' : '저장'}
+            </Button>
+            {dirty && (
+              <Button type="button" size="sm" variant="ghost" onClick={() => setDraft(null)}>
+                되돌리기
+              </Button>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             {server.source === 'file' ? `웹 설정에서 저장한 목록${server.updatedAt ? ` (${formatDateTime(server.updatedAt)})` : ''}` : '.env DESKPET_ALLOWED_REPOS 값 (웹에서 저장하면 이후 이 목록을 씀)'}
             {server.persistent ? '' : ' · 서버 저장소가 메모리라 서버를 끄면 .env 값으로 돌아가요'}
