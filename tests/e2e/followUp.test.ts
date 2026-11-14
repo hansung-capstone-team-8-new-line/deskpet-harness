@@ -22,8 +22,11 @@ async function untilEurekaQuestion(w: ReturnType<typeof createWorld>): Promise<H
   return approved;
 }
 
-function retryRequest(turnId: string, text = 'Eureka 다시 반영해줘', o: { stt?: number } = {}) {
-  return harnessRequest(`req-retry-${turnId}`, voiceTurn(turnId, text, { intention: 'eureka.retry', ...(o.stt !== undefined ? { stt: o.stt } : {}) }));
+function directEurekaTurn(turnId: string, text: string, o: { stt?: number; reqId?: string } = {}) {
+  return harnessRequest(
+    o.reqId ?? `req-eureka-${turnId}`,
+    voiceTurn(turnId, text, { intention: 'unclear', ...(o.stt !== undefined ? { stt: o.stt } : {}) }),
+  );
 }
 
 describe('Eureka 반영 — 잠깐 기다렸다가 응답 (D-23)', () => {
@@ -54,52 +57,40 @@ describe('Eureka 반영 — 잠깐 기다렸다가 응답 (D-23)', () => {
   });
 });
 
-describe('S-09: 명시적으로 실패한 Eureka 반영 다시 하기 — "다시 해줘"를 동의로 (D-23)', () => {
-  it('실패 → 다시 해줘 → 새 작업으로 한 번 더 보내고 성공. GitHub 승인은 다시 하지 않는다', async () => {
-    const w = createWorld();
-    const q = await untilEurekaQuestion(w);
-    w.eurekaServer.injectFault((r) => r.method === 'POST' && r.path === stagePost, { kind: 'status', status: 500, body: '{"message":"boom"}' });
-    const failed = await answer(w, q, '네');
-    expect(failed.actionResults[0]).toMatchObject({ action: 'complete_stage', status: 'failed' });
-    expect(fallbackText(mapHarnessResult(failed)).text).toContain("'Eureka 다시 반영해줘'라고 하시면 다시 시도할게요.");
+describe('unclear → DirectEurekaExecutor: Harness 직접 유레카 조작 및 안전 경계', () => {
+  it('유레카 업무 목록·등록·연기 요청을 unclear 분기에서 직접 실행한다', async () => {
+    const w = createWorld({ llm: null });
 
-    const r = await w.harness.handle(retryRequest('t-retry-1'));
-    expect(r.facts['retry']).toMatchObject({ status: 'started' });
-    expect(r.actionResults[0]).toMatchObject({ action: 'complete_stage', status: 'succeeded' });
-    expect(w.github.submitCount).toBe(1);
-    const stageOps = (await w.store.listOperations()).filter((o) => o.action === 'complete_stage');
-    expect(stageOps).toHaveLength(2);
-    expect(stageOps[1]!.operationId).not.toBe(stageOps[0]!.operationId);
-    // 확인 기록 규칙은 그대로: 새 확인 하나가 새 작업 하나에만, 전달 근거는 retry_request
-    const conf = await w.store.getConfirmation(stageOps[1]!.confirmationRef!);
-    expect(conf).toMatchObject({ state: 'approved', operationId: stageOps[1]!.operationId, deliveredContentAndChannelEvidence: { channel: 'retry_request' } });
+    // 등록 요청
+    const reg = await w.harness.handle(directEurekaTurn('t-reg-1', '유레카에 "주간 리뷰 작성" 업무 등록해줘'));
+    expect(reg.disposition).toBe('completed');
+    expect(reg.facts['directEureka']).toMatchObject({ operation: 'register_item', ok: true });
+    expect(w.eurekaServer.writeCount('/')).toBe(1);
+
+    // 목록 조회 요청 (쓰기 추가 없음)
+    const list = await w.harness.handle(directEurekaTurn('t-list-1', '유레카 업무 목록 보여줘'));
+    expect(list.disposition).toBe('completed');
+    expect(list.facts['directEureka']).toMatchObject({ operation: 'list_tasks', ok: true });
+    expect(w.eurekaServer.writeCount('/')).toBe(1);
   });
 
-  it('결과 불명(unknown)이면 다시 보내지 않는다. 이미 성공했거나 할 일이 없으면 실행 없음', async () => {
+  it('정보가 부족한 유레카 등록/연기 요청은 추정 실행하지 않고 clarify 질문으로 되묻는다', async () => {
+    const w = createWorld({ llm: null });
+    const clarify = await w.harness.handle(directEurekaTurn('t-clarify-1', '유레카 업무 등록해줘'));
+    expect(clarify.disposition).toBe('awaiting_user');
+    expect(clarify.pending?.kind).toBe('clarification');
+    expect(w.eurekaServer.writeCount('/')).toBe(0);
+  });
+
+  it('결과 불명(unknown) 이후 반복 요청은 기존 승인 건을 재전송하지 않는다', async () => {
     const w = createWorld();
-    expect((await w.harness.handle(retryRequest('t-r0'))).facts['retry']).toMatchObject({ status: 'nothing_to_retry' });
     const q = await untilEurekaQuestion(w);
     w.eurekaServer.injectFault((r) => r.method === 'POST' && r.path === stagePost, { kind: 'drop_after_apply' });
     const u = await answer(w, q, '네');
     expect(u.actionResults[0]!.status).toBe('unknown');
-    const r = await w.harness.handle(retryRequest('t-r1'));
-    expect(r.facts['retry']).toMatchObject({ status: 'result_unknown' });
     expect(w.eurekaServer.writeCount('/_api_/stages')).toBe(1);
-
-    const w2 = createWorld();
-    const q2 = await untilEurekaQuestion(w2);
-    await answer(w2, q2, '네');
-    expect((await w2.harness.handle(retryRequest('t-r2'))).facts['retry']).toMatchObject({ status: 'already_done' });
-    expect(w2.eurekaServer.writeCount('/_api_/stages')).toBe(1);
-  });
-
-  it('음성 신뢰도가 낮으면 다시 하지 않는다', async () => {
-    const w = createWorld();
-    const q = await untilEurekaQuestion(w);
-    w.eurekaServer.injectFault((r) => r.method === 'POST' && r.path === stagePost, { kind: 'status', status: 500, body: '{}' });
-    await answer(w, q, '네');
-    const r = await w.harness.handle(retryRequest('t-low', '다시 해줘', { stt: 0.3 }));
-    expect(r.facts['retry']).toMatchObject({ status: 'input_blocked' });
+    const late = await answer(w, q, '네', { deliver: false });
+    expect(late.facts['answerNotAccepted']).toBeDefined();
     expect(w.eurekaServer.writeCount('/_api_/stages')).toBe(1);
   });
 });
@@ -130,8 +121,9 @@ describe('주기 복구 RecoveryWorker (S-07, D-23) — 다시 보내지 않고 
     const q = await askApproval(w);
     w.github.failNextSubmit('drop_after_apply');
     const r = await answer(w, q, '응, 승인해');
-    const id = r.actionResults[0]!.operationId;
-    expect(r.actionResults[0]!.status).toBe('unknown');
+    const approval = r.actionResults.find((a) => a.action === 'submit_approval')!;
+    const id = approval.operationId;
+    expect(approval.status).toBe('unknown');
     const worker = new RecoveryWorker({ harness: w.harness, store: w.store, clock: w.clock, intervalMs: 1_000 });
     for (let i = 0; i < 6; i++) {
       await worker.tick();
@@ -159,19 +151,19 @@ describe('주기 복구 RecoveryWorker (S-07, D-23) — 다시 보내지 않고 
 
 
 describe('파이프라인 형식(harness.run)과 서버 notice', () => {
-  it('진행 중은 status=unknown + facts.inProgress, 다시 하기 결과는 facts.retryStatus', async () => {
+  it('진행 중은 status=unknown + facts.inProgress, unclear 유레카 조회 결과는 facts.directEureka', async () => {
     const { PipelineBridge } = await import('@deskpet/server');
     const { OutputService } = await import('@deskpet/output');
     const w = createWorld({ config: { followUpReplyWaitMs: 20 } });
     const bridge = new PipelineBridge({ harness: w.harness, store: w.store, output: new OutputService() });
     const q = await untilEurekaQuestion(w);
-    w.eurekaServer.injectFault((r) => r.method === 'POST' && r.path === stagePost, { kind: 'delay', ms: 100 });
+    w.eurekaServer.injectFault((r) => r.method === 'POST' && r.path === stagePost, { kind: 'delay', ms: 150 });
     const r = await answer(w, q, '네');
     const mapped = await bridge.toPipelineResult(r, 'OP-P1');
     expect(mapped.action).toMatchObject({ status: 'unknown', facts: { inProgress: 'true' } });
     await w.harness.drainBackground();
-    const none = await bridge.toPipelineResult(await w.harness.handle(retryRequest('t-p2')), 'OP-P2');
-    expect(none.action).toMatchObject({ status: 'succeeded', facts: { retryStatus: 'already_done' } });
+    const listed = await bridge.toPipelineResult(await w.harness.handle(directEurekaTurn('t-p2', '유레카 업무 목록 보여줘')), 'OP-P2');
+    expect(listed.action).toMatchObject({ status: 'succeeded', facts: { directEureka: expect.any(String) } });
   });
 });
 
@@ -179,7 +171,7 @@ describe('복구로 GitHub 승인이 확정되면 Eureka 상태·기록을 보�
   async function pendingApproval(w: ReturnType<typeof createWorld>, sensor: ControllableSensor, ctx?: import('@deskpet/contracts').ContextPacket) {
     const b = await import('../support/builders.js');
     await w.harness.handle(b.harnessRequest('req-review', b.voiceTurn('t-rv', '그 PR 리뷰해줘'), ctx));
-    const q = await w.harness.handle(b.harnessRequest('req-approve', b.voiceTurn('t-ap', '그 PR 승인해줘', { intention: 'pr.approve' }), ctx));
+    const q = await w.harness.handle(b.harnessRequest('req-approve', b.voiceTurn('t-ap', '그 PR 승인해줘', { intention: 'llm' }), ctx));
     sensor.fail = (i) => i.gatewayResult.mode === 'write';
     const r = await answer(w, q, '응, 승인해');
     expect(r.facts['assessmentPending']).toBeDefined();

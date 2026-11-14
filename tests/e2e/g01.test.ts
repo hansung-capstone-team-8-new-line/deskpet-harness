@@ -33,7 +33,7 @@ describe('G-01: review → approval confirmation → approve → follow-up check
     expect(r2.disposition).toBe('awaiting_user');
     expect(r2.pending).toMatchObject({ kind: 'confirmation', scope: { action: 'submit_approval', headSha: SHA_A } });
     expect(w.github.submitCount).toBe(0);
-    expect((await speak(r2)).text).toBe(`NewLine/DeskPet PR 42번, 현재 커밋 ${SHA_A.slice(0, 7)}을 승인할까요?`);
+    expect((await speak(r2)).text).toContain(`NewLine/DeskPet PR 42번, 현재 커밋 ${SHA_A.slice(0, 7)}에 승인 리뷰를 등록할까요?`);
 
     // 3) "응, 승인해" → GitHub 승인 1회 → 후속 적합성 확인 → Eureka 별도 확인 질문
     const r3 = await answer(w, r2, '응, 승인해.');

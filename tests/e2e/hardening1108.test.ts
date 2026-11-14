@@ -72,8 +72,8 @@ describe('업무 연결이 없을 때 단계 기록에서 연결 단계 찾기',
   const noRefs = () => ({ ...prContext(), taskRefs: [] });
 
   async function approveWithoutRefs(w: ReturnType<typeof createWorld>) {
-    await w.harness.handle(harnessRequest('req-r', voiceTurn('t-r1', '그 PR 리뷰해서 읽어줘', { intention: 'pr.review' }), noRefs()));
-    const q = await w.harness.handle(harnessRequest('req-a', voiceTurn('t-a1', '그 PR 승인해줘', { intention: 'pr.approve' }), noRefs()));
+    await w.harness.handle(harnessRequest('req-r', voiceTurn('t-r1', '그 PR 리뷰해서 읽어줘', { intention: 'llm' }), noRefs()));
+    const q = await w.harness.handle(harnessRequest('req-a', voiceTurn('t-a1', '그 PR 승인해줘', { intention: 'llm' }), noRefs()));
     return answer(w, q, '응, 승인해');
   }
 
@@ -81,7 +81,7 @@ describe('업무 연결이 없을 때 단계 기록에서 연결 단계 찾기',
     const w = createWorld();
     w.eurekaServer.items.get('1000006')!.stages.find((s) => s.id === STAGE_ID)!.notes = [{ id: '700', content: `PR: ${prUrl}` }];
     const r = await approveWithoutRefs(w);
-    expect(r.actionResults[0]).toMatchObject({ action: 'submit_approval', status: 'succeeded' });
+    expect(r.actionResults.find((a) => a.action === 'submit_approval')).toMatchObject({ action: 'submit_approval', status: 'succeeded' });
     expect(r.pending?.purpose).toBe('confirm_stage_completion');
   });
 

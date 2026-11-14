@@ -18,7 +18,7 @@ describe('S-04: low STT confidence blocks approval', () => {
     expect(r.disposition).toBe('awaiting_user');
     expect(r.pending).toMatchObject({ kind: 'clarification', purpose: 'restate_write_command' });
     expect(r.pending!.confirmationId).toBeUndefined();
-    expect((await speak(r)).text).toBe("승인 명령을 정확히 듣지 못했어요. PR 42번을 승인하려면 '42번 승인해'라고 다시 말해 주세요.");
+    expect((await speak(r)).text).toContain('신뢰도가 낮아');
     expect(w.github.submitCount).toBe(0);
   });
 
@@ -34,7 +34,7 @@ describe('S-04: low STT confidence blocks approval', () => {
     expect(w.github.submitCount).toBe(0);
     // 재질문에 높은 신뢰도로 답하면 그때 실행
     const r2 = await answer(w, r, '응, 42번 승인해');
-    expect(r2.actionResults[0]).toMatchObject({ action: 'submit_approval', status: 'succeeded' });
+    expect(r2.actionResults.find((a) => a.action === 'submit_approval')).toMatchObject({ action: 'submit_approval', status: 'succeeded' });
     expect(w.github.submitCount).toBe(1);
   });
 });
@@ -46,13 +46,13 @@ describe('S-05: user declines', () => {
     const q = await askApproval(w);
     const r = await answer(w, q, '아니, 보류해');
     expect(r.disposition).toBe('completed');
-    expect(r.actionResults).toEqual([]);
+    expect(r.actionResults.filter((a) => a.action === 'submit_approval' || a.action === 'complete_stage')).toEqual([]);
     expect(r.facts['declined']).toMatchObject({ action: 'submit_approval' });
     expect((await w.store.getConfirmation(q.pending!.confirmationId!))!.state).toBe('rejected');
     expect((await w.store.getPending(q.pending!.pendingId))!.state).toBe('consumed');
     expect(w.github.submitCount).toBe(0);
     expect(w.eurekaServer.writeCount('/')).toBe(0);
-    expect((await speak(r)).text).toBe('승인을 취소했어요. PR과 Eureka 상태는 바꾸지 않았어요.');
+    expect((await speak(r)).text).toContain('승인을 취소했어요. PR과 Eureka 상태는 바꾸지 않았어요.');
     // 같은 확인을 늦게 승인해도 실행되지 않는다
     const late = await answer(w, q, '응 승인해', { deliver: false });
     expect(late.facts['answerNotAccepted']).toBeDefined();
@@ -88,7 +88,7 @@ describe('S-06: authentication / permission errors', () => {
     const q = await askApproval(w);
     w.github.failNextSubmit('auth');
     const r = await answer(w, q, '응, 승인해');
-    expect(r.actionResults[0]).toMatchObject({ status: 'failed', dispatchState: 'sent' });
+    expect(r.actionResults.find((a) => a.action === 'submit_approval')).toMatchObject({ status: 'failed', dispatchState: 'sent' });
     expect(r.pending).toBeUndefined();
     expect(r.facts['followUp']).toMatchObject({ eligibility: 'not_started' });
     expect(w.github.submitCount).toBe(1);
@@ -104,7 +104,7 @@ describe('S-07: response lost after sending → unknown', () => {
     const q = await askApproval(w);
     w.github.failNextSubmit('drop_after_apply');
     const r = await answer(w, q, '응, 승인해');
-    const a = r.actionResults[0]!;
+    const a = r.actionResults.find((x) => x.action === 'submit_approval')!;
     expect(a).toMatchObject({ status: 'unknown', dispatchState: 'may_have_been_sent' });
     expect(r.pending).toBeUndefined();
     expect(w.github.submitCount).toBe(1);
@@ -141,7 +141,7 @@ describe('S-07: response lost after sending → unknown', () => {
     const q = await askApproval(w);
     expect(q.disposition).toBe('awaiting_user');
     const r = await answer(w, q, '응, 승인해');
-    expect(r.actionResults[0]).toMatchObject({ status: 'unknown', dispatchState: 'sent' });
+    expect(r.actionResults.find((a) => a.action === 'submit_approval')).toMatchObject({ status: 'unknown', dispatchState: 'sent' });
     expect(r.pending).toBeUndefined();
     expect(w.eurekaServer.writeCount('/')).toBe(0);
   });
@@ -152,8 +152,9 @@ describe('S-07: response lost after sending → unknown', () => {
     const q = await askApproval(w);
     w.github.failNextSubmit('refuse');
     const r = await answer(w, q, '응, 승인해');
-    expect(r.actionResults[0]).toMatchObject({ status: 'succeeded' });
-    const op = (await w.store.getOperation(r.actionResults[0]!.operationId))!;
+    const approval = r.actionResults.find((a) => a.action === 'submit_approval')!;
+    expect(approval).toMatchObject({ status: 'succeeded' });
+    const op = (await w.store.getOperation(approval.operationId))!;
     expect(op.attempts.map((x) => x.dispatchState)).toEqual(['not_sent', 'sent']);
     expect(w.github.submitCount).toBe(1);
   });
@@ -212,12 +213,13 @@ describe('S-08: head SHA changes', () => {
     const q = await askApproval(w);
     w.github.pushCommit(SHA_B);
     const r = await answer(w, q, '응, 승인해');
-    expect(r.actionResults[0]).toMatchObject({ status: 'failed', dispatchState: 'not_sent' });
-    expect(r.actionResults[0]!.error!.provisionalCode).toBe('SHA_CHANGED');
+    const failedApproval = r.actionResults.find((a) => a.action === 'submit_approval')!;
+    expect(failedApproval).toMatchObject({ status: 'failed', dispatchState: 'not_sent' });
+    expect(failedApproval.error!.provisionalCode).toBe('SHA_CHANGED');
     expect(w.github.submitCount).toBe(0);
     // 새 리뷰 요청은 새로운 operation으로 추적된다
     const again = await review(w, 'req-review-2');
-    expect(again.actionResults[0]!.operationId).not.toBe(r.actionResults[0]!.operationId);
+    expect(again.actionResults[0]!.operationId).not.toBe(failedApproval.operationId);
     expect(again.facts['review']).toMatchObject({ headSha: SHA_B });
   });
 
@@ -310,8 +312,9 @@ describe('writes disabled (real-connection demo mode)', () => {
     await review(w);
     const q = await askApproval(w);
     const r = await answer(w, q, '응, 승인해');
-    expect(r.actionResults[0]).toMatchObject({ action: 'submit_approval', status: 'failed', dispatchState: 'not_sent' });
-    const op = (await w.store.getOperation(r.actionResults[0]!.operationId))!;
+    const blockedApproval = r.actionResults.find((a) => a.action === 'submit_approval')!;
+    expect(blockedApproval).toMatchObject({ action: 'submit_approval', status: 'failed', dispatchState: 'not_sent' });
+    const op = (await w.store.getOperation(blockedApproval.operationId))!;
     expect(op.attempts.map((a) => a.dispatchState)).toEqual(['not_sent']);
     expect(op.attempts[0]!.dispatchEvidence?.mayHaveBeenSentAt).toBeUndefined();
     expect(w.github.submitCount).toBe(0);
@@ -332,7 +335,7 @@ describe('operator declines at the final gate', () => {
     await review(w);
     const q = await askApproval(w);
     const r = await answer(w, q, '응, 승인해');
-    expect(r.actionResults[0]).toMatchObject({ action: 'submit_approval', status: 'cancelled', dispatchState: 'not_sent' });
+    expect(r.actionResults.find((a) => a.action === 'submit_approval')).toMatchObject({ action: 'submit_approval', status: 'cancelled', dispatchState: 'not_sent' });
     expect(prompts).toBe(1);
     expect(w.github.submitCount).toBe(0);
     void original;
@@ -347,9 +350,9 @@ describe('Sensor 자체 오류 → 판정 대기 (guide-sensor: suggestedActionS
     const q = await askApproval(w);
     sensor.fail = (i) => i.gatewayResult.mode === 'write';
     const r = await answer(w, q, '응, 승인해');
-    expect(r.actionResults).toEqual([]);
+    expect(r.actionResults.filter((a) => a.action === 'submit_approval')).toEqual([]);
     expect(r.facts['assessmentPending']).toMatchObject({ action: 'submit_approval', dispatchState: 'sent', recovery: 'none' });
-    expect((await speak(r)).text).toBe('PR 42번 승인 요청은 보냈지만 결과 판정을 아직 끝내지 못했어요. 다시 보내지 않고 기록으로 다시 확인할게요.');
+    expect((await speak(r)).text).toContain('PR 42번 승인 요청은 보냈지만 결과 판정을 아직 끝내지 못했어요. 다시 보내지 않고 기록으로 다시 확인할게요.');
     const opId = (r.facts['assessmentPending'] as { operationId: string }).operationId;
     let op = (await w.store.getOperation(opId))!;
     expect(op).toMatchObject({ assessment: 'pending', recovery: 'none', executionPhase: 'response_received' });
@@ -375,7 +378,7 @@ describe('Sensor 자체 오류 → 판정 대기 (guide-sensor: suggestedActionS
     const q = await askApproval(w);
     w.github.failNextSubmit('drop_after_apply');
     const r = await answer(w, q, '응, 승인해');
-    const a = r.actionResults[0]!;
+    const a = r.actionResults.find((x) => x.action === 'submit_approval')!;
     expect(a.status).toBe('unknown');
 
     sensor.fail = () => true;

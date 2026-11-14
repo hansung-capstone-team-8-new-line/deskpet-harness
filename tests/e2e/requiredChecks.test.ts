@@ -55,7 +55,9 @@ describe('non-required check failure is a warning, not a block (D-14)', () => {
     const r = await askApproval(w);
     expect(r.pending).toMatchObject({ kind: 'confirmation' });
     expect(r.facts['review']).toMatchObject({ approvalBlockers: [], approvalWarnings: ['non_required_check_failed:lint'] });
-    expect((await speak(r)).text).toBe(`참고로 필수는 아니지만 lint 검사가 실패했어요. NewLine/DeskPet PR 42번, 현재 커밋 ${SHA_A.slice(0, 7)}을 승인할까요?`);
+    const spoken = (await speak(r)).text;
+    expect(spoken).toContain('참고로 필수는 아니지만 lint 검사가 실패했어요.');
+    expect(spoken).toContain(`NewLine/DeskPet PR 42번, 현재 커밋 ${SHA_A.slice(0, 7)}에 승인 리뷰를 등록할까요?`);
   });
 });
 

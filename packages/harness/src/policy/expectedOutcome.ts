@@ -45,6 +45,14 @@ export function expectedOutcomeFor(action: ActionName, target: Target, opts: { h
         requiredEvidence: ['change_response'],
         completenessRequirement: { sections: [], allowTruncation: false },
       };
+    case 'mcp_tool_call':
+      return {
+        action,
+        target,
+        postconditions: ['mcp.call_completed'],
+        requiredEvidence: ['mcp_tool_response'],
+        completenessRequirement: { sections: [], allowTruncation: false },
+      };
     default:
       return {
         action,

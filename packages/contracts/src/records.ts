@@ -119,6 +119,7 @@ export const CheckRuleRef = z.enum([
   'eureka.stage_status_done',
   'eureka.linked_to_this_change',
   'eureka.read_complete',
+  'mcp.call_completed',
 ]);
 export type CheckRuleRef = z.infer<typeof CheckRuleRef>;
 
@@ -132,6 +133,7 @@ export const EvidenceKind = z.enum([
   'change_response',
   'read_payload',
   'version_evidence',
+  'mcp_tool_response',
 ]);
 
 export const ExpectedOutcome = z.object({

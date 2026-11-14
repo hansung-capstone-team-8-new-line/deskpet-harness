@@ -2,6 +2,7 @@ import type { GatewayResult } from './guideSensor.js';
 import type { Repository } from './common.js';
 import type { ReviewContext, ReviewQuery } from './review.js';
 import type { StageNoteList, TaskList, TaskState } from './eureka.js';
+import type { McpCallRequest, McpCallResult, McpToolDescriptor } from './mcp.js';
 
 /**
  * 패키지 간 공유하는 port 타입 (TS 전용, 직렬화 대상 아님).
@@ -80,6 +81,15 @@ export interface EurekaGatewayPort {
   listStageNotes?(query: { stageId: string; limit?: number }, c: CallConstraints): Promise<ReadOutcome<StageNoteList>>;
   /** 단계 기록 작성 (완료 근거 PR 기록, D-28). 없는 구현이면 기록을 남기지 않는다 */
   addStageNote?(cmd: AddStageNoteCommand, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
+  /** Harness `unclear → direct_eureka` 경로에서 사용하는 직접 Eureka 조작 메서드 (EurekaGateway가 구현) */
+  registerItem?(
+    cmd: { processId: string; name: string; dueAtMs?: number; priority?: 'low' | 'normal' | 'high' | 'urgent' },
+    handle: DispatchHandle,
+    c: CallConstraints,
+  ): Promise<GatewayResult>;
+  postponeItem?(cmd: { itemId: string; dueAtMs: number }, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
+  completeItem?(cmd: { itemId: string; actorId?: string }, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
+  listProcesses?(c: CallConstraints): Promise<ReadOutcome<{ id: string; name: string }[]>>;
 }
 
 // --------------------------------------------------------- github port
@@ -108,4 +118,91 @@ export interface GitHubReviewGatewayPort {
   getReviewContext(query: ReviewQuery, c: CallConstraints): Promise<ReviewContext>;
   submitApproval(cmd: SubmitApprovalCommand, handle: DispatchHandle, c: CallConstraints): Promise<GatewayResult>;
   getApprovalOutcome(q: ApprovalOutcomeQuery, c: CallConstraints): Promise<GatewayResult>;
+}
+
+// ------------------------------------------------------------ mcp port
+/** 범용 MCP 클라이언트 포트. 다중 서버의 동적 도구 조회 및 자유 실행을 추상화한다. */
+export interface McpClientPort {
+  listServerIds(): string[];
+  hasServer(mcpId: string): boolean;
+  listTools(mcpId?: string, c?: CallConstraints): Promise<McpToolDescriptor[]>;
+  callTool(req: McpCallRequest, c?: CallConstraints): Promise<McpCallResult>;
+}
+
+// ------------------------------------------------------ workspace & worktree
+/** 헤드리스 바이브 코딩용 로컬 워크스페이스 읽기·수정·명령 실행 포트 */
+export interface WorkspaceGatewayPort {
+  readonly defaultRoot: string;
+  findFiles(
+    query: { pattern?: string; subdir?: string; maxResults?: number; workingDir?: string },
+    c?: CallConstraints,
+  ): Promise<{ ok: boolean; files: string[]; truncated: boolean; error?: string }>;
+  searchCode(
+    query: { query: string; subdir?: string; regex?: boolean; glob?: string; maxMatches?: number; workingDir?: string },
+    c?: CallConstraints,
+  ): Promise<{ ok: boolean; matches: string[]; truncated: boolean; error?: string }>;
+  readFile(
+    query: { path: string; startLine?: number; endLine?: number; workingDir?: string },
+    c?: CallConstraints,
+  ): Promise<{
+    ok: boolean;
+    path: string;
+    content: string;
+    startLine: number;
+    endLine: number;
+    totalLines: number;
+    truncated: boolean;
+    error?: string;
+  }>;
+  editFile(
+    cmd: { path: string; target: string; replacement: string; replaceAll?: boolean; workingDir?: string },
+    c?: CallConstraints,
+  ): Promise<{ ok: boolean; path: string; replacements: number; snippet?: string; error?: string }>;
+  writeFile(
+    cmd: { path: string; content: string; overwrite?: boolean; workingDir?: string },
+    c?: CallConstraints,
+  ): Promise<{ ok: boolean; path: string; bytesWritten: number; error?: string }>;
+  gitStatus(
+    query?: { workingDir?: string },
+    c?: CallConstraints,
+  ): Promise<{ ok: boolean; isGitRepo: boolean; summary: string; changedFiles: string[]; error?: string }>;
+  gitDiff(
+    query?: { staged?: boolean; path?: string; workingDir?: string },
+    c?: CallConstraints,
+  ): Promise<{ ok: boolean; diff: string; truncated: boolean; error?: string }>;
+  runCommand(
+    cmd: { command: string; timeoutMs?: number; workingDir?: string },
+    c?: CallConstraints,
+  ): Promise<{
+    ok: boolean;
+    exitCode: number | null;
+    stdout: string;
+    stderr: string;
+    timedOut: boolean;
+    truncated: boolean;
+    error?: string;
+  }>;
+}
+
+export interface WorktreeHandle {
+  readonly id: string;
+  readonly requestId: string;
+  readonly workerId: string;
+  readonly repoRoot: string;
+  readonly worktreePath: string;
+  readonly baseCommitSha: string;
+}
+
+export interface WorktreeMergeResult {
+  readonly merged: boolean;
+  readonly changedFiles: string[];
+  readonly conflicts: string[];
+  readonly error?: string;
+}
+
+/** Agent Swarm Worker별 git worktree 격리 및 병합 포트 */
+export interface WorktreeIsolatorPort {
+  createWorkerWorktree(requestId: string, workerId: string): Promise<WorktreeHandle | null>;
+  mergeAndCleanup(handle: WorktreeHandle): Promise<WorktreeMergeResult>;
+  cleanupWorktree(handle: WorktreeHandle): Promise<void>;
 }

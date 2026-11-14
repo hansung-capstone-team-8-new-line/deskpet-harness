@@ -1,4 +1,4 @@
-import { confirmationTokens, type ActionResult, type ConfirmationScope, type Emotion, type OutputRequest } from '@deskpet/contracts';
+import { condenseTtsText, confirmationTokens, type ActionResult, type ConfirmationScope, type Emotion, type OutputRequest } from '@deskpet/contracts';
 import { formatKoreanDateTime, short } from './format.js';
 
 /**
@@ -42,7 +42,11 @@ export function fallbackText(req: OutputRequest): { text: string; displayText: s
   const approval = req.actionResults.find((a) => a.action === 'submit_approval');
   const stage = req.actionResults.find((a) => a.action === 'complete_stage');
   const blocked = f['blocked'] as { reasons: string[]; intent?: string } | undefined;
-  const question = f['question'] as { purpose: string; scope?: ConfirmationScope; target?: { kind: string; prNumber?: number } } | undefined;
+  const question = f['question'] as { purpose: string; scope?: ConfirmationScope; target?: { kind: string; prNumber?: number }; questionText?: string } | undefined;
+
+  if (f['reroute'] === 'talk') {
+    return { text: '일상 대화로 이어갈게요.', displayText: '일상 대화 재라우팅 (talk)', emotion: 'neutral' };
+  }
 
   if (f['processingErrors'] && (f['processingErrors'] as string[]).length > 0 && f['disposition'] === 'failed') {
     parts.push('요청을 처리하지 못했어요. 외부 작업은 실행하지 않았어요.');
@@ -169,13 +173,36 @@ export function fallbackText(req: OutputRequest): { text: string; displayText: s
   // ---------------------------------------------------------------- 거절·답변
   if (f['declined']) {
     const d = f['declined'] as { action: string };
-    parts.push(d.action === 'submit_approval' ? '승인을 취소했어요. PR과 Eureka 상태는 바꾸지 않았어요.' : 'Eureka 반영을 하지 않았어요. GitHub 승인은 그대로 유지돼요.');
+    parts.push(
+      d.action === 'submit_approval'
+        ? '승인을 취소했어요. PR과 Eureka 상태는 바꾸지 않았어요.'
+        : d.action === 'mcp_tool_call'
+          ? '도구 실행을 취소했어요. 외부 변경은 없어요.'
+          : 'Eureka 반영을 하지 않았어요. GitHub 승인은 그대로 유지돼요.',
+    );
     display.push('요청 취소 · 변경 없음');
   }
   if (f['unclearAnswer']) parts.push('답변을 정확히 듣지 못했어요.');
   if (f['answerNotAccepted'] && !question) {
     parts.push('확인 질문이 만료됐거나 이미 처리됐어요. 아무것도 실행하지 않았어요.');
     display.push('확인 만료/처리됨 · 실행 없음');
+  }
+
+  // ---------------------------------------------------------------- 직접 Eureka 조작 / Agent Swarm
+  const directEureka = f['directEureka'] as { operation?: string; summaryText?: string; ok?: boolean } | undefined;
+  if (directEureka?.summaryText && parts.length === 0) {
+    parts.push(directEureka.summaryText);
+    display.push(`Eureka ${directEureka.operation ?? '조작'}`);
+    emotion = directEureka.ok === false ? 'sad' : 'happy';
+  }
+
+  const swarm = f['swarm'] as
+    | { summaryText?: string; displaySummary?: string; workerCount?: number; changedFiles?: string[] }
+    | undefined;
+  if (swarm?.summaryText && req.purpose !== 'question' && !blocked && parts.length === 0) {
+    parts.push(swarm.summaryText);
+    const fileNote = swarm.changedFiles?.length ? ` · 파일 ${swarm.changedFiles.length}개` : '';
+    display.push(swarm.displaySummary?.trim() || `Agent Swarm (${swarm.workerCount ?? 1}개 워커${fileNote})`);
   }
 
   // ---------------------------------------------------------------- 질문
@@ -201,7 +228,9 @@ export function fallbackText(req: OutputRequest): { text: string; displayText: s
   }
 
   if (parts.length === 0) parts.push('요청을 처리했어요.');
-  return { text: parts.join(' '), displayText: display.join(' / ') || parts[0]!, emotion };
+  const rawText = parts.join(' ');
+  const ttsText = f['swarm'] ? condenseTtsText(rawText, req.constraints.maxSpeechChars) : rawText;
+  return { text: ttsText, displayText: display.join(' / ') || rawText, emotion };
 }
 
 /** wiki/deskpet-development-log.md#… → deskpet-development-log, projects/deskpet/README.md → deskpet */
@@ -263,7 +292,8 @@ function blockedSentence(reasons: string[], pr?: number, review?: ReviewFactsLik
   return `조건이 맞지 않아 실행하지 않았어요 (${reasons.join(', ')}).`;
 }
 
-function questionSentence(q: { purpose: string; scope?: ConfirmationScope }, pr?: number): string {
+function questionSentence(q: { purpose: string; scope?: ConfirmationScope; questionText?: string }, pr?: number): string {
+  if (typeof q.questionText === 'string' && q.questionText.trim()) return q.questionText.trim();
   switch (q.purpose) {
     case 'identify_pr':
       return '어느 저장소의 몇 번 PR을 확인할까요?';

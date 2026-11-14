@@ -8,3 +8,6 @@ export * from './github/FakeGitHubTransport.js';
 export * from './github/GitHubReviewGateway.js';
 export * from './github/RestGitHubTransport.js';
 export * from './github/requiredChecksConfig.js';
+export * from './mcp/McpClientManager.js';
+export * from './workspace/LocalWorkspaceGateway.js';
+export * from './workspace/GitWorktreeManager.js';

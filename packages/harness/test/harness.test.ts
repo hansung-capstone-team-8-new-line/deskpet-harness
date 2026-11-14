@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_POLICY, DeterministicSensor, RuleBasedGuide, classifyAnswer, writeInputBlockers } from '@deskpet/harness';
+import {
+  DEFAULT_POLICY,
+  DeterministicSensor,
+  GenericMcpGuide,
+  McpGuideRegistry,
+  RuleBasedGuide,
+  WorkspaceMcpGuide,
+  classifyAnswer,
+  createDeclarativeMcpGuide,
+  writeInputBlockers,
+} from '@deskpet/harness';
 import { constraints, harnessRequest, prContext, voiceTurn, webTurn, PR, REPO, SHA_A, T0 } from '../../../tests/support/builders.js';
 import { createWorld } from '../../../tests/support/world.js';
 
@@ -142,7 +152,7 @@ describe('HarnessService basics', () => {
   it('answer before question delivery is not accepted', async () => {
     const w = createWorld();
     await w.harness.handle(harnessRequest('req-0', voiceTurn('t-0', 'PR 42 리뷰해줘')));
-    const r1 = await w.harness.handle(harnessRequest('req-1', voiceTurn('t-1', '그 PR 승인해줘', { intention: 'pr.approve' })));
+    const r1 = await w.harness.handle(harnessRequest('req-1', voiceTurn('t-1', '그 PR 승인해줘', { intention: 'llm' })));
     expect(r1.pending!.kind).toBe('confirmation');
     const r2 = await w.harness.resume({
       originalRequestId: 'req-1',
@@ -160,7 +170,7 @@ describe('HarnessService basics', () => {
   it('pipeline event gap blocks resume execution', async () => {
     const w = createWorld();
     await w.harness.handle(harnessRequest('req-0', voiceTurn('t-0', 'PR 42 리뷰해줘')));
-    const r1 = await w.harness.handle(harnessRequest('req-1', voiceTurn('t-1', '승인해줘', { intention: 'pr.approve' })));
+    const r1 = await w.harness.handle(harnessRequest('req-1', voiceTurn('t-1', '승인해줘', { intention: 'llm' })));
     const d = await w.deliverQuestion(r1);
     // revision 3을 건너뛰고 4가 도착 → gap
     const gap = await w.harness.onPipelineEvent({ messageId: 'm-x', requestId: 'req-1', sourceRevision: 3, occurredAt: T0, kind: 'speech_started', pendingId: d.pendingId });
@@ -181,7 +191,7 @@ describe('HarnessService basics', () => {
   it('question_wait_expired expires the confirmation; late answer does nothing', async () => {
     const w = createWorld();
     await w.harness.handle(harnessRequest('req-0', voiceTurn('t-0', 'PR 42 리뷰해줘')));
-    const r1 = await w.harness.handle(harnessRequest('req-1', voiceTurn('t-1', '승인해줘', { intention: 'pr.approve' })));
+    const r1 = await w.harness.handle(harnessRequest('req-1', voiceTurn('t-1', '승인해줘', { intention: 'llm' })));
     const d = await w.deliverQuestion(r1);
     await w.pipelineEvent('req-1', 'question_wait_expired', { pendingId: d.pendingId, outputId: r1.pending!.outputId });
     expect((await w.store.getConfirmation(d.confirmationId!))!.state).toBe('expired');
@@ -201,9 +211,63 @@ describe('HarnessService basics', () => {
   it('cancel revokes waiting confirmation', async () => {
     const w = createWorld();
     await w.harness.handle(harnessRequest('req-0', voiceTurn('t-0', 'PR 42 리뷰해줘')));
-    const r1 = await w.harness.handle(harnessRequest('req-1', voiceTurn('t-1', '승인해줘', { intention: 'pr.approve' })));
+    const r1 = await w.harness.handle(harnessRequest('req-1', voiceTurn('t-1', '승인해줘', { intention: 'llm' })));
     const c = await w.harness.cancel({ requestId: 'req-1', reason: 'user_cancel' });
     expect(c.revokedPendings).toEqual([r1.pending!.pendingId]);
     expect((await w.store.getConfirmation(r1.pending!.confirmationId!))!.state).toBe('revoked');
+  });
+});
+
+describe('Universal McpGuide Registry & WorkspaceMcpGuide', () => {
+  it('resolves declarative guides by mcpId and falls back to GenericMcpGuide without arbitrary blocks', () => {
+    const custom = createDeclarativeMcpGuide({
+      mcpId: 'slack',
+      description: 'Slack 메시지 요약 Guide',
+      instructions: ['채널 메시지를 요약하세요.'],
+    });
+    const registry = new McpGuideRegistry([custom]);
+    expect(registry.resolve('slack').mcpId).toBe('slack');
+    expect(registry.resolve('unknown_mcp')).toBeInstanceOf(GenericMcpGuide);
+    const prompt = registry.resolve('slack').buildInstructions({
+      mcpId: 'slack',
+      workerId: 'wrk-1',
+      goal: '요약',
+      turn: voiceTurn('t', '슬랙 봐줘'),
+      context: prContext(),
+      availableTools: [{ mcpId: 'slack', name: 'list_channels', qualifiedName: 'slack::list_channels', description: 'channels', inputSchema: {} }],
+      fastPathTools: [],
+    });
+    expect(prompt).toContain('Slack 메시지 요약 Guide');
+    expect(prompt).toContain('list_channels');
+  });
+
+  it('WorkspaceMcpGuide requires permission only for destructive commands (rm -rf, git reset --hard, etc.)', () => {
+    const stubWs = { defaultRoot: '/repo' } as never;
+    const guide = new WorkspaceMcpGuide({ workspace: stubWs });
+    const ctx = {
+      requestId: 'r-1',
+      conversationId: 'conv-1',
+      workerId: 'wrk-w1',
+      mcpId: 'workspace',
+      goal: 'edit',
+      turn: voiceTurn('t', '고쳐줘'),
+      context: prContext(),
+      constraints: { deadlineAt: T0, maxPages: 1, maxResultBytes: 1024, policyVersion: '1' },
+      observations: {},
+    };
+
+    expect(
+      guide.requiresPermission({ mcpId: 'workspace', toolName: 'workspace_edit_file', arguments: { path: 'a.ts', target: 'x', replacement: 'y' } }, ctx),
+    ).toBeNull();
+    expect(
+      guide.requiresPermission({ mcpId: 'workspace', toolName: 'workspace_run_command', arguments: { command: 'pnpm test' } }, ctx),
+    ).toBeNull();
+
+    const perm = guide.requiresPermission(
+      { mcpId: 'workspace', toolName: 'workspace_run_command', arguments: { command: 'rm -rf tmp-old' } },
+      ctx,
+    );
+    expect(perm?.kind).toBe('confirmation');
+    expect(perm?.purpose).toBe('confirm_destructive_command');
   });
 });

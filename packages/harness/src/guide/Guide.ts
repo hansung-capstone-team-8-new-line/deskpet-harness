@@ -30,6 +30,8 @@ export interface GuideFacts {
   wikiExcerpts?: { text: string; ref: string }[];
   /** Guide가 고른 단계 기록 (예: rule:..., llm:search_wiki). 진단·데모 표시용 */
   guideSteps?: string[];
+  /** Harness-only interpretation; the incoming router classification is retained. */
+  interpretedIntent?: 'pr.approve';
 }
 
 export class RuleBasedGuide implements Guide {

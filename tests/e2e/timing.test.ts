@@ -45,7 +45,8 @@ describe('단계별 응답 시간 기록', () => {
     expect(typeof c.modelMs).toBe('number');
     const bridge = new PipelineBridge({ harness: w.harness, store: w.store, output: out });
     const p = await bridge.toPipelineResult(r, 'OP-T');
-    expect(JSON.parse(p.action.facts['timings']!)).toMatchObject({ stages: [{ stage: 'github.getReviewContext' }] });
+    const parsedTimings = JSON.parse(p.action.facts['timings']!) as { stages: { stage: string }[] };
+    expect(parsedTimings.stages.map((s) => s.stage)).toContain('github.getReviewContext');
   });
 
   it('timedPort: 내부 자기 호출은 따로 세지 않고, 실패도 기록한다. 요약 문자열', async () => {

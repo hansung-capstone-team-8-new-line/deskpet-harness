@@ -45,7 +45,7 @@ export interface PipelineBridgeDeps {
   defaultConversationId?: string;
 }
 
-const WRITE_ACTIONS = new Set(['submit_approval', 'complete_stage']);
+const WRITE_ACTIONS = new Set(['submit_approval', 'complete_stage', 'mcp_tool_call']);
 const DEFAULT_CONVERSATION = 'deskpet-default';
 
 export class PipelineBridge {
@@ -183,6 +183,19 @@ export class PipelineBridge {
     // 승인 뒤 Eureka 반영을 건너뛰거나 보류한 이유 (예: no_linked_eureka_stage, sha_changed_since_approval)
     const fu = r.facts['followUp'] as { eligibility?: string; reason?: string; conditions?: string[] } | undefined;
     if (fu?.eligibility && fu.eligibility !== 'eligible') facts['followUp'] = [fu.eligibility, fu.reason, ...(fu.conditions ?? [])].filter(Boolean).join(',');
+    if (typeof r.facts['interpretedIntent'] === 'string' && r.facts['interpretedIntent']) facts['interpretedIntent'] = r.facts['interpretedIntent'];
+    if (typeof r.facts['reroute'] === 'string' && r.facts['reroute']) facts['reroute'] = r.facts['reroute'];
+    for (const k of ['workerId', 'permissionRequestId', 'server', 'toolName']) {
+      if (typeof r.facts[k] === 'string' && r.facts[k]) facts[k] = r.facts[k];
+    }
+    if (r.facts['swarm']) facts['swarmSummary'] = JSON.stringify(r.facts['swarm']);
+    if (r.facts['workspace']) facts['workspace'] = JSON.stringify(r.facts['workspace']);
+    if (r.facts['directEureka']) facts['directEureka'] = JSON.stringify(r.facts['directEureka']);
+    if (r.facts['triage']) facts['triage'] = JSON.stringify(r.facts['triage']);
+    const questionReasons = r.facts['questionReasons'];
+    if (Array.isArray(questionReasons)) {
+      facts['questionReasons'] = JSON.stringify(questionReasons.filter((s): s is string => typeof s === 'string').slice(0, 16).map((s) => s.slice(0, 256)));
+    }
     // D-23: 응답 뒤에도 진행 중인 Eureka 반영 — 끝나면 서버 notice로 결과가 온다
     const sc = r.facts['stageCompletion'] as { status?: string; operationId?: string } | undefined;
     if (sc?.status === 'in_progress') {

@@ -13,14 +13,14 @@ sources:
   - "[[wiki/deskpet-pipeline/gpu-dispatcher|GPU Dispatcher]]"
   - "[[wiki/deskpet-pr-review-golden-scenario|PR Review Golden Scenario]]"
 created: "2026-10-03"
-updated: "2026-10-04"
+updated: "2026-11-14"
 ---
 
 # 김도헌 DeskPet LLM 설계 규칙
 
 ## Summary
 
-김도헌 담당 Harness·LLM Wiki 활용, MCP·Eureka 연동, 출력 체인, 로컬 웹의 책임과 실행 규칙을 정리한다. 이 문서는 구현 완료나 통합 테스트 통과 기록이 아니다. 구체 필드·메서드·가이드/센서 입출력은 위임받아 구체화한 잠정 계약이다.
+김도헌 담당 Harness·LLM Wiki 활용, MCP·Eureka 연동, 출력 체인, 로컬 웹의 책임과 실행 규칙을 정리한다. 이 문서 자체는 구현 완료나 통합 테스트 통과 기록이 아니다. 구체 필드·메서드·가이드/센서 입출력은 위임받아 구체화한 잠정 계약이다. 2026-10-12 기준 MVP 구현에서 정한 사항과 실제 연결 확인 범위는 Workflow의 Implementation Notes에 모았다.
 
 읽기 순서: 본 문서 → [[wiki/deskpet-harness-message-contracts|Harness Message Contracts]] → [[wiki/deskpet-harness-guide-sensor|Harness Guide and Sensor Contracts]]. 기존 위키를 대체하거나 팀 전체의 계약을 일방적으로 확정하지 않는다.
 
@@ -57,7 +57,7 @@ Harness 경로의 operation·pending·confirmation은 Harness가 권위 있는 �
 ### Documentation Boundaries
 
 - 기존 I-07의 Harness 큐 표현과 달리 모듈 생명주기 문서는 Eureka/Harness를 별도 입력 대기 큐 없는 직접 비동기 호출로 설명한다. 이 설계는 후자를 따른다. 본 작업에서 Swift 실제 코드를 검증하지 않았다.
-- 기술 스택의 Python 출력 체인 요약과 TypeScript/Node.js 상세 표는 불일치한다. 잠정적으로 상세 담당표를 따르되 언어·SDK·추론 transport는 미확정이다.
+- 기술 스택의 Python 출력 체인 요약과 TypeScript/Node.js 상세 표는 불일치한다. MVP는 상세 담당표대로 TypeScript/Node.js로 구현했다. 출력 체인의 LangChain 사용 여부와 보드 내 transport는 팀 확인이 필요하다(Implementation Notes 참조).
 - GPU 및 자원 문서의 수치는 mock 검증 또는 개발용 설정이다. 실제 장치 성능이나 이 Harness 구현의 검증 결과가 아니다.
 - P-01~P-05는 시나리오 제안 계약이며 실제 MCP 도구명으로 간주하지 않는다.
 
@@ -100,7 +100,7 @@ Eureka 질문의 거절·무응답은 정상 종료이며 GitHub 승인을 되�
 | 쓰기 전송 전 실패가 확실함 | 실행 조건이 유효할 때 최대 1회 자동 재시도 |
 | 전송 후 timeout·응답 유실·전송 여부 불명 | `unknown`, 재전송 금지, 기존 작업 결과 조회 |
 | 명시적인 쓰기 실패 | 초기에는 자동 재시도 없음 |
-| 사용자 “다시 해줘” | 기존 결과 확인 후 판단. `unknown`을 재전송 허가로 해석하지 않음 |
+| 사용자 “다시 해줘” | 기존 결과 확인 후 판단. `unknown`을 재전송 허가로 해석하지 않음. MVP(2026-10-24): 명시적으로 실패한 Eureka 단계 완료는 그 요청 자체를 동의로 보고, 후속 적합성을 다시 확인한 뒤 새 확인 기록·새 작업으로 한 번 더 보낸다 |
 
 Gateway가 호출 재시도 한도를 적용하고 Harness는 Gateway 전체를 자동 반복하지 않는다. SDK/MCP 내장 재시도와 중첩되지 않게 실제 연결 시 확인한다. 하위 deadline은 상위 남은 시간을 넘지 않으며 취소 뒤 새 시도를 시작하지 않는다. 이미 전송한 외부 작업의 늦은 증거는 기록·복구한다.
 
@@ -109,6 +109,8 @@ Gateway가 호출 재시도 한도를 적용하고 Harness는 Gateway 전체를 
 Harness는 자신의 경로에서 승인·작업 기록의 책임을 소유하며 직접 Eureka 경로는 위 Ownership의 소유자가 같은 규칙을 적용한다. 승인 검증, operation 연결, 실행 권한 확보를 원자적으로 수행하고 전송 전에 영속 기록한다. 같은 confirmation은 하나의 operation에만 연결한다. 진행 중 중복은 기존 작업에 연결, 성공 중복은 저장 결과 반환, unknown 중복은 기존 결과 확인, 실패·취소 중복은 해당 결과 반환이다. 같은 PR·SHA라는 이유만으로 모든 미래 요청을 영구 중복 처리하지 않는다.
 
 Gateway는 전송 가능 상태의 영속 저장 성공을 확인받은 뒤에만 외부 쓰기를 시작한다. 이 기록 뒤 crash가 나면 실제 전송 여부가 확인되지 않는 한 may_have_been_sent/unknown으로 복구하고 자동 재전송하지 않는다. not_sent는 단순히 전송 보고가 없다는 뜻이 아니라 전송하지 않았다는 확실한 증거가 있는 상태다. 재시작·동시 호출자의 실행 권한 인계는 원자적으로 제한하고, 이전 실행자가 여전히 전송할 수 있는 동안 새 실행자를 허용하지 않는다. 구체 저장소·transport는 미정이다.
+
+(MVP) 저장소는 SQLite(Node 내장 `node:sqlite`)에 판단 결과를 동기 기록하며, 기록 실패 시 메모리 상태도 되돌린다. 위 보존 정책은 이 저장소에 구현했다.
 
 외부 서버의 idempotency 지원이 없다면 로컬 operation ID만으로 정확히 한 번 실행을 보장할 수 없다. 전송 직후 재시작 등으로 경계가 불명확하면 unknown으로 복구한다. 기존 승인이 조회됐다는 사실만으로 이번 작업 성공이라고 단정하지 않고 제출자·SHA·시각·외부 ID 등으로 연결한다.
 
@@ -141,7 +143,46 @@ Gateway는 전송 가능 상태의 영속 저장 성공을 확인받은 뒤에�
 | S-09, S-10 | 부분 성공·출력 실패 분리, 성공 작업 보존 |
 | S-12 | 쓰다듬기는 로컬 상호작용. Harness·외부 업무 호출 없음 |
 
-이 표는 설계 검토 결과이며 테스트 통과 기록이 아니다. 실제 MCP 버전·권한·반환 스키마, Eureka schema·멱등성·복구 가능성, 프로세스 간 인증/transport, 기록 저장소, 수치 한도는 통합 시 검증한다.
+이 표는 설계 검토 결과이며 테스트 통과 기록이 아니다. 2026-10-12 MVP에서 G-01, S-01, S-04~S-11은 fake Gateway 자동 테스트로, S-02·S-03은 단위 수준으로 확인했다. 실제 서비스로는 G-01 전체(리뷰 → GitHub 승인 → Eureka 단계 하나 완료)를 개발 환경에서 1회 확인했다. 실제 MCP 버전·권한·반환 스키마, Eureka 멱등성·복구 가능성, 보드 내 transport, 수치 한도는 통합 시 검증한다.
+
+### Implementation Notes (2026-10-12, 2026-10-24·2026-11-03 갱신)
+
+MVP 구현에서 정한 사항이다. 팀 공통 계약을 확정하지 않으며, 파이프라인 문서에 적힌 부분은 그 문서를 따르고 없는 부분만 아래처럼 정했다.
+
+| 항목 | MVP 처리 |
+| --- | --- |
+| 언어·런타임 | TypeScript, Node.js 22, pnpm 모노레포. 별도 저장소에서 관리 |
+| LLM | 외부 API. 개발 기본은 Gemini `gemini-3.1-flash-lite`(생각 수준 minimal), 설정으로 OpenAI 전환. 규칙 우선 + LLM 보조 가이드, 센서는 결정적 규칙 |
+| 출력 체인 | 공급자 중립 출력 모델 + 결과 검증 + 고정 문구 fallback. LangChain은 선택 경로로만 둔다 (기술 스택 문서와 다름, 팀 확인 필요) |
+| 서비스 경계 | WebSocket `deskpet.harness.v1` + 기존 Envelope. 보드 내 transport 후보(gRPC·ZeroMQ)와의 정렬은 미정 |
+| 파이프라인 형식 | 파이프라인 문서의 HarnessAdapter·EurekaAdapter 형식(`needs_clarification` + 질문 문자열, `mutationApproved`)을 변환 층에서 받는다. 질문 문장은 고정 문구로 만들고, 승인은 `mutationApproved`와 Harness의 pending·확인 기록·질문 전달 증거 검사를 모두 통과해야 한다 |
+| LLM Wiki | 검색 대상은 `wiki/`와 `projects/**/README.md`, 방식은 키워드 + frontmatter. LLM에는 발췌 최대 3개·합계 1,500자와 출처만 준다. Guide 판단 참고와 출력 모델의 배경 설명에 쓰고, 대상 특정·승인 근거로는 쓰지 않는다. 배경을 못 찾거나 LLM이 응답하지 않아도 확보한 PR 자료가 있으면 그 자료로 답한다 |
+| 승인 조건 | 필수 검사 설정을 rulesets와 branch protection으로 조회한다. 요금제상 보호 기능이 없을 때만 DeskPet 대체 목록을 쓰고 출처를 표시한다. 필수가 아닌 검사의 실패·진행 중은 차단하지 않고 경고로 알린다. 권한을 확인할 수 없으면 차단한다 |
+| PR 변경 자료 | 현재는 파일 목록과 증감 줄 수만 수집한다. diff 본문 수집 범위·상한은 미정 |
+| 개발 단계 실제 쓰기 | GitHub·Eureka 쓰기는 서버 실행 옵션을 켰을 때만 허용한다. 승인은 요청 쪽 사용자 확인(확인 질문 전달과 승인 답변)만으로 받으며, 서버 운영자 콘솔 확인은 두지 않는다(2026-10-24). 보내기 직전 대상 상태를 다시 확인하고, Eureka 쓰기는 개발판(`flw-d1`)·운영판(`flw-v1`, 배포 전 닫힌 시험 환경) 주소로 제한하고 그 밖의 주소는 거부한다(2026-11-03) |
+| 웹 | 보기 전용. 별도 viewer 토큰으로 상태 snapshot + 이벤트를 구독하며 변경 기능은 없다 |
+| 업무 → PR 연결 | Eureka에는 PR 필드가 없어 단계 기록(note) 본문의 GitHub PR 주소로 연결한다. 기록이 붙은 단계가 승인 후 완료할 단계다. 후보가 둘 이상이면 추측하지 않는다. 허용 저장소 목록·작성자 제한은 나중에 추가한다 |
+| 후속 작업 | Eureka 반영은 동의 뒤 짧게(기본 3초) 기다리고, 늦으면 '진행 중'으로 답한 뒤 끝난 결과를 서버 알림(notice)으로 보낸다. 서버 안의 복구 작업이 결과 불명·판정 대기 작업을 주기적으로 조회만 하고(간격을 늘려 가며), 상한에 닿으면 blocked로 남긴다 |
+| 복구 뒤 후속 질문 | 복구로 GitHub 승인이 성공 확정되면 연결된 Eureka 단계의 상태와 기록(PR 주소가 남아 있는지)을 다시 보고, 반영 가능할 때만 별도 확인 질문을 알림에 실어 보낸다. 연결 단계·대화·문맥 ID는 승인 작업 기록에 남겨 재시작 뒤에도 쓴다 |
+| 동시 호출 상한 | 서버 입구가 아니라 자원별로 둔다. LLM은 자리가 짧게 안 나면 호출하지 않고 규칙·고정 문구로 대신하고, GitHub·Eureka는 호출의 남은 시간 안에서 기다리다 끝내 자리가 없으면 보내지 않음(not_sent)으로 처리한다. 입구는 칸을 나눠 질문 전달 보고·취소·결과 조회가 다른 요청 때문에 막히지 않게 한다. 수치는 실측 전 자리값 |
+| 완료 근거 기록 | Eureka 단계 완료가 성공하면 그 단계 기록(note)에 승인한 PR 주소·커밋·리뷰 ID를 남긴다. 동의는 단계 완료 확인 질문에 함께 받는다. 쓰기 전에 기록을 읽어 같은 근거가 있거나 읽지 못하면 쓰지 않고, 응답을 못 받으면 다시 보내지 않는다. 실패해도 단계 완료는 유지한다 |
+| 2차 의도 확인 | 라우터가 일반 의도(`llm`·`unclear`)로 보낸 요청은 LLM이 PR 리뷰·PR 승인·그 밖 중 하나로 다시 분류해, 해당하면 규칙 경로로 보낸다. LLM은 의도 이름만 고르며, 승인은 승인 전 검사·확인 질문·입력 신뢰도 기준을 그대로 거친다(시연 대응, 2026-11-02) |
+| 입력 신뢰도 기준 | 쓰기 요청과 확인 답변의 STT·라우터 신뢰도 기준은 기본 0.85·0.8이며, 시연 환경에 맞춰 설정으로 바꿀 수 있다. 확정 수치는 실측 후 정한다 |
+
+실제 연결 확인(개발 환경): GitHub 다른 계정 PR 승인(REST, review ID·상태·commit 확인), Eureka 읽기와 단계 완료 쓰기, Gemini 가이드·출력, Wiki 발췌를 반영한 출력 문장, Eureka 단계 기록의 PR 주소로 대상 PR을 찾아 G-01 진행(2026-10-24). 후속 작업·복구 뒤 질문·동시 호출 상한은 자동 테스트로만 확인했다. 2026-11-02~03 파이프라인 실연결에서 PR 조회·승인과 Eureka 반영 확인 질문까지 확인했다. 확인 답변 판정과 완료 근거 기록은 확인 중이다.
+
+### 2026-11-14 아키텍처 전환 — 헤드리스 바이브 코딩 플랫폼용 범용 MCP & Agent Swarm
+
+기존 MVP의 GitHub 전용 가정과 중앙 독점 실행 구조를 정리해 다음과 같이 책임을 재정의한다(`deskpet-pipeline` 무수정 원칙 유지):
+
+1. **Router–Harness 진입 경계 정규화:**
+   - 온디바이스 라우터의 실제 의도는 `eureka | llm | talk | unclear`이며, `pr.review`, `pr.approve`, `eureka.retry`, `followup.retry` 등 합의되지 않은 의도 전제는 폐기한다.
+   - `llm` 및 `unclear`만 Harness로 진입하며, `unclear`는 `IntentTriage`가 의도를 우선 해석해 ① 파악 불가 → 재질문(`clarify`), ② 일상 대화 → `reroute: 'talk'` 반환(파이프라인 `outputQueue` 전달용), ③ 유레카 조작 → Harness의 기존 `EurekaGateway` 직접 조작 경로 실행(`direct_eureka`), ④ 코딩/MCP/추론 작업 → `llm` Agent Swarm 합류(`delegate_swarm`)로 처리한다.
+2. **자율 실행형 Agent Swarm과 분산 허가:**
+   - `SwarmCoordinator`가 작업을 분해하고 각 `SwarmWorker`가 MCP 서버(`McpClientManager`) 및 선택적 `FastPathAdapter`를 직접 실행한다. 중앙 `HarnessService`가 모든 도구 실행을 소유·직렬화하지 않는다.
+   - 사용자 허가가 필요한 경우(Guide에 명시된 조건에 한함), 각 Worker가 `PipelinePermissionQueue`를 통해 기존 `Pending`/`Notice` 계약으로 파이프라인에 허가 요청을 큐잉하고 응답 수신 시 해당 Worker를 재개한다.
+3. **Guide 외 임의 제한 금지 및 자유로운 MCP 활용:**
+   - 신뢰도 임계값, 확인 필요 행위, 차단 기준 등 제한 사항은 **각 MCP의 `McpGuide`에 직접 명시된 내용만 적용**한다. 코어 코드가 Guide 밖의 임의 제한이나 폐쇄형 도구 목록을 강제하지 않으며, 헤드리스 바이브 코딩 플랫폼 목적에 맞게 MCP를 자유롭게 호출한다(단, 직접 호출보다 효율적인 경우에 한해 중간 Fast-Path 어댑터 사용 가능).
 
 ## When To Use
 

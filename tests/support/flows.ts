@@ -8,11 +8,11 @@ let turnSeq = 100;
 const nextTurn = () => `t-${++turnSeq}`;
 
 export async function review(w: World, requestId = 'req-review') {
-  return w.harness.handle(harnessRequest(requestId, voiceTurn(nextTurn(), '응. 손을 못 쓰니까 그 PR을 리뷰해서 읽어줘.')));
+  return w.harness.handle(harnessRequest(requestId, voiceTurn(nextTurn(), '응. 손을 못 쓰니까 그 PR을 리뷰해서 읽어줘.', { intention: 'llm' })));
 }
 
 export async function askApproval(w: World, requestId = 'req-approve', opts: { stt?: number | 'unavailable' } = {}) {
-  return w.harness.handle(harnessRequest(requestId, voiceTurn(nextTurn(), '좋아, 그 PR 승인해줘.', { intention: 'pr.approve', ...(opts.stt !== undefined ? { stt: opts.stt } : {}) })));
+  return w.harness.handle(harnessRequest(requestId, voiceTurn(nextTurn(), '좋아, 그 PR 승인해줘.', { intention: 'llm', ...(opts.stt !== undefined ? { stt: opts.stt } : {}) })));
 }
 
 /** 질문 전달 이벤트를 보고한 뒤 사용자의 답변으로 resume한다 */

@@ -6,11 +6,11 @@ topics:
 status: draft
 sources:
   - "사용자의 가이드·센서 입출력 상세화 위임 (2026-10-03)"
-  - "[[wiki/deskpet_LLM_guide_Liability|김도헌 DeskPet LLM 설계 규칙]]"
+  - "[[wiki/deskpet_harness_guide_Liability|김도헌 DeskPet LLM 설계 규칙]]"
   - "[[wiki/deskpet-harness-message-contracts|Harness Message Contracts]]"
   - "[[wiki/deskpet-pr-review-golden-scenario|PR Review Golden Scenario]]"
 created: "2026-10-03"
-updated: "2026-10-04"
+updated: "2026-11-14"
 ---
 
 # DeskPet Harness Guide and Sensor Contracts
@@ -55,6 +55,10 @@ GuideDecision은 decisionId, basedOnRevision, kind, 근거 참조, 미확인 항
 | blocked | 충족되지 않은 조건·미확인 근거·사용자 또는 시스템 조치 필요성 |
 
 propose_action의 행동은 get_review_context, submit_approval, get_approval_outcome, list_tasks, get_task_state, complete_stage, get_change_outcome 등 허용된 기능 식별자로 제한한다. 임의 URL·셸·MCP 도구명·자유 형식 쓰기 인자는 허용하지 않는다. 기능별 인자는 메시지 계약의 typed 입력을 사용한다. 초기에는 다음 논리 행동 하나를 제안하고 묶음 조회 내부 병렬화는 Gateway에 맡긴다.
+
+MVP 구현(2026-10-12): 리뷰·승인·확인 답변처럼 규칙으로 정해지는 의도는 LLM을 호출하지 않는다. 그 밖의 요청만 LLM이 `read_pr` / `search_wiki` / `ask_clarification` / `answer_from_facts` / `unsupported` 중 하나를 고르며 쓰기 선택지는 없다. `search_wiki`는 need_context로 바뀌고 Harness가 한 요청에 한 번 검색한다(실행 제약 `wikiSearchAllowed`가 false면 검색하지 않음). LLM 출력이 깨졌거나 응답하지 않으면 blocked(`llm_unavailable`)로 끝내되, 이미 확보한 PR 자료가 있으면 그 자료로 부분 답변한다.
+
+MVP 갱신(2026-11-02): 라우터가 일반 의도로 보낸 요청은 가이드 호출 전에 LLM이 PR 리뷰·승인 여부만 한 번 분류하고, 해당하면 규칙 가이드로 넘긴다. 이 분류는 실행 권한이 아니다. blocked 결정에는 실제 이유(예: LLM 오류 코드 `llm_unavailable:rate_limited`)를 함께 남긴다.
 
 가이드는 operationId를 확정·소비하거나 새 동의를 부여하지 않는다. Harness가 제안을 검증한 뒤 기존 작업을 재사용할지 새 작업을 만들지 결정한다. LLM이 사용되더라도 토큰·호출 수·반복 횟수·deadline을 유한하게 제한한다. 잘못된 출력은 외부 실행 없이 내부 오류로 처리한다.
 
@@ -133,7 +137,24 @@ stateRevision이 바뀌었으면 Harness는 낡은 가이드 제안을 적용하
 | Eureka 응답 유실 | GitHub 성공 유지 → Eureka indeterminate → 해당 operation만 조회·복구 |
 | 출력 실패 | 외부 성공 기록 유지 → 출력 경계에서만 복구. 가이드가 승인 재실행을 제안해도 실행 정책에서 차단 |
 
-G-01 및 S-01~S-12와의 전체 정책 대응은 상위 문서를 따른다. 위 사례는 계약 점검이며 실행 테스트 결과가 아니다.
+G-01 및 S-01~S-12와의 전체 정책 대응은 상위 문서를 따른다. 위 사례는 계약 점검이다. MVP의 자동 테스트 범위는 상위 문서 Review Coverage를 따른다.
+
+### 2026-11-14 개정 — 범용 MCP Guide 템플릿 및 자율 실행형 Agent Swarm
+
+헤드리스 바이브 코딩 플랫폼 목표에 맞춰 기존 GitHub 전용 Guide·중앙 단일 실행 루프 제약을 아래와 같이 확장한다(2026-10-12/11-02 항목은 초기 MVP 이력으로 보존한다):
+
+1. **`McpGuide` 템플릿 추상화 (`BaseMcpGuide`, `GitHubMcpGuide`, `GenericMcpGuide`):**
+   - 기존 GitHub PR 리뷰/승인용 Guide·신뢰도·허가·출력 규칙은 템플릿 레퍼런스 1호(`GitHubMcpGuide`)로 분리한다.
+   - 각 MCP 서버(`mcpId`)는 독립 `McpGuide` 인스턴스를 가질 수 있으며, 별도 Guide가 등록되지 않은 MCP 서버는 `GenericMcpGuide`를 통해 `tools/list`로 발견한 도구를 자유롭게 사용한다.
+2. **Guide 명시 원칙:**
+   - 신뢰도 임계값, 사전 가드(`evaluateGuards`), 사용자 허가 필요 여부(`requiresPermission`), 차단 조건, 고정 출력 포맷(`formatOutcome`)은 **오직 해당 MCP의 Guide에 명시된 규칙만 적용**한다. Guide에 명시되지 않은 임의 제한이나 폐쇄형 도구 화이트리스트(`AllowedAction` 한정 등)를 런타임 코어가 강제하지 않는다.
+3. **자율 실행형 Agent Swarm 및 Worker 직접 실행:**
+   - 중앙 서비스가 모든 `propose_action`을 1스텝씩 대리 실행하던 중앙 소유 병목을 제거하고, `SwarmCoordinator`가 분해한 작업을 각 `SwarmWorker`가 MCP 도구를 직접 호출(`McpClientManager`)하며 자율적으로 완수한다.
+   - `GitHubReviewGateway.getReviewContext`처럼 여러 MCP 호출보다 효율적인 경우에만 선택적 최적화 도구(`fastPathAdapters`)로 제공하며, 원시 MCP 호출을 가로막는 강제 장벽으로 두지 않는다.
+4. **Worker별 Pipeline 허가 큐 (`PipelinePermissionQueue`):**
+   - Guide의 `requiresPermission`에 해당하는 작업에 도달했을 때만 해당 Worker가 `PipelinePermissionQueue`에 허가 요청을 적재해 파이프라인(`Pending`/`Notice` 경계)으로부터 사용자 확인 입력을 받아 재개한다.
+5. **Sensor의 역할:**
+   - Sensor는 외부 실행 결과를 왜곡하지 않는 증거 검사 책임으로 유지하되, 범용 `McpCallResult` 검증 및 Guide가 명시한 사후 조건 검증에 통합된다.
 
 ## When To Use
 
@@ -141,6 +162,6 @@ Harness 내부 로직을 구현하거나 가이드의 제안과 센서의 증거
 
 ## Related Concepts
 
-- [[wiki/deskpet_LLM_guide_Liability|김도헌 DeskPet LLM 설계 규칙]]
+- [[wiki/deskpet_harness_guide_Liability|김도헌 DeskPet LLM 설계 규칙]]
 - [[wiki/deskpet-harness-message-contracts|Harness Message Contracts]]
 - [[wiki/deskpet-pr-review-golden-scenario|PR Review Golden Scenario]]

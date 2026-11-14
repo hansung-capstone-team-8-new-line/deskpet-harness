@@ -13,3 +13,4 @@ export * from './llm.js';
 export * from './confirmation.js';
 export * from './pipelineBridge.js';
 export * from './limiter.js';
+export * from './mcp.js';

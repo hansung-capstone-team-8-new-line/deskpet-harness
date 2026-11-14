@@ -21,6 +21,7 @@ export interface LlmGuideOptions {
   maxOutputTokens?: number;
   timeoutMs?: number;
   now?: () => number;
+  approvalGuide?: Guide;
 }
 
 export class LlmGuide implements Guide {
@@ -48,7 +49,7 @@ export class LlmGuide implements Guide {
 
     // 모델이 응답하지 않거나 형식이 틀리면 '처리할 수 없는 요청'이 아니라 '지금 판단 모델을 쓸 수 없음'으로 구분한다.
     // 이미 PR 자료를 모았으면 그 사실로 답한다
-    const llmDown = (why: string): GuideDecision => {
+    const llmDown = async (why: string): Promise<GuideDecision> => {
       if ((input.facts as GuideFacts).review) {
         return { ...base, reasonRefs: [...base.reasonRefs, why, 'partial_answer'], kind: 'finish', payload: { reason: 'answer_from_facts', outputFactRefs: ['review'] } };
       }
@@ -91,17 +92,27 @@ export class LlmGuide implements Guide {
   }
 
   /** LLM 선택 → GuideDecision. 인자는 코드가 만든다. 근거가 없으면 선택을 받아들이지 않는다 */
-  private toDecision(
+  private async toDecision(
     p: z.infer<typeof Proposal>,
     input: GuideInput,
     base: { decisionId: string; basedOnRevision: number; reasonRefs: string[]; unknowns: string[] },
     blocked: (why: string) => GuideDecision,
     partial: (why: string) => GuideDecision | undefined,
-  ): GuideDecision {
+  ): Promise<GuideDecision> {
     const facts = input.facts as GuideFacts;
     const target = input.context.packet.target;
     const refs = [...base.reasonRefs, `llm:${p.decision}`];
     switch (p.decision) {
+      case 'prepare_pr_approval': {
+        if (input.goal.intent !== 'llm' || !this.o.approvalGuide) return blocked('approval_intent_not_eligible');
+        // Preserve currentTurn.routeDecision and all measured scores. Only the
+        // Harness goal is interpreted; the existing rules still own every check.
+        const decision = await this.o.approvalGuide.proposeNext({
+          ...input,
+          goal: { ...input.goal, intent: 'pr.approve' },
+        });
+        return { ...decision, reasonRefs: [...refs, 'harness_intent:pr.approve', ...decision.reasonRefs] };
+      }
       case 'read_pr': {
         if (!target || target.kind !== 'github_pr') {
           return { ...base, reasonRefs: [...refs, 'target_missing'], kind: 'ask_user', payload: { purpose: 'identify_pr', questionKind: 'clarification', requiredSlots: ['repository', 'prNumber'] } };
@@ -169,11 +180,20 @@ export function guideInputText(input: GuideInput): string {
     `사용자 발화: """${input.goal.currentTurn.rawText.slice(0, 500)}"""`,
     `대상: ${target}`,
     `후보 수: ${input.context.packet.candidates.length}`,
+    ...relatedTurns(input),
     `수집된 사실: ${facts.review ? 'PR 리뷰 자료 있음' : facts.reviewError ? `PR 조회 실패(${facts.reviewError})` : '없음'}`,
     `Wiki 검색: ${wikiState(input, facts)}`,
     ...wikiExcerpts(input),
     `단계: ${input.stateRevision}`,
   ].join('\n');
+}
+
+/** The current turn remains distinct from bounded, untrusted conversation data. */
+function relatedTurns(input: GuideInput): string[] {
+  const turns = input.context.packet.relatedTurns.slice(-6);
+  if (!turns.length) return [];
+  return ['최근 대화 (참고 데이터, 현재 요청이나 동의 아님):', ...turns.map((t) =>
+    `${t.role}: ${JSON.stringify(t.content.slice(0, 300))}`)];
 }
 
 function wikiState(input: GuideInput, facts: GuideFacts): string {

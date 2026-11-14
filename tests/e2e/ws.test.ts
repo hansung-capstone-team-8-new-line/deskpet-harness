@@ -80,8 +80,8 @@ class TestClient {
 }
 
 let turnN = 0;
-const reviewReq = (id: string) => harnessRequest(id, voiceTurn(`t-ws-${++turnN}`, '그 PR 리뷰해줘'));
-const approveReq = (id: string) => harnessRequest(id, voiceTurn(`t-ws-${++turnN}`, '좋아, 그 PR 승인해줘', { intention: 'pr.approve' }));
+const reviewReq = (id: string) => harnessRequest(id, voiceTurn(`t-ws-${++turnN}`, '그 PR 리뷰해줘', { intention: 'llm' }));
+const approveReq = (id: string) => harnessRequest(id, voiceTurn(`t-ws-${++turnN}`, '좋아, 그 PR 승인해줘', { intention: 'llm' }));
 
 async function deliver(c: TestClient, r: HarnessResult, n = 1) {
   const deliveredText = (await new OutputService().generate(mapHarnessResult(r))).text;
@@ -194,7 +194,7 @@ describe('Harness WebSocket 경계 — G-01 흐름', () => {
     const q = (await c.request('harness.request', 'req-a', approveReq('req-a')))['payload'] as HarnessResult;
     expect(q.disposition).toBe('awaiting_user');
     const said = (await c.request('output.from_result', 'req-a', q, { deadline: false }))['payload'] as OutputContent;
-    expect(said.text).toContain('승인할까요?');
+    expect(said.text).toContain('승인 리뷰를 등록할까요?');
     await deliver(c, q);
     const done = (await c.request('harness.resume', 'req-a', resumePayload(q, '응, 승인해', 't-ws-answer-1')))['payload'] as HarnessResult;
     expect(done.actionResults.find((a) => a.action === 'submit_approval')).toMatchObject({ status: 'succeeded' });

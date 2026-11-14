@@ -42,16 +42,25 @@ export const EurekaStageTarget = z.object({
 });
 /** 업무 목록처럼 특정 엔티티가 없는 조회 대상. */
 export const EurekaWorkspaceTarget = z.object({ kind: z.literal('eureka_workspace') });
+/** 범용 MCP 도구 호출 대상 (폐쇄형 화이트리스트 제한 없음). */
+export const McpTarget = z.object({
+  kind: z.literal('mcp_tool'),
+  mcpId: Id,
+  toolName: z.string().min(1).optional(),
+  resourceUri: z.string().min(1).optional(),
+});
 
 export const Target = z.discriminatedUnion('kind', [
   GitHubPrTarget,
   EurekaItemTarget,
   EurekaStageTarget,
   EurekaWorkspaceTarget,
+  McpTarget,
 ]);
 export type Target = z.infer<typeof Target>;
 export type GitHubPrTarget = z.infer<typeof GitHubPrTarget>;
 export type EurekaStageTarget = z.infer<typeof EurekaStageTarget>;
+export type McpTarget = z.infer<typeof McpTarget>;
 
 /**
  * Guide가 제안할 수 있는 허용 기능 식별자 (guide-sensor §Guide Interface, 다이어그램 AllowedAction).
@@ -65,12 +74,13 @@ export const AllowedAction = z.enum([
   'get_task_state',
   'complete_stage',
   'get_change_outcome',
+  'mcp_tool_call',
 ]);
 export type AllowedAction = z.infer<typeof AllowedAction>;
 
 /**
  * 직접 Eureka 경로 행위. 계약 미정 (다이어그램 EurekaGateway 주석).
- * Harness Guide는 제안할 수 없다.
+ * Harness `unclear → direct_eureka` 경로에서도 EurekaGateway를 직접 호출할 때 사용한다.
  */
 export const DirectEurekaAction = z.enum(['register_item', 'postpone_item', 'complete_item', 'add_stage_note', 'list_processes']);
 export type DirectEurekaAction = z.infer<typeof DirectEurekaAction>;
@@ -89,17 +99,17 @@ export const WRITE_ACTIONS: ReadonlySet<ActionName> = new Set<ActionName>([
 ]);
 export const isWriteAction = (a: ActionName): boolean => WRITE_ACTIONS.has(a);
 
-/** 출처 참조. Wiki·외부 조회·사용자 턴 등 */
+/** 출처 참조. Wiki·외부 조회·MCP·사용자 턴 등 */
 export const SourceRef = z.object({
-  kind: z.enum(['wiki', 'github', 'eureka', 'user_turn', 'operation', 'fixture']),
+  kind: z.enum(['wiki', 'github', 'eureka', 'mcp', 'user_turn', 'operation', 'fixture']),
   ref: z.string().min(1),
   observedAt: UtcTimestamp.optional(),
 });
 export type SourceRef = z.infer<typeof SourceRef>;
 
-/** 외부 실행 증거. review ID 등 (message-contracts §ActionResult). */
+/** 외부 실행 증거. review ID, MCP 호출 결과 등 (message-contracts §ActionResult). */
 export const ExternalRef = z.object({
-  system: z.enum(['github', 'eureka']),
+  system: z.enum(['github', 'eureka', 'mcp']),
   kind: z.string().min(1),
   id: z.string().min(1),
   details: z.record(z.unknown()).optional(),

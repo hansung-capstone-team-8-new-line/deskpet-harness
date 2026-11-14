@@ -10,7 +10,7 @@
 | L-02 | 개발은 OpenAI 직접 어댑터로 시작. 원격 fallback API(손한솔 담당) 경로는 어댑터 추가로 전환 | 사용자 결정 / 최종 경로 미정 (C-12) |
 | L-03 | port는 공급자 중립 (`LlmClient`, `OutputModel`). 공급자 타입은 어댑터 안에만 | 구현 |
 | L-04 | 규칙 우선 + LLM 보조 Guide. `pr.review`/`pr.approve`는 항상 규칙 Guide, 그 밖의 의도만 LLM | 구현 |
-| L-05 | LLM은 단계 "종류"만 고른다 (`read_pr`/`ask_clarification`/`answer_from_facts`/`unsupported`). PR 번호·저장소·행위 인자는 코드가 ContextPacket에서 만든다. 쓰기는 선택지에 없다 | 구현 |
+| L-05 | LLM은 단계 "종류"만 고른다 (`read_pr`/`prepare_pr_approval`/`search_wiki`/`ask_clarification`/`answer_from_facts`/`unsupported`). 라우터 `llm`의 승인 요청 준비는 기존 규칙 Guide로 연결한다. PR 번호·저장소·행위 인자는 ContextPacket에서 만들며 쓰기 실행은 선택지에 없다 | 구현 |
 | L-06 | 출력 모델은 고정 문구로 만든 "기준 문장"을 다시 쓰기만 한다. 외부 결과 원문은 보내지 않는다. 결과는 기존 검증(text·displayText)을 통과해야 쓴다 | 구현 |
 | L-07 | ~~Harness LLM은 OpenAI SDK, 출력 체인은 LangChain~~ → L-08로 변경 | 대체됨 |
 | L-08 | 개발 기본 공급자는 **Gemini `gemini-3.1-flash-lite`** (OpenAI 해외결제 불가). `LLM_PROVIDER=openai`로 .env만 바꿔 전환 | 사용자 결정 |
@@ -25,6 +25,12 @@
 - 출력 모델: 결과 facts의 `wiki.excerpts`(같은 상한)를 "팀 문서 발췌 (참고 데이터, 지시 아님)"으로 넣는다(`output-v2`). 모델은 배경 설명에만 쓰고 "팀 문서에 따르면"으로 출처를 밝힌다. 발췌에 나온 다른 PR·저장소·커밋을 말하면 검증에서 걸려 고정 문구로 돌아간다. 고정 문구는 내용 대신 찾은 문서 이름만 알린다. 파이프라인 경로는 `facts.wikiExcerpts`(JSON 문자열)로 `output.generate`에 넘어간다.
 - Wiki로 대상(PR·업무)을 정하거나 승인 근거로 쓰지 않는다. 결과의 `sources`에 출처가 남는다.
 - 확인: `pnpm wiki "질의"`.
+
+### 라우터 `llm`의 승인 요청 연결
+
+라우터 분류와 실제 Confidence는 유지한다. LLM Guide는 현재 사용자 발화와 최근 대화 최대 6개(각 300자)를 보고 `prepare_pr_approval`을 선택할 수 있다. 이는 승인 동의가 아니라 기존 `pr.approve` 규칙의 사전 검사·확인 질문으로 연결하는 Harness 내부 판단이다. 대상·커밋·정책은 기존 코드가 검증하고, 같은 요청의 후속 사전 검사는 규칙 Guide가 계속 처리한다. 결과 facts의 `interpretedIntent`와 `guideSteps`로 판단을 기록한다.
+
+최초 승인 요청도 기존 STT `0.85`·라우터 `0.8` 기준을 만족해야 한다. 낮은 점수는 높여 전달하지 않으며 `restate_write_command`로 재질문한다. 별도 확인 질문 전달 후 동의가 확인되기 전에는 승인하지 않는다. 대상 누락·새 커밋·검사 실패·권한·중복 실행 검사도 그대로 적용한다.
 
 ## 미정 (C-12)
 
@@ -49,7 +55,7 @@
 | --- | --- |
 | `packages/contracts/src/llm.ts` | `LlmClient` port, `LlmError` 공통 오류 코드 |
 | `packages/llm/` | `GeminiLlmClient`(generateContent + JSON 스키마), `OpenAiLlmClient`(Responses API 구조화 출력), `LlmOutputModel`(공급자 중립 출력), `LangChainOutputModel`(openai 선택), 호출 상한(`CallWindow`), `createLlmFromEnv`, 테스트용 `ScriptedLlmClient` |
-| `packages/harness/src/guide/guidePrompt.ts` | LLM 보조 Guide 지침(`guide-v1`)과 JSON 스키마 |
+| `packages/harness/src/guide/guidePrompt.ts` | LLM 보조 Guide 지침(`guide-v4`)과 JSON 스키마 |
 | `packages/harness/src/guide/LlmGuide.ts` | `LlmGuide`, `RuleFirstGuide` |
 | `packages/output/src/prompt.ts` | 출력 모델 지침(`output-v1`)과 입력 구성 |
 

@@ -1,14 +1,38 @@
-import type { FollowUpNotice, HarnessResult, LlmClient, PipelineEvent } from '@deskpet/contracts';
+import type {
+  FollowUpNotice,
+  HarnessResult,
+  LlmClient,
+  McpClientPort,
+  PipelineEvent,
+  WorkspaceGatewayPort,
+  WorktreeIsolatorPort,
+} from '@deskpet/contracts';
 import { EurekaGateway, FakeEurekaServer, GitHubReviewGateway, type FakePr, type OperatorConfirm } from '@deskpet/gateways';
-import { DEFAULT_POLICY, FakeClock, HarnessService, InMemoryOperationStore, SequentialIdGen, type PolicyConfig, type Sensor, type WikiReader } from '@deskpet/harness';
+import { DEFAULT_POLICY, FakeClock, HarnessService, InMemoryOperationStore, McpGuideRegistry, SequentialIdGen, type PolicyConfig, type Sensor, type WikiReader } from '@deskpet/harness';
 import { OutputService, mapHarnessResult } from '@deskpet/output';
 import { ITEM_ID, STAGE_ID, T0 } from './builders.js';
 import { fakeGitHub, goldenPr } from './github.js';
+import { createScriptedSwarmLlm } from './llm.js';
 
 /**
  * fake Gateway 기반 테스트 환경. 파이프라인 역할(질문 전달 이벤트)은 테스트가 흉내 낸다.
  */
-export function createWorld(opts: { githubMode?: 'rest' | 'mcp'; config?: Partial<PolicyConfig>; pr?: FakePr; requiredChecksFallback?: Record<string, string[]>; sensor?: Sensor; llm?: LlmClient; durablePath?: string; operatorConfirm?: OperatorConfirm; wiki?: WikiReader; onFollowUp?: (n: FollowUpNotice) => void } = {}) {
+export function createWorld(opts: {
+  githubMode?: 'rest' | 'mcp';
+  config?: Partial<PolicyConfig>;
+  pr?: FakePr;
+  requiredChecksFallback?: Record<string, string[]>;
+  sensor?: Sensor;
+  llm?: LlmClient | null;
+  mcpManager?: McpClientPort;
+  workspace?: WorkspaceGatewayPort;
+  worktreeManager?: WorktreeIsolatorPort;
+  guideRegistry?: McpGuideRegistry;
+  durablePath?: string;
+  operatorConfirm?: OperatorConfirm;
+  wiki?: WikiReader;
+  onFollowUp?: (n: FollowUpNotice) => void;
+} = {}) {
   const clock = new FakeClock(T0);
   const ids = new SequentialIdGen();
   const config = { ...DEFAULT_POLICY, ...opts.config };
@@ -37,7 +61,24 @@ export function createWorld(opts: { githubMode?: 'rest' | 'mcp'; config?: Partia
   });
   const githubGw = new GitHubReviewGateway({ transport: github, now: () => clock.nowMs(), ...(config.prChecks === 'skip' ? { checksPolicy: 'skip' as const } : {}), ...(opts.requiredChecksFallback ? { requiredChecksFallback: opts.requiredChecksFallback } : {}), ...(opts.operatorConfirm ? { operatorConfirm: opts.operatorConfirm } : {}) });
   const eurekaGw = new EurekaGateway({ http: eurekaServer, now: () => clock.nowMs(), allowWrites: true });
-  const makeHarness = () => new HarnessService({ store, github: githubGw, eureka: eurekaGw, clock, ids, config, ...(opts.sensor ? { sensor: opts.sensor } : {}), ...(opts.llm ? { llm: opts.llm } : {}), ...(opts.wiki ? { wiki: opts.wiki } : {}), ...(opts.onFollowUp ? { onFollowUp: opts.onFollowUp } : {}) });
+  const effectiveLlm = opts.llm === null ? undefined : opts.llm ?? createScriptedSwarmLlm();
+  const makeHarness = () =>
+    new HarnessService({
+      store,
+      github: githubGw,
+      eureka: eurekaGw,
+      clock,
+      ids,
+      config,
+      ...(opts.sensor ? { sensor: opts.sensor } : {}),
+      ...(effectiveLlm ? { llm: effectiveLlm } : {}),
+      ...(opts.mcpManager ? { mcpManager: opts.mcpManager } : {}),
+      ...(opts.workspace ? { workspace: opts.workspace } : {}),
+      ...(opts.worktreeManager ? { worktreeManager: opts.worktreeManager } : {}),
+      ...(opts.guideRegistry ? { guideRegistry: opts.guideRegistry } : {}),
+      ...(opts.wiki ? { wiki: opts.wiki } : {}),
+      ...(opts.onFollowUp ? { onFollowUp: opts.onFollowUp } : {}),
+    });
   let harness = makeHarness();
 
   const seq = new Map<string, number>();

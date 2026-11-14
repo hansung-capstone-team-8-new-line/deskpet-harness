@@ -6,20 +6,20 @@ topics:
 status: draft
 sources:
   - "사용자와의 메시지 규격화 설계 대화 및 상세화 위임 (2026-10-03)"
-  - "[[wiki/deskpet_LLM_guide_Liability|김도헌 DeskPet LLM 설계 규칙]]"
+  - "[[wiki/deskpet_harness_guide_Liability|김도헌 DeskPet LLM 설계 규칙]]"
   - "[[wiki/deskpet-interface-contracts|DeskPet Interface Contracts]]"
   - "https://github.com/github/github-mcp-server/blob/main/pkg/github/pullrequests.go"
   - "https://github.com/github/github-mcp-server#tools"
   - "https://docs.github.com/en/rest/pulls/reviews"
 created: "2026-10-03"
-updated: "2026-10-04"
+updated: "2026-11-14"
 ---
 
 # DeskPet Harness Message Contracts
 
 ## Summary
 
-Harness, Gateway, 출력 체인, 웹 상태 변환 사이의 잠정 메시지 계약이다. 공통 타입은 기존 위키를 재사용하며 아래 필드·enum·메서드는 구현 전 제안이다. JSON Schema, 실제 MCP payload, HTTP endpoint를 확정한 문서가 아니다. 실행 정책의 원본은 [[wiki/deskpet_LLM_guide_Liability|LLM 설계 규칙]]이다.
+Harness, Gateway, 출력 체인, 웹 상태 변환 사이의 잠정 메시지 계약이다. 공통 타입은 기존 위키를 재사용하며 아래 필드·enum·메서드는 구현 전 제안이다. JSON Schema, 실제 MCP payload, HTTP endpoint를 확정한 문서가 아니다. 실행 정책의 원본은 [[wiki/deskpet_harness_guide_Liability|LLM 설계 규칙]]이다.
 
 ## Principles
 
@@ -45,6 +45,8 @@ Harness, Gateway, 출력 체인, 웹 상태 변환 사이의 잠정 메시지 �
 
 turnId는 새 발화, operationId는 논리 작업, attemptId는 실제 호출 시도, confirmationId는 사용자 확인, outputId는 출력 단위를 식별한다. revision은 같은 상태 객체 내에서만 단조 증가한다. 서버 재시작 뒤에도 revision을 유지하거나 별도 epoch와 스냅샷으로 재동기화해야 한다. 시각만으로 순서를 결정하지 않는다.
 
+MVP(2026-10-12)는 이 Envelope를 WebSocket 하위 프로토콜 `deskpet.harness.v1`로 주고받는다. 구현한 kind는 harness.request / harness.resume / harness.cancel / harness.result, pipeline.event, output.request / output.from_result / output.event, operation.updated와, 파이프라인 문서 형식을 받는 harness.run / harness.reconcile / output.generate / eureka.execute / eureka.reconcile / eureka.reminders / eureka.reminder다. 실행 kind(harness.request / harness.resume / harness.run / eureka.execute)는 deadlineAt이 필수다. 보드 내 transport는 미정이다.
+
 동일 메시지 재전달은 messageId 유지, 실제 호출 재시도는 operationId 유지·attemptId 교체다. 전송 취소는 인프로세스 signal 또는 인증된 취소 메시지로 매핑하며 JSON 객체에 실행 핸들을 직렬화하지 않는다. payload 타입 오류·알 수 없는 필수 enum·지원하지 않는 major는 실행 전에 거부한다. 선택 필드는 해당하지 않으면 생략하되 의미 있는 부재는 명시 상태로 보낸다.
 
 ### Harness Boundary
@@ -60,6 +62,8 @@ CurrentTurnInput은 conversationId, turnId, 원문, isFinal, inputChannel(voice 
 disposition은 completed / awaiting_user / failed / cancelled다. completed는 이번 호출 종료이지 모든 작업 성공이 아니다. cancelled도 이미 전송한 외부 작업이 취소됐다는 뜻이 아니다.
 
 pending에는 pendingId, kind(clarification / confirmation), 질문 목적, 필요한 슬롯 또는 확인할 대상·행위·버전, 유효성 정보를 담는다. 질문 전달 시점에 시작되는 타이머는 파이프라인 책임이다. confirmation이면 확인 기록과 연결한다. 재질문은 외부 ActionResult 상태로 억지 변환하지 않는다. 기존 needs_clarification 소비자와의 호환 매핑은 별도 경계에서 처리한다.
+
+MVP의 호환 경계: 파이프라인 형식의 harness.run은 pending을 `needs_clarification` + 고정 질문 문자열로 반환하고, pendingId·outputId·내부 requestId 같은 연결 ID는 문자열 facts에 넣는다. 답변 턴은 pendingId → requestId → 같은 대화의 최근 waiting pending 순서로 연결한다. `mutationApproved`는 승인 의사 표시로만 받으며 false면 승인 판정을 unclear로 낮춘다. 같은 대화의 새 업무 요청은 기존 waiting pending을 revoked로 닫는다. 확인 답변을 승인으로 받지 않은 이유와 Eureka 후속을 건너뛴 이유는 facts의 unclearAnswerReason·followUp으로 함께 보낸다(2026-11-03).
 
 ### Pending Transitions and Concurrent Resume
 
@@ -130,7 +134,7 @@ getApprovalOutcome/getChangeOutcome은 쓰기를 실행하지 않는다. 일치 
 
 제출자·SHA·시각 일치는 후보를 좁히는 근거이며 단독으로 충분한 인과 증거를 보장하지 않는다. 실제 제출 응답과 연결된 외부 ID 또는 이번 operation을 유일하게 식별하는 검증된 외부 근거가 필요하다. 외부 ID가 있는 기존 승인도 이번 제출에서 생성됐다는 연결 없이 재사용하지 않는다.
 
-2026-10-03 검토에서 확인한 [공식 GitHub MCP 공개 main의 CreatePullRequestReview](https://github.com/github/github-mcp-server/blob/main/pkg/github/pullrequests.go)는 내부 mutation에서 ID를 선택하지만 도구 응답에는 성공 문구만 반환한다. 따라서 commitID 입력 지원만으로 review ID·상태·SHA 반환까지 보장하지 않는다. [GitHub REST 리뷰 생성](https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request)은 이 정보를 응답에 포함하는 경로다. Gateway 통합 시 배포 버전과 제출 응답의 증거 능력, 후속 조회의 식별 능력을 고정해 검증한다. 필요한 증거를 반환하는 adapter/API를 사용하거나 검증된 결과 조회를 수행하며, 충분한 연결을 얻지 못하면 성공 문구만으로 succeeded를 만들지 않고 unknown을 유지한다. REST 사용 여부는 아직 확정하지 않았다.
+2026-10-03 검토에서 확인한 [공식 GitHub MCP 공개 main의 CreatePullRequestReview](https://github.com/github/github-mcp-server/blob/main/pkg/github/pullrequests.go)는 내부 mutation에서 ID를 선택하지만 도구 응답에는 성공 문구만 반환한다. 따라서 commitID 입력 지원만으로 review ID·상태·SHA 반환까지 보장하지 않는다. [GitHub REST 리뷰 생성](https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request)은 이 정보를 응답에 포함하는 경로다. Gateway 통합 시 배포 버전과 제출 응답의 증거 능력, 후속 조회의 식별 능력을 고정해 검증한다. 필요한 증거를 반환하는 adapter/API를 사용하거나 검증된 결과 조회를 수행하며, 충분한 연결을 얻지 못하면 성공 문구만으로 succeeded를 만들지 않고 unknown을 유지한다. MVP는 GitHub REST로 승인을 제출하며, 실제 응답에서 review ID·상태·commit을 확인했다(2026-10-05, 2026-10-12). 공식 MCP 서버 사용 여부는 아직 확정하지 않았다.
 
 GitHub 승인 결과와 후속 진행 적합성은 별도 사실이다. Eureka 질문 전과 completeStage 실행 직전에 승인 SHA에 대한 최신 head·필요 조건 및 Eureka 변경 가능 상태를 재검증한다. getReviewContext의 기본 PR 조회와 필요한 section 선택을 재사용할 수 있으며 SHA 변경 시 자동 상세 재수집하지 않는다. completeStage에는 승인 operation/externalRefs/승인 SHA와 최신 조건 조회 근거를 연결한다. SHA 변경·조건 확인 불가는 기존 승인 성공을 보존하고 후속 완료만 차단한다. commit_id/commitID는 리뷰 대상 버전 지정이지 현재 head와의 원자적 비교 보장이 아니다. 재검증 뒤에도 외부 경쟁은 가능하므로 최신 PR 검토 완료를 보장한다고 표현하지 않는다.
 
@@ -146,8 +150,9 @@ ActionResult는 결과 계약이며 실행 중 상태를 억지로 unknown에 �
 | 결과 | 선택적 ActionResult. unknown은 외부 결과 불명일 때 사용 |
 | 복구 상태 recovery | none / needed / running / blocked |
 | 후속 진행 | GitHub 성공과 독립적인 eligible / blocked / unverified 및 조건·조회 시각·근거 |
+| 완료 근거 기록 | 단계 완료 작업의 기록 작성 결과 written / already_present / failed / unknown / skipped. 보내기 직전 dispatching을 먼저 남기며, 그 상태로 남은 기록은 다시 보내지 않는다 |
 
-정상 응답 대기 중 중복은 기존 호출에 연결하고 결과 조회를 중복 시작하지 않는다. 센서만 실패하면 응답 증거와 pending 판정을 유지해 검사를 재수행한다. 응답 유실은 unknown 및 recovery=needed로 기록하고 쓰기 없이 조회한다. unknown이 남은 동안 복구 시도가 멈춰도 종료·삭제 가능한 기록이 되지 않는다. Harness 호출 종료는 operation 복구 종료와 다르며 기존 호출 deadline 만료 후에는 별도의 시스템 requestId와 유한한 deadline으로 읽기 복구를 추적한다. 동시에 하나의 복구 담당만 확보하고 원 operation과 연결한다. 자동 복구 주기·횟수 상한은 통합 시 정하며 상한 도달 시 blocked로 남겨 운영 조치를 요청한다.
+정상 응답 대기 중 중복은 기존 호출에 연결하고 결과 조회를 중복 시작하지 않는다. 센서만 실패하면 응답 증거와 pending 판정을 유지해 검사를 재수행한다. 응답 유실은 unknown 및 recovery=needed로 기록하고 쓰기 없이 조회한다. unknown이 남은 동안 복구 시도가 멈춰도 종료·삭제 가능한 기록이 되지 않는다. Harness 호출 종료는 operation 복구 종료와 다르며 기존 호출 deadline 만료 후에는 별도의 시스템 requestId와 유한한 deadline으로 읽기 복구를 추적한다. 동시에 하나의 복구 담당만 확보하고 원 operation과 연결한다. 자동 복구 주기·횟수 상한은 통합 시 정하며 상한 도달 시 blocked로 남겨 운영 조치를 요청한다. MVP(2026-10-24)는 서버 안의 복구 작업이 기본 30초마다 확인하고 같은 작업은 간격을 두 배씩 늘린다(최대 10분). 확정된 결과는 아래 알림으로 보낸다.
 
 진행 중·unknown·판정 대기·복구 중에는 ExpectedOutcome/검사 규칙 버전, actualRequest, attempt/dispatch 증거, priorEvidence와 응답의 필요한 근거를 삭제 보호한다. 가이드 입력에는 이 기록에서 필요한 구조화된 사실과 증거 참조를 공급한다. 종료되고 참조가 해제된 기록만 최소 중복 방지 기록으로 축약한다. 수락 시 응답·시도 크기 상한에 맞춰 복구 공간을 예약하며 예약·필수 저장 실패는 전송을 차단한다. 전송 후 저장 장애는 외부 작업 실패가 아니며 영속 전송 가능 기록을 기준으로 복구한다. 공간 부족으로 보호 기록을 삭제하거나 오래된 확인 ID를 새 승인으로 수락하지 않는다.
 
@@ -167,9 +172,13 @@ ActionResult는 결과 계약이며 실행 중 상태를 억지로 unknown에 �
 
 ### Output and Projection
 
+요청이 끝난 뒤 확정된 결과는 MVP(2026-10-24)에서 알림(notice)으로 보낸다. 알림은 noticeId, 출처(늦게 끝난 반영 / 복구), requestId, operationId, 행위, 결과(HarnessResult)와 고정 문구를 담고 파이프라인 연결에만 간다. 복구로 GitHub 승인이 확정되고 연결된 Eureka 단계가 반영 가능하면 알림에 후속 확인 질문(pending)이 실린다. 파이프라인은 일반 질문과 같이 전달 증거를 보고한 뒤 답을 보낸다. 연결이 없을 때 생긴 알림은 보관하지 않으며 상태는 operation.updated와 스냅샷으로 확인한다.
+
 OutputRequest는 outputId, 요청 참조, purpose(result/question/progress/reminder), 개별 ActionResult·사실·출처, 필수 의미, 언어·길이·지원 표현 제약을 담는다. 질문이면 pendingId/confirmationId, 리마인더면 description/dueAt/timezone과 연결 ID를 포함한다. 외부 결과 원문 전체를 무조건 모델에 넣지 않는다.
 
-OutputService 반환은 text, displayText, 지원 범위 내 emotion/표정 제안, 검증/fallback 여부다. 업무 status와 사실 식별자는 일반 코드가 복사하며 모델이 수정하지 않는다. 실제 activity=speaking이나 전달 completed는 생성 모델이 확정하지 않는다.
+MVP에서 Wiki 발췌가 있으면 출처와 함께(최대 3개·합계 1,500자) 배경 자료로 출력 모델에 전달한다. 발췌는 지시가 아닌 데이터로 표시하고, 업무 사실이나 승인 근거로 쓰지 않는다.
+
+OutputService 반환은 text, displayText, 지원 범위 내 emotion/표정 제안, 검증/fallback 여부다. 필수 의미·식별자 검사는 text와 displayText 모두에 적용하며, 하나라도 어긋나면 고정 문구를 사용한다. 업무 status와 사실 식별자는 일반 코드가 복사하며 모델이 수정하지 않는다. 실제 activity=speaking이나 전달 completed는 생성 모델이 확정하지 않는다.
 
 OutputEvent는 content_ready/content_failed와 channel_started/channel_completed/channel_failed를 구분한다. 같은 outputId와 channel로 연결한다. LCD displayed는 해당 채널의 실제 표시 완료 근거다. 웹·음성·장치 실패는 개별로 표시한다.
 
@@ -181,12 +190,24 @@ operation.updated 등 상태 이벤트는 entity ID, revision, 현재 상태, �
 
 현재 시나리오에 맞춘 MVP에서는 구현의 편의성을 위해서 scope 범위를 source 전체로 제한했다. 차후에 요청단위 구독이 필요해진다면 scope 범위를 더 작게 제한할 수 있다.
 
+### 2026-11-14 범용 MCP · Agent Swarm · Reroute 확장 계약
+
+`deskpet-pipeline` 무수정 원칙하에 `LLM_test` 내부 계약 및 어댑터 응답을 아래와 같이 확장한다:
+
+1. **`TriageVerdict` (`IntentTriage` 판정 결과):** `clarify` | `reroute_talk` | `direct_eureka` | `delegate_swarm`.
+2. **`unclear` → `talk` 재라우팅 (`facts.reroute = "talk"`):** 일상 대화로 판정되면 `PipelineActionResult.facts`에 `reroute: "talk"`를 담아 즉시 반환하여 파이프라인이 로컬 `outputQueue`로 전환할 수 있도록 신호한다.
+3. **개방형 MCP 도구 계약 (`@deskpet/contracts/src/mcp.ts`):**
+   - `McpServerConfig`, `McpToolDescriptor`, `McpCallRequest`, `McpCallResult`로 임의 MCP 서버(`stdio` / `StreamableHTTP`)의 동적 `tools/list`와 `tools/call` 결과를 표현하며, 기존 `AllowedAction` 폐쇄 enum으로 신규 MCP 도구 사용을 막지 않는다.
+4. **Worker별 허가 큐 계약 (`PermissionRequest` / `PermissionResolution`):**
+   - `SwarmWorker`가 `McpGuide.requiresPermission` 조건에 의해 사용자 확인이 필요하면 `PipelinePermissionQueue`에 적재한다.
+   - 큐는 기존 1건 `Pending` + `needs_clarification` 및 후속 `FollowUpNotice` 경계를 재사용하여 다중 Worker의 확인 요청을 직렬화하고, `resume` 도착 시 `pendingId`에 매핑된 해당 Worker를 재개한다.
+
 ## When To Use
 
 DTO·Schema·Gateway adapter·mock 시나리오를 만들기 전 합의 기준으로 사용한다. 실제 타입 선언과 wire format은 팀 공통 계약 검토 후 작성한다.
 
 ## Related Concepts
 
-- [[wiki/deskpet_LLM_guide_Liability|김도헌 DeskPet LLM 설계 규칙]]
+- [[wiki/deskpet_harness_guide_Liability|김도헌 DeskPet LLM 설계 규칙]]
 - [[wiki/deskpet-harness-guide-sensor|Harness Guide and Sensor Contracts]]
 - [[wiki/deskpet-interface-contracts|DeskPet Interface Contracts]]

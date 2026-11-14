@@ -20,7 +20,16 @@
 import { readFileSync } from 'node:fs';
 import { pocSetup } from './poc-faults.js';
 import { networkInterfaces } from 'node:os';
-import { createEurekaRestGateway, GitHubReviewGateway, parseRequiredChecksFallback, RestGitHubTransport } from '@deskpet/gateways';
+import {
+  createEurekaRestGateway,
+  GitHubReviewGateway,
+  GitWorktreeManager,
+  LocalWorkspaceGateway,
+  McpClientManager,
+  parseMcpServersEnv,
+  parseRequiredChecksFallback,
+  RestGitHubTransport,
+} from '@deskpet/gateways';
 import { DEFAULT_POLICY, FileWikiReader, HarnessService, InMemoryOperationStore, RecoveryWorker, summarizeTimings, type TimingEntry, StoreLockedError, randomIdGen, systemClock } from '@deskpet/harness';
 import { createLlmFromEnv } from '@deskpet/llm';
 import { OutputService, fallbackText, mapHarnessResult } from '@deskpet/output';
@@ -144,13 +153,18 @@ const github = new GitHubReviewGateway({
 });
 config.prChecks = prChecks;
 const eureka = createEurekaRestGateway(env, poc.eurekaFetch, { allowWrites: allowEurekaWrites, limiter: eurekaLimiter });
+const mcpServers = parseMcpServersEnv(env['DESKPET_MCP_SERVERS']);
+const mcpManager = new McpClientManager({ servers: mcpServers });
+const workspaceRoot = env['DESKPET_WORKSPACE_ROOT']?.trim() || process.cwd();
+const workspace = new LocalWorkspaceGateway({ rootDir: workspaceRoot });
+const worktreeManager = new GitWorktreeManager({ workspaceRoot });
 const llm = createLlmFromEnv(env);
 // LLM Wiki (D-19): vault 루트 경로. 없으면 Wiki 검색을 하지 않는다
 const wikiDir = env['DESKPET_WIKI_DIR']?.trim();
 const wiki = wikiDir ? new FileWikiReader({ root: wikiDir }) : undefined;
 // 요청이 끝난 뒤 확정된 결과(늦게 끝난 Eureka 반영, 주기 복구)는 pipeline 연결에 notice로 알린다 (D-23)
 let notify: (n: FollowUpNotice) => void = () => undefined;
-const harness = new HarnessService({ store, github, eureka, clock: systemClock, ids: randomIdGen, config, holderId: `server-${process.pid}`, ...(llm.guideClient ? { llm: llm.guideClient } : {}), ...(wiki ? { wiki } : {}), ...(poc.sensor ? { sensor: poc.sensor } : {}), onFollowUp: (n) => notify(n) });
+const harness = new HarnessService({ store, github, eureka, mcpManager, workspace, worktreeManager, clock: systemClock, ids: randomIdGen, config, holderId: `server-${process.pid}`, ...(llm.guideClient ? { llm: llm.guideClient } : {}), ...(wiki ? { wiki } : {}), ...(poc.sensor ? { sensor: poc.sensor } : {}), onFollowUp: (n) => notify(n) });
 // 결과 불명·판정 대기 작업 주기 확인. 다시 보내지 않고 조회만 한다 (D-23). RECOVERY_INTERVAL_MS(기본 30초)
 const recovery = new RecoveryWorker({ harness, store, clock: systemClock, intervalMs: Number(env['RECOVERY_INTERVAL_MS']) || 30_000, log: (l) => console.log(`[recovery] ${l}`) });
 const output = new OutputService(llm.outputModel ? { model: llm.outputModel, ...(llm.outputTimeoutMs ? { modelTimeoutMs: llm.outputTimeoutMs } : {}) } : {});
@@ -218,6 +232,8 @@ async function main() {
       : '웹 화면: 꺼짐 (HARNESS_WS_VIEWER_TOKEN 미설정)',
   );
   console.log(wikiDir ? `Wiki: ${wikiDir} (wiki/ + projects/ README, Guide 참고용)` : 'Wiki 꺼짐 (DESKPET_WIKI_DIR 미설정)');
+  console.log(mcpServers.length ? `MCP 서버: ${mcpServers.map((s) => `${s.mcpId}(${s.transport})`).join(', ')}` : 'MCP 서버: 동적/미설정 (DESKPET_MCP_SERVERS 미설정)');
+  console.log(`코딩 워크스페이스: ${workspaceRoot} (git worktree 격리 활성)`);
   if (storePath) {
     const cleaned = await store.maintain();
     const all = await store.listOperations();
@@ -242,6 +258,7 @@ async function shutdown(sig: string) {
   await recovery.stop();
   await server.stop(30_000);
   await harness.drainBackground();
+  await mcpManager.closeAll();
   store.close();
   process.exit(0);
 }

@@ -52,7 +52,7 @@ describe('PR 검사 조회 생략 (D-30)', () => {
     const q = await askApproval(w);
     expect(q.pending?.purpose).toBe('confirm_pr_approval');
     const done = await answer(w, q, '응, 승인해');
-    expect(done.actionResults[0]).toMatchObject({ action: 'submit_approval', status: 'succeeded' });
+    expect(done.actionResults.find((a) => a.action === 'submit_approval')).toMatchObject({ action: 'submit_approval', status: 'succeeded' });
     expect(w.github.reads.filter((k) => k === 'check_runs' || k === 'required_checks')).toHaveLength(0);
     // 권한·본인 PR 확인용 viewer 조회는 그대로 한다
     expect(w.github.reads).toContain('viewer');

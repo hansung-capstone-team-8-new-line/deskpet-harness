@@ -55,14 +55,14 @@ describe('파이프라인 문서 형식 — HarnessAdapter.run', () => {
   it('G-01: 리뷰 → 승인 질문 → 승인 답변(mutationApproved) → Eureka 확인 질문 → 반영', async () => {
     const { w, bridge, delivered } = setup();
 
-    const review = PipelineHarnessResult.parse(await bridge.run(run('그 PR 리뷰해줘', { intention: 'pr.review' })));
+    const review = PipelineHarnessResult.parse(await bridge.run(run('그 PR 리뷰해줘', { intention: 'llm' })));
     expect(review.action.status).toBe('succeeded');
     expect(review.resultText).toContain('PR 42번');
     expect(review.question).toBeNull();
 
-    const ask = PipelineHarnessResult.parse(await bridge.run(run('좋아, 그 PR 승인해줘', { intention: 'pr.approve', requestId: 'REQ-APPROVE' })));
+    const ask = PipelineHarnessResult.parse(await bridge.run(run('좋아, 그 PR 승인해줘', { intention: 'llm', requestId: 'REQ-APPROVE' })));
     expect(ask.action).toMatchObject({ operationId: expect.stringMatching(/^OP-/), status: 'needs_clarification', facts: { questionKind: 'confirmation' } });
-    expect(ask.question).toBe(`NewLine/DeskPet PR 42번, 현재 커밋 ${SHA_A.slice(0, 7)}을 승인할까요?`);
+    expect(ask.question).toContain(`NewLine/DeskPet PR 42번, 현재 커밋 ${SHA_A.slice(0, 7)}에 승인 리뷰를 등록할까요?`);
     expect(w.github.submitCount).toBe(0);
 
     // 출력 모델은 requiredText를 지키고, 파이프라인이 실제로 말한 문장을 보고한다
@@ -84,8 +84,8 @@ describe('파이프라인 문서 형식 — HarnessAdapter.run', () => {
 
   it('mutationApproved=false면 "응"이어도 쓰지 않고 다시 묻는다', async () => {
     const { w, bridge, delivered } = setup();
-    await bridge.run(run('리뷰해줘', { intention: 'pr.review' }));
-    const ask = await bridge.run(run('승인해줘', { intention: 'pr.approve', requestId: 'REQ-A' }));
+    await bridge.run(run('리뷰해줘', { intention: 'llm' }));
+    const ask = await bridge.run(run('승인해줘', { intention: 'llm', requestId: 'REQ-A' }));
     await delivered(ask);
     const r = await bridge.run(run('응', { intention: 'confirm.approve', requestId: 'REQ-A', mutationApproved: false }));
     expect(w.github.submitCount).toBe(0);
@@ -94,8 +94,8 @@ describe('파이프라인 문서 형식 — HarnessAdapter.run', () => {
 
   it('질문 전달 보고가 없으면 답을 받지 않는다', async () => {
     const { w, bridge } = setup();
-    await bridge.run(run('리뷰해줘', { intention: 'pr.review' }));
-    await bridge.run(run('승인해줘', { intention: 'pr.approve', requestId: 'REQ-B' }));
+    await bridge.run(run('리뷰해줘', { intention: 'llm' }));
+    await bridge.run(run('승인해줘', { intention: 'llm', requestId: 'REQ-B' }));
     const r = await bridge.run(run('응', { intention: 'confirm.approve', requestId: 'REQ-B', mutationApproved: true }));
     expect(w.github.submitCount).toBe(0);
     expect(r.action.status).not.toBe('succeeded');
@@ -103,10 +103,10 @@ describe('파이프라인 문서 형식 — HarnessAdapter.run', () => {
 
   it('대기 질문이 있어도 다른 업무 요청이 오면 그 질문을 철회해, 뒤이은 "네"가 이전 승인에 붙지 않는다', async () => {
     const { w, bridge, delivered } = setup();
-    await bridge.run(run('리뷰해줘', { intention: 'pr.review' }));
-    const ask = await bridge.run(run('승인해줘', { intention: 'pr.approve', requestId: 'REQ-C' }));
+    await bridge.run(run('리뷰해줘', { intention: 'llm' }));
+    const ask = await bridge.run(run('승인해줘', { intention: 'llm', requestId: 'REQ-C' }));
     await delivered(ask);
-    await bridge.run(run('PR 다시 리뷰해줘', { intention: 'pr.review', requestId: 'REQ-D' }));
+    await bridge.run(run('PR 다시 리뷰해줘', { intention: 'llm', requestId: 'REQ-D' }));
     expect(await w.store.listWaitingPendingsByConversation('conv-1')).toHaveLength(0);
     await bridge.run(run('네', { intention: 'confirm.approve', requestId: 'REQ-E', mutationApproved: true }));
     expect(w.github.submitCount).toBe(0);
@@ -114,8 +114,8 @@ describe('파이프라인 문서 형식 — HarnessAdapter.run', () => {
 
   it('응답 유실은 unknown, reconcile은 다시 보내지 않고 조회로만 확인한다', async () => {
     const { w, bridge, delivered } = setup();
-    await bridge.run(run('리뷰해줘', { intention: 'pr.review' }));
-    const ask = await bridge.run(run('승인해줘', { intention: 'pr.approve', requestId: 'REQ-U' }));
+    await bridge.run(run('리뷰해줘', { intention: 'llm' }));
+    const ask = await bridge.run(run('승인해줘', { intention: 'llm', requestId: 'REQ-U' }));
     await delivered(ask);
     w.github.failNextSubmit('drop_after_apply');
     const r = await bridge.run(run('응, 승인해', { intention: 'confirm.approve', requestId: 'REQ-U', mutationApproved: true }));
@@ -145,7 +145,7 @@ describe('파이프라인 문서 형식 — 봉투·수신 층', () => {
     const w = createWorld();
     const output = new OutputService();
     const inbound = new DirectHarnessInbound({ harness: w.harness, output, bridge: new PipelineBridge({ harness: w.harness, store: w.store, output }) });
-    const payload = run('그 PR 리뷰해줘', { intention: 'pr.review', requestId: 'REQ-ENV' });
+    const payload = run('그 PR 리뷰해줘', { intention: 'llm', requestId: 'REQ-ENV' });
     const env = { schemaVersion: '1.0', messageId: 'm-env-1', kind: 'harness.run', requestId: 'REQ-ENV', createdAt: '2026-10-04T10:00:00.000Z', deadlineAt: DEADLINE, payload };
     const parsed = parseEnvelope(env);
     expect(parsed.ok).toBe(true);

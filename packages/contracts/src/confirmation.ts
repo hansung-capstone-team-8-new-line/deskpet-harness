@@ -19,6 +19,14 @@ export function confirmationTokens(scope: ConfirmationScope): string[] {
     // 완료 근거 기록(D-28)도 같은 동의로 받는다: 질문 문장에 함께 말한다
     return [scope.exactChange?.['evidenceNote'] === true ? `Eureka의 ${label}를 완료로 반영하고, 승인한 PR 주소를 단계 기록에 추가` : `Eureka의 ${label}를 완료로 반영`];
   }
+  if (t.kind === 'mcp_tool') {
+    const custom = scope.exactChange?.['confirmationTokens'];
+    if (Array.isArray(custom)) {
+      const tokens = custom.filter((x): x is string => typeof x === 'string' && x.length > 0);
+      if (tokens.length) return tokens;
+    }
+    return [t.mcpId, ...(t.toolName ? [t.toolName] : [scope.action])];
+  }
   return [scope.action];
 }
 
@@ -85,6 +93,7 @@ export function allowedFromScope(scope: ConfirmationScope, into: AllowedIdentifi
 export function deliveredQuestionMatches(scope: ConfirmationScope, deliveredText: string | undefined): boolean {
   if (!deliveredText) return false;
   if (!confirmationTokens(scope).every((tok) => deliveredText.includes(tok))) return false;
+  if (scope.target.kind === 'mcp_tool') return true;
   return foreignIdentifiers(deliveredText, allowedFromScope(scope)).length === 0;
 }
 

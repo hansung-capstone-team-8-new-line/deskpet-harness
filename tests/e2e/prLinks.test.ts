@@ -132,8 +132,8 @@ describe('G-01 시작부: 기록에서 찾은 PR로 리뷰 → 승인 → 그 �
       expect(await w.harness.onPipelineEvent({ messageId: `ev-L${++seq}`, requestId: f['harnessRequestId']!, pendingId: f['pendingId']!, outputId: f['outputId']!, sourceRevision: seq, occurredAt: w.clock.nowIso(), kind: 'question_delivered', channel: 'speech', deliveredText: r.question! })).toMatchObject({ applied: true });
     };
 
-    expect((await bridge.run(run('그 PR 리뷰해줘', 'pr.review', 'REQ-L1'))).action.status).toBe('succeeded');
-    const ask = PipelineHarnessResult.parse(await bridge.run(run('승인해줘', 'pr.approve', 'REQ-L2')));
+    expect((await bridge.run(run('그 PR 리뷰해줘', 'llm', 'REQ-L1'))).action.status).toBe('succeeded');
+    const ask = PipelineHarnessResult.parse(await bridge.run(run('승인해줘', 'llm', 'REQ-L2')));
     await delivered(ask);
     const approved = PipelineHarnessResult.parse(await bridge.run(run('응, 승인해', 'confirm.approve', 'REQ-L2', true)));
     expect(w.github.submitCount).toBe(1);

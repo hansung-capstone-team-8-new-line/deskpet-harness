@@ -15,18 +15,25 @@ export interface TimingEntry {
   ok: boolean;
 }
 
-const store = new AsyncLocalStorage<TimingEntry[]>();
+export interface TimingSink {
+  entries: TimingEntry[];
+}
 
-export async function collectTimings<T>(fn: () => Promise<T>): Promise<{ value: T; timings: TimingEntry[]; totalMs: number }> {
-  const timings: TimingEntry[] = [];
+const store = new AsyncLocalStorage<TimingSink>();
+
+export async function collectTimings<T>(
+  fn: () => Promise<T>,
+  sink: TimingSink = { entries: [] },
+): Promise<{ value: T; timings: TimingEntry[]; totalMs: number }> {
+  sink.entries = [];
   const t0 = performance.now();
-  const value = await store.run(timings, fn);
-  return { value, timings, totalMs: Math.round(performance.now() - t0) };
+  const value = await store.run(sink, fn);
+  return { value, timings: [...sink.entries], totalMs: Math.round(performance.now() - t0) };
 }
 
 /** 기록 중인 요청이 있으면 한 단계를 더한다 */
 export function recordTiming(stage: string, ms: number, ok: boolean): void {
-  store.getStore()?.push({ stage, ms: Math.round(ms), ok });
+  store.getStore()?.entries.push({ stage, ms: Math.round(ms), ok });
 }
 
 /** port 객체의 메서드 호출마다 시간을 잰다. 원래 객체에 직접 호출하므로 내부 호출은 세지 않는다 */
