@@ -61,7 +61,7 @@ export interface EurekaBridgeDeps {
   timezone?: string;
 }
 
-type DirectWrite = Extract<ActionName, 'register_item' | 'postpone_item' | 'complete_item' | 'delete_item' | 'add_stage_note'>;
+type DirectWrite = Extract<ActionName, 'register_item' | 'postpone_item' | 'complete_item' | 'delete_item' | 'hold_item' | 'resume_item' | 'add_stage_note'>;
 type Kind = 'list' | 'query' | 'status' | 'processes' | DirectWrite;
 
 /**
@@ -79,6 +79,8 @@ const OPS: Record<string, Kind> = {
   create: 'register_item',
   complete: 'complete_item',
   delete: 'delete_item',
+  hold: 'hold_item',
+  resume: 'resume_item',
   add_note: 'add_stage_note',
   query_processes: 'processes',
 };
@@ -88,8 +90,6 @@ const UNSUPPORTED_OPS: Record<string, string> = {
   update_stage: '단계 상태 변경',
   update_priority: '우선순위 변경',
   update_item: '업무 정보 변경',
-  hold: '업무 보류',
-  resume: '업무 재개',
   start_stage: '단계 시작',
   reset_stage: '단계 되돌리기',
   skip_stage: '단계 건너뛰기',
@@ -105,7 +105,7 @@ const UNSUPPORTED_OPS: Record<string, string> = {
 };
 
 /** 미지원 응답 (wiki deskpet-operation-policies §3): 실행하지 않음 → 지원 범위 → 대안 */
-const SUPPORTED_SCOPE = '지금은 업무 조회·등록·기한 변경·완료·삭제와 단계 기록 추가를 할 수 있어요.';
+const SUPPORTED_SCOPE = '지금은 업무 조회·등록·기한 변경·완료·보류·재개·삭제와 단계 기록 추가를 할 수 있어요.';
 function unsupportedSentence(what?: string): string {
   return `${what ? `${what}${topic(what)} 아직 지원하지 않아` : '그 요청은'} 실행하지 않았어요. ${SUPPORTED_SCOPE}`;
 }
@@ -194,7 +194,7 @@ export class EurekaBridge {
         observation['currentState'] = t.computedState;
         if (t.dueAtMs !== undefined) observation['currentDueAt'] = this.offsetIso(t.dueAtMs);
         const want = op.actualRequest['dueAtMs'];
-        const matches = op.action === 'postpone_item' ? t.dueAtMs === want : op.action === 'complete_item' ? t.computedState === 'done' : false;
+        const matches = op.action === 'postpone_item' ? t.dueAtMs === want : op.action === 'complete_item' ? t.computedState === 'done' : op.action === 'hold_item' ? t.computedState === 'hold' : op.action === 'resume_item' ? t.computedState !== 'hold' : false;
         observation['linkage'] = matches ? 'candidate_only' : 'none';
       }
     }
@@ -392,8 +392,21 @@ export class EurekaBridge {
     });
   }
 
-  private async itemWrite(a: PipelineEurekaActionRequest, kind: 'postpone_item' | 'complete_item' | 'delete_item', t: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
+  private async itemWrite(a: PipelineEurekaActionRequest, kind: 'postpone_item' | 'complete_item' | 'delete_item' | 'hold_item' | 'resume_item', t: TaskSummary, c: { deadlineAt: string }): Promise<PipelineActionResult> {
     const target = { kind: 'eureka_item' as const, itemId: t.itemId };
+    if (kind === 'hold_item' || kind === 'resume_item') {
+      const hold = kind === 'hold_item';
+      if (t.computedState === 'done') return fail(a.operationId, 'POLICY_BLOCKED', 'item already done', `'${t.name}' 업무는 이미 완료돼 있어서 ${hold ? '보류' : '재개'}하지 않았어요.`);
+      if (hold && t.computedState === 'hold') return fail(a.operationId, 'POLICY_BLOCKED', 'item already on hold', `'${t.name}' 업무는 이미 보류 중이에요. 바꾸지 않았어요.`);
+      if (!hold && t.computedState !== 'hold') return fail(a.operationId, 'POLICY_BLOCKED', 'item not on hold', `'${t.name}' 업무는 보류 중이 아니에요. 바꾸지 않았어요.`);
+      // 재개: 시작한 단계가 있으면 진행 중, 아니면 시작 전으로 되돌린다
+      const status = hold ? 'hold' : t.stages.some((s) => s.status === 'doing' || s.status === 'done') ? 'doing' : 'todo';
+      if (!a.mutationApproved) return confirm(a.operationId, hold ? `'${t.name}' 업무를 보류할까요?` : `'${t.name}' 업무를 다시 진행할까요?`, { itemId: t.itemId });
+      return this.write(a, kind, target, { itemId: t.itemId, status }, (h) => this.d.eureka.setItemStatus({ itemId: t.itemId, status }, h, c), {
+        ok: hold ? `'${t.name}' 업무를 보류했어요.` : `'${t.name}' 업무를 다시 진행 중으로 바꿨어요.`,
+        what: `'${t.name}' 업무 ${hold ? '보류' : '재개'}`,
+      });
+    }
     if (kind === 'delete_item') {
       // 되돌릴 수 없으므로 질문에 그렇게 말한다. 완료된 업무도 지울 수 있다 (시연 업무 정리 등)
       if (!a.mutationApproved) return confirm(a.operationId, `'${t.name}' 업무를 삭제할까요? 삭제하면 되돌릴 수 없어요.`, { itemId: t.itemId });

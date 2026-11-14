@@ -16,7 +16,8 @@
  *   pnpm demo:adapter eureka note "업무" "내용" [--stage "단계"]   # 쓰기: 단계 기록 추가
  *   pnpm demo:adapter eureka complete "업무"               # 쓰기: 업무 전체 완료
  *   pnpm demo:adapter eureka delete "업무"                 # 쓰기: 업무 삭제 (되돌릴 수 없음, 2026-11-14)
- *   pnpm demo:adapter eureka unsupported                 # 미지원 작업(hold) 안내 확인
+ *   pnpm demo:adapter eureka hold "업무" / resume "업무"    # 쓰기: 업무 보류·재개 (2026-11-14)
+ *   pnpm demo:adapter eureka unsupported                 # 미지원 작업(update_priority) 안내 확인
  *   pnpm demo:adapter eureka reconcile --req <requestId> --op <operationId>   # 결과 조회
  *     쓰기는 확인 질문을 보여 주고 답을 받는다(승인 말 → 같은 요청에 mutationApproved=true). --answer "응" 또는 --approve로 미리 지정
  *     --req·--op로 requestId·operationId를 직접 줄 수 있다 (같은 번호 재사용 거절 확인용)
@@ -164,13 +165,15 @@ async function eureka() {
   if (sub === 'note') return run('단계 기록', eurekaDecision('add_note', { target: need(pos[0], '업무 이름'), note: need(pos[1], '기록 내용'), name: valueOf('--stage') }));
   if (sub === 'complete') return run('업무 완료', eurekaDecision('complete', { target: need(pos[0], '업무 이름') }));
   if (sub === 'delete') return run('업무 삭제', eurekaDecision('delete', { target: need(pos[0], '업무 이름') }));
-  if (sub === 'unsupported') return run('미지원 작업', eurekaDecision('hold', { target: pos[0] ?? '아무 업무' }));
+  if (sub === 'hold') return run('업무 보류', eurekaDecision('hold', { target: need(pos[0], '업무 이름') }));
+  if (sub === 'resume') return run('업무 재개', eurekaDecision('resume', { target: need(pos[0], '업무 이름') }));
+  if (sub === 'unsupported') return run('미지원 작업', eurekaDecision('update_priority', { target: pos[0] ?? '아무 업무' }));
   if (sub === 'reconcile') {
     if (!valueOf('--req') || !valueOf('--op')) fail('--req <requestId> --op <operationId> 가 필요해요 (쓰기 결과에 찍힌 값)');
     const r = (await call('eureka.reconcile', requestId, { requestId, operationId, decision: eurekaDecision('query'), deadlineAt: deadline() })) as EurekaResult;
     return showEureka('결과 조회', requestId, r);
   }
-  fail(`알 수 없는 하위 명령: ${sub ?? '(없음)'} — list | processes | query | create | postpone | note | complete | delete | unsupported | reconcile`);
+  fail(`알 수 없는 하위 명령: ${sub ?? '(없음)'} — list | processes | query | create | postpone | note | complete | delete | hold | resume | unsupported | reconcile`);
 }
 
 // --------------------------------------------------------------- harness

@@ -78,6 +78,8 @@ export const ACTION_LABEL: Record<string, string> = {
   postpone_item: 'Eureka 마감 변경',
   complete_item: 'Eureka 업무 완료',
   delete_item: 'Eureka 업무 삭제',
+  hold_item: 'Eureka 업무 보류',
+  resume_item: 'Eureka 업무 재개',
   add_stage_note: 'Eureka 단계 기록',
 };
 

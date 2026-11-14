@@ -128,7 +128,7 @@ describe('EurekaAdapter — 쓰기 (직접 경로)', () => {
 
   it('지원하지 않는 의도·빠진 슬롯·시간대 없는 마감은 보내지 않는다', async () => {
     const { bridge, server } = setup();
-    expect(await bridge.execute(req('eureka.hold', { name: '보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
+    expect(await bridge.execute(req('eureka.update_priority', { name: '보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
     expect(await bridge.execute(req('eureka.postpone', { name: '보고서 제출', dueAt: '2026-10-09 23:59' }, { mutationApproved: true }))).toMatchObject({ status: 'needs_clarification' });
     expect(server.writeCount('/')).toBe(0);
   });
@@ -156,15 +156,31 @@ describe('EurekaAdapter — 라우터 Operation 라벨 (wiki small-router-model,
 
   it('지원하지 않는 라벨은 실행하지 않고, 무엇을 안 했는지·지원 범위를 말한다', async () => {
     const { bridge, server } = setup();
-    for (const op of ['hold', 'update_priority', 'move_stage_up', 'nonsense']) {
+    for (const op of ['update_priority', 'move_stage_up', 'nonsense']) {
       const r = await bridge.execute(req('eureka', { operation: op, name: '보고서 제출' }, { mutationApproved: true }));
       // 라우터 24개 라벨 중 미구현은 EUREKA_OPERATION_NOT_IMPLEMENTED, 목록에 없는 값은 POLICY_BLOCKED
       expect(r).toMatchObject({ status: 'failed', error: { code: op === 'nonsense' ? 'POLICY_BLOCKED' : 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
-      expect(r.facts['resultText']).toContain('실행하지 않았어요. 지금은 업무 조회·등록·기한 변경·완료·삭제와 단계 기록 추가를 할 수 있어요.');
+      expect(r.facts['resultText']).toContain('실행하지 않았어요. 지금은 업무 조회·등록·기한 변경·완료·보류·재개·삭제와 단계 기록 추가를 할 수 있어요.');
     }
-    expect((await bridge.execute(req('eureka', { operation: 'hold' }))).facts['resultText']).toContain('업무 보류는 아직');
+    expect((await bridge.execute(req('eureka', { operation: 'update_priority' }))).facts['resultText']).toContain('우선순위 변경은 아직');
     expect((await bridge.execute(req('eureka', { operation: 'update_stage' }))).facts['resultText']).toContain('단계 상태 변경은 아직');
     expect(server.calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
+  });
+
+  it('hold·resume (2026-11-14): 묻고 승인 뒤 PUT status 1번, 이미 보류·완료면 보내지 않는다', async () => {
+    const { bridge, server } = setup();
+    const q = await bridge.execute(req('eureka', { operation: 'hold', name: '보고서 제출' }));
+    expect(q.facts['question']).toBe("'보고서 제출' 업무를 보류할까요?");
+    const h = await bridge.execute(req('eureka', { operation: 'hold', name: '보고서 제출' }, { mutationApproved: true }));
+    expect(h).toMatchObject({ status: 'succeeded', facts: { action: 'hold_item', resultText: "'보고서 제출' 업무를 보류했어요." } });
+    expect(server.items.get('2001')!.status).toBe('hold');
+    expect(await bridge.execute(req('eureka', { operation: 'hold', name: '보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'POLICY_BLOCKED' } });
+    expect((await bridge.execute(req('eureka', { operation: 'resume', name: '보고서 제출' }))).facts['question']).toBe("'보고서 제출' 업무를 다시 진행할까요?");
+    const r = await bridge.execute(req('eureka', { operation: 'resume', name: '보고서 제출' }, { mutationApproved: true }));
+    expect(r).toMatchObject({ status: 'succeeded', facts: { action: 'resume_item' } });
+    expect(server.items.get('2001')!.status).toBe('doing');
+    expect(await bridge.execute(req('eureka', { operation: 'hold', name: '끝난 업무' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'POLICY_BLOCKED' } });
+    expect(server.calls.filter((c) => c.method === 'PUT')).toHaveLength(2);
   });
 
   it('delete (2026-11-14): 되돌릴 수 없다고 묻고, 승인 뒤 DELETE 1번. 완료된 업무도 지울 수 있고 다시 보내지 않는다', async () => {

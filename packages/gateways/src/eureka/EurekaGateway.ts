@@ -305,6 +305,20 @@ export class EurekaGateway implements EurekaGatewayPort {
   }
 
   /**
+   * 업무 보류·재개 (2026-11-14 추가). PUT /_api_/items/{id} {status} — 위키에는 '업무 정보 변경'으로만 있어 실제 시험으로 확인한다.
+   * 응답의 status가 보낸 값과 같을 때만 반영 확인으로 본다. 다르거나 없으면 결과 불명(목록으로 확인)
+   */
+  setItemStatus(cmd: { itemId: string; status: 'hold' | 'todo' | 'doing' }, handle: DispatchHandle, c: CallConstraints) {
+    const action = cmd.status === 'hold' ? 'hold_item' : 'resume_item';
+    return this.sendWrite({ method: 'PUT', path: `/_api_/items/${enc(cmd.itemId)}`, body: { status: cmd.status } }, handle, c, (b) => {
+      const item = b as { id?: unknown; status?: unknown };
+      return item?.id && item.status === cmd.status
+        ? { response: { itemId: String(item.id), status: item.status }, externalRefs: [{ system: 'eureka' as const, kind: `item_${action}`, id: `${String(item.id)}@${cmd.status}` }] }
+        : { response: { raw: b } };
+    }, { action, target: `item ${cmd.itemId}` });
+  }
+
+  /**
    * 업무 삭제 (2026-11-14 추가). DELETE /_api_/items/{id} — 위키 API 목록에는 없어 실제 시험으로 확인한다.
    * 2xx면 삭제로 본다(응답 본문이 비어도). 404면 이미 없거나 경로가 다름, 405면 Eureka가 삭제를 받지 않음
    */

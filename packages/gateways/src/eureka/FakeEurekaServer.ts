@@ -19,7 +19,8 @@ export interface FakeItem {
   description?: string;
   dueAt?: number;
   priority?: string;
-  status?: 'hold';
+  /** 서버에 저장된 업무 상태 값. hold만 계산에 쓰인다 */
+  status?: 'hold' | 'todo' | 'doing';
   stages: FakeStage[];
 }
 
@@ -111,9 +112,10 @@ export class FakeEurekaServer implements HttpClient {
     if (req.method === 'PUT' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/))) {
       const it = this.items.get(decodeURIComponent(m[1]!));
       if (!it) return { status: 404, bodyText: `.id[${m[1]}] not found` };
-      const body = req.body as { dueAt?: unknown };
+      const body = req.body as { dueAt?: unknown; status?: unknown };
       if (typeof body?.dueAt === 'number') it.dueAt = body.dueAt;
-      return ok({ id: it.id, name: it.name, dueAt: it.dueAt });
+      if (body?.status === 'hold' || body?.status === 'todo' || body?.status === 'doing') it.status = body.status;
+      return ok({ id: it.id, name: it.name, dueAt: it.dueAt, ...(it.status ? { status: it.status } : {}) });
     }
     if (req.method === 'DELETE' && (m = req.path.match(/^\/_api_\/items\/([^/]+)$/))) {
       const it = this.items.get(decodeURIComponent(m[1]!));

@@ -41,7 +41,7 @@ pnpm harness                     # 쓰기 허용이 기본 (D-38)
 | 3-4 | 같은 명령 | 응 | `succeeded`, 마감 11/21 18:00. 웹에서도 바뀜 |
 | 3-5 | `pnpm demo:adapter eureka note "DeskPet 시험 1109" "PR: https://github.com/<owner>/<repo>/pull/<번호>"` | 응 | `succeeded`, `stageId`·`noteId` 있음. **웹에서 그 단계 기록이 보이는지** 확인 |
 | 3-6 | `pnpm demo:adapter links <3-1의 itemId>` | — | `status: linked`, 3-5의 PR과 단계 |
-| 3-7 | `pnpm demo:adapter eureka unsupported` | — | `EUREKA_OPERATION_NOT_IMPLEMENTED`, "업무 보류는 아직 지원하지 않아 …" |
+| 3-7 | `pnpm demo:adapter eureka unsupported` | — | `EUREKA_OPERATION_NOT_IMPLEMENTED`, "우선순위 변경은 아직 지원하지 않아 …" |
 
 ## 4. 작업 번호·결과 조회
 
