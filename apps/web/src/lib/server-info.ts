@@ -24,8 +24,23 @@ export interface HistoryEntry {
 
 export type UpdateState = 'disabled' | 'idle' | 'checking' | 'up_to_date' | 'available' | 'check_failed' | 'updating' | 'restarting' | 'restart_required' | 'failed';
 
+/** 함께 받는 저장소 (D-58): product·pipeline·hardware. 코드만 받는다 */
+export interface RepoUpdateStatus {
+  name: string;
+  path: string;
+  branch?: string;
+  commit?: string;
+  upstream?: string;
+  behind: number;
+  ahead: number;
+  commits: { sha: string; subject: string }[];
+  error?: string;
+  updated?: { from: string; to: string };
+}
+
 export interface UpdateStatus {
   state: UpdateState;
+  repos?: RepoUpdateStatus[];
   canApply: boolean;
   current?: { commit: string; subject: string; branch: string };
   upstream?: string;
@@ -47,6 +62,25 @@ export interface ServerInfo {
   supervised?: boolean;
   /** 웹에서 바꾸는 서버 설정 (D-52) */
   settings?: { allowedRepositories: string[]; source: 'file' | 'env'; persistent: boolean; updatedAt?: string };
+}
+
+/** 업데이트할 저장소 목록: Harness + 함께 받는 저장소 중 뒤처진 것 (D-58) */
+export function pendingUpdates(u: UpdateStatus): { name: string; behind: number; commits: { sha: string; subject: string }[]; codeOnly: boolean }[] {
+  return [
+    ...(u.behind ? [{ name: 'harness', behind: u.behind, commits: u.commits ?? [], codeOnly: false }] : []),
+    ...(u.repos ?? []).filter((r) => r.behind > 0).map((r) => ({ name: r.name, behind: r.behind, commits: r.commits, codeOnly: true })),
+  ];
+}
+
+/** 설정의 '지금 새 버전 확인' 결과 문구 */
+export function checkResultText(u: UpdateStatus | undefined): string {
+  if (!u) return '확인했어요.';
+  if (u.state === 'check_failed') return `확인하지 못했어요: ${u.message ?? ''}`;
+  const p = pendingUpdates(u);
+  const failed = (u.repos ?? []).filter((r) => r.error).map((r) => `${r.name}(${r.error})`);
+  const tailNote = failed.length ? ` 확인 못 한 저장소: ${failed.join(', ')}` : '';
+  if (!p.length) return `지금 최신이에요.${tailNote}`;
+  return `새 버전이 있어요 — ${p.map((x) => `${x.name} ${x.behind}개`).join(', ')}. 화면 위 알림의 '업데이트'를 누르세요.${tailNote}`;
 }
 
 export const HISTORY_STATUS_LABEL: Record<HistoryStatus, string> = {

@@ -2,8 +2,10 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { ConnView, HarnessConnection } from '@/lib/connection';
-import { formatDateTime } from '@/lib/server-info';
+import { checkResultText, formatDateTime } from '@/lib/server-info';
 import type { SavedConnection, Settings } from '@/lib/settings';
+
+const CHECK_OK = '__check_ok__';
 
 const UPDATE_STATE_LABEL: Record<string, string> = {
   disabled: '확인 안 함',
@@ -99,7 +101,7 @@ export function SettingsView({
                   setChecking(true);
                   void conn
                     .admin(t, 'update.check')
-                    .then((r) => setMsg(r.ok ? '관리 토큰이 맞아요. 새 버전도 확인했어요.' : adminMessage(r.message)))
+                    .then((r) => setMsg(r.ok ? CHECK_OK : adminMessage(r.message)))
                     .finally(() => setChecking(false));
                 }}
               >
@@ -109,7 +111,8 @@ export function SettingsView({
           </div>
           {msg && (
             <p role="status" className="text-sm text-muted-foreground">
-              {msg}
+              {/* 확인 결과는 서버가 보낸 최신 상태로 그린다 */}
+              {msg === CHECK_OK ? `관리 토큰이 맞아요. ${checkResultText(u)}` : msg}
             </p>
           )}
         </form>
@@ -133,6 +136,18 @@ export function SettingsView({
             {u?.checkedAt ? <span className="text-muted-foreground"> · {formatDateTime(u.checkedAt)} 확인</span> : null}
             {u?.state === 'check_failed' && u.message ? <span className="block text-muted-foreground">{u.message}</span> : null}
           </Row>
+          {u?.repos && u.repos.length > 0 && (
+            <Row label="함께 받는 저장소">
+              <ul className="grid gap-0.5">
+                {u.repos.map((r) => (
+                  <li key={r.path}>
+                    {r.name} <span className="text-muted-foreground">· {r.error ? r.error : r.behind > 0 ? `커밋 ${r.behind}개 뒤처짐` : r.commit ? `최신 (${r.commit})` : '확인 전'}{r.updated ? ` · ${r.updated.from} → ${r.updated.to} 받음` : ''}</span>
+                    <span className="block truncate font-mono text-xs text-muted-foreground">{r.path}</span>
+                  </li>
+                ))}
+              </ul>
+            </Row>
+          )}
           <Row label="자동 재시작">{info ? (info.supervised ? '켜짐 (pnpm start)' : '꺼짐 — 업데이트 뒤 직접 다시 실행') : '-'}</Row>
           <Row label="세션 기록">{info ? (info.history ? (info.history.persistent ? '파일에 저장' : '메모리 (서버를 끄면 사라짐)') : '꺼짐') : '-'}</Row>
         </dl>
