@@ -21,6 +21,7 @@ import './quietWarnings.js';
  *   DESKPET_HISTORY_PATH (세션 기록 JSONL, 기본 DESKPET_STORE_PATH와 같은 폴더의 history.jsonl, off로 끔) (D-47)
  *   HARNESS_UPDATE_CHECK (기본 on — git fetch로 새 버전 확인, off로 끔), HARNESS_UPDATE_CHECK_MINUTES (기본 30) (D-49)
  *   HARNESS_WEB_ADMIN_TOKEN (선택, 16자 이상·다른 토큰과 다름 — 웹 설정에 넣으면 업데이트 버튼 사용) (D-50)
+ *   DESKPET_UPDATE_REPOS (함께 받을 저장소 D-58. 비우면 Harness 폴더 옆 deskpet-product·pipeline·hardware 자동, off로 끔, 'name=경로,…'로 직접)
  *   현황의 Eureka 링크는 Eureka 웹 내 업무 화면, 저장소는 승인 허용 저장소(웹 설정에서 관리, 처음 값은 DESKPET_ALLOWED_REPOS → settings.json, D-52)
  *   DESKPET_PR_AUTO_LINK (기본 on — PR 제목·본문·브랜치의 EU-<업무번호>[.<단계순서>]로 단계 기록에 PR 주소 자동 기록, D-57), DESKPET_PR_AUTO_LINK_MINUTES (기본 5)
  *   DESKPET_OVERVIEW_MINUTES (기본 10), DESKPET_REMINDER_DAYS (기본 7), DESKPET_OVERVIEW=off로 끔 (D-51)
@@ -32,7 +33,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { renderBanner, type BannerRow, type BannerSection } from './banner.js';
-import { Updater, type UpdateStatus } from './updater.js';
+import { Updater, findSiblingRepos, type UpdateStatus } from './updater.js';
 import { loadRuntimeSettings, saveRuntimeSettings } from './runtimeSettings.js';
 import { RESTART_EXIT_CODE } from './restartCode.js';
 import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
@@ -321,8 +322,11 @@ const server: HarnessWsServer = new HarnessWsServer({
 const supervised = env['DESKPET_SUPERVISED'] === '1';
 const updateCheck = (env['HARNESS_UPDATE_CHECK'] ?? 'on').trim().toLowerCase() !== 'off';
 const updateCheckMinutes = positive(env['HARNESS_UPDATE_CHECK_MINUTES'], 30);
+// 함께 받는 저장소 (D-58): 팀 조직의 product·pipeline·hardware. 코드만 받는다
+const siblingRepos = findSiblingRepos(appRoot, env['DESKPET_UPDATE_REPOS']);
 const updater: Updater = new Updater({
   cwd: appRoot,
+  repos: siblingRepos,
   canApply: !!adminToken,
   inFlight: (): number => server.inFlightCount,
   restart: () => {
@@ -421,7 +425,10 @@ async function main() {
     },
     {
       title: '업데이트',
-      rows: [['', `${updateCheck && cur ? `${updateCheckMinutes}분마다 확인` : '확인 꺼짐'} · 웹 버튼 ${adminToken ? (supervised ? '켜짐 (자동 재시작)' : '켜짐 (재시작은 직접 — pnpm start면 자동)') : '꺼짐 (HARNESS_WEB_ADMIN_TOKEN 없음)'}`]],
+      rows: [
+        ['', `${updateCheck && cur ? `${updateCheckMinutes}분마다 확인` : '확인 꺼짐'} · 웹 버튼 ${adminToken ? (supervised ? '켜짐 (자동 재시작)' : '켜짐 (재시작은 직접 — pnpm start면 자동)') : '꺼짐 (HARNESS_WEB_ADMIN_TOKEN 없음)'}`],
+        ['', `함께 받기: ${siblingRepos.length ? siblingRepos.map((r) => `${r.name} (${shortPath(r.cwd)})`).join(', ') + ' — 코드만' : (env['DESKPET_UPDATE_REPOS'] ?? '').trim().toLowerCase() === 'off' ? '꺼짐' : '없음 (옆 폴더에 deskpet-product·pipeline·hardware 없음)'}`],
+      ],
     },
   ];
 

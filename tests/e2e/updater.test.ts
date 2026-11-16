@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { Updater, defaultRunner, redact, type Runner } from '../../scripts/updater.js';
+import { Updater, defaultRunner, findSiblingRepos, redact, type Runner } from '../../scripts/updater.js';
 
 /**
  * D-49 업데이트 확인 / D-50 웹 업데이트 버튼.
@@ -155,5 +155,86 @@ describe('출력 가리기', () => {
   it('주소 안의 인증 정보와 GitHub 토큰은 가린다', () => {
     expect(redact('fatal: unable to access https://user:ghp_abcdefghijklmnopqrstuvwxyz0123@github.com/x/y.git')).toBe('fatal: unable to access https://***@github.com/x/y.git');
     expect(redact('token github_pat_11ABCDEFGHIJKLMNOPQRSTUV_xyz')).toBe('token ***');
+  });
+});
+
+describe('함께 받는 저장소 (D-58)', () => {
+  function withRepos(o: { restart?: 'restarting' | 'manual' } = {}) {
+    const h = setup();
+    const p = setup();
+    const pnpm: string[] = [];
+    const run: Runner = (cmd, args, opts) => {
+      if (cmd === 'pnpm') {
+        pnpm.push(`${opts.cwd === h.local ? 'harness' : 'other'}:${args.join(' ')}`);
+        return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+      }
+      return defaultRunner(cmd, args, opts);
+    };
+    const u = new Updater({ cwd: h.local, repos: [{ name: 'pipeline', cwd: p.local }], canApply: true, inFlight: () => 0, restart: () => o.restart ?? 'restarting', run });
+    return { h, p, u, pnpm };
+  }
+
+  it('다른 저장소에만 새 커밋이 있어도 available, 저장소별로 알려 준다', async () => {
+    const { p, u } = withRepos();
+    p.push('a.txt', 'p2', 'pipeline fix');
+    const s = await u.check();
+    expect(s.state).toBe('available');
+    expect(s.behind).toBe(0);
+    expect(s.repos).toEqual([expect.objectContaining({ name: 'pipeline', behind: 1, commits: [expect.objectContaining({ subject: 'pipeline fix' })] })]);
+  });
+
+  it('다른 저장소는 코드만 받고, Harness가 최신이면 재시작하지 않는다', async () => {
+    const { p, u, pnpm } = withRepos();
+    p.push('a.txt', 'p2', 'pipeline fix');
+    const r = await u.apply();
+    expect(r.ok).toBe(true);
+    expect(git(p.local, 'log', '-1', '--format=%s')).toBe('pipeline fix');
+    expect(pnpm).toEqual([]);
+    expect(u.status.state).toBe('up_to_date');
+    expect(u.status.message).toContain('pipeline는 코드만 받았어요');
+    expect(u.status.repos![0]!.updated).toBeTruthy();
+  });
+
+  it('둘 다 새 커밋: 다른 저장소 먼저 받고 Harness는 빌드 뒤 재시작', async () => {
+    const { h, p, u, pnpm } = withRepos();
+    p.push('a.txt', 'p2', 'pipeline fix');
+    h.push('a.txt', 'h2', 'harness fix');
+    await u.apply();
+    expect(git(p.local, 'log', '-1', '--format=%s')).toBe('pipeline fix');
+    expect(git(h.local, 'log', '-1', '--format=%s')).toBe('harness fix');
+    expect(pnpm).toEqual(['harness:web:build']);
+    expect(u.status.state).toBe('restarting');
+    expect(u.status.message).toContain('pipeline');
+  });
+
+  it('다른 저장소에 수정이 있으면 아무것도 받지 않는다', async () => {
+    const { h, p, u } = withRepos();
+    h.push('a.txt', 'h2', 'harness fix');
+    writeFileSync(join(p.local, 'a.txt'), 'local edit');
+    const r = await u.apply();
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('pipeline: 커밋하지 않은 변경');
+    expect(git(h.local, 'log', '-1', '--format=%s')).toBe('first');
+  });
+
+  it('다른 저장소 확인이 실패해도 Harness 확인은 된다', async () => {
+    const { h, p, u } = withRepos();
+    git(p.local, 'checkout', '-q', '-b', 'mine');
+    h.push('a.txt', 'h2', 'harness fix');
+    const s = await u.check();
+    expect(s.state).toBe('available');
+    expect(s.repos![0]!.error).toContain('mine');
+  });
+
+  it('저장소 찾기: 옆 폴더·한 단계 위·홈, 자신과 상위는 제외, off·직접 지정', () => {
+    const repos = new Set(['/home/u/deskpet-pipeline', '/home/u/deskpet-hardware', '/home/u/deskpet-harness', '/home/u']);
+    const isRepo = (p: string) => repos.has(p);
+    expect(findSiblingRepos('/home/u/deskpet-harness', undefined, '/home/u', isRepo)).toEqual([
+      { name: 'pipeline', cwd: '/home/u/deskpet-pipeline' },
+      { name: 'hardware', cwd: '/home/u/deskpet-hardware' },
+    ]);
+    expect(findSiblingRepos('/home/u/deskpet-harness/app', undefined, '/elsewhere', isRepo).map((r) => r.name)).toEqual(['pipeline', 'hardware']);
+    expect(findSiblingRepos('/home/u/deskpet-harness', 'off', '/home/u', isRepo)).toEqual([]);
+    expect(findSiblingRepos('/home/u/deskpet-harness', 'hw=../deskpet-hardware, /home/u, /home/u/deskpet-harness', '/home/u', isRepo)).toEqual([{ name: 'hw', cwd: '/home/u/deskpet-hardware' }]);
   });
 });

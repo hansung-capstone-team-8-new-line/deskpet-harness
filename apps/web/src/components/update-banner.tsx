@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type { ConnView } from '@/lib/connection';
+import { pendingUpdates } from '@/lib/server-info';
 
 /**
  * 업데이트 알림 (D-49) + 업데이트 버튼 (D-50).
@@ -43,22 +44,35 @@ export function UpdateBanner({ view, adminToken, onApply, onOpenSettings }: { vi
       </Notice>
     );
   }
-  if (u.state !== 'available' || !u.behind) return null;
+  // 함께 받는 저장소만 받은 뒤 (Harness는 최신 → 재시작 없음) 결과 안내 (D-58)
+  if (u.state === 'up_to_date' && u.message && (u.repos ?? []).some((r) => r.updated)) {
+    return <Notice title="업데이트를 받았어요." body={u.message} />;
+  }
+  const pending = u.state === 'available' ? pendingUpdates(u) : [];
+  if (!pending.length) return null;
 
   const canApply = u.canApply && info?.admin;
+  const total = pending.reduce((n, p) => n + p.behind, 0);
   return (
     <Notice
-      title={`새 버전이 있어요 — ${u.upstream ?? '원격'}보다 커밋 ${u.behind}개 뒤처짐`}
+      title={`새 버전이 있어요 — ${pending.map((p) => p.name).join(', ')} (커밋 ${total}개)`}
       body={
         <>
-          <ul className="mt-1 list-disc pl-5">
-            {(u.commits ?? []).slice(0, 5).map((c) => (
-              <li key={c.sha}>
-                <span className="font-mono text-xs">{c.sha}</span> {c.subject}
-              </li>
-            ))}
-            {(u.commits?.length ?? 0) > 5 && <li>외 {u.behind - 5}개</li>}
-          </ul>
+          {pending.map((p) => (
+            <div key={p.name} className="mt-1">
+              <p className="text-foreground">
+                {p.name} · 커밋 {p.behind}개{p.codeOnly ? ' · 코드만 받음 (다시 실행은 직접)' : ''}
+              </p>
+              <ul className="list-disc pl-5">
+                {p.commits.slice(0, 5).map((c) => (
+                  <li key={c.sha}>
+                    <span className="font-mono text-xs">{c.sha}</span> {c.subject}
+                  </li>
+                ))}
+                {p.behind > 5 && <li>외 {p.behind - 5}개</li>}
+              </ul>
+            </div>
+          ))}
           {u.message && <p className="mt-1">{u.message}</p>}
           {!canApply && <p className="mt-1">서버 .env에 HARNESS_WEB_ADMIN_TOKEN을 넣으면 웹에서 업데이트할 수 있어요. 지금은 터미널에서 git pull 후 다시 실행하세요.</p>}
         </>
