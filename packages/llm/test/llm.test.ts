@@ -100,6 +100,13 @@ describe('OpenAiLlmClient', () => {
     await expect(llm.complete(req())).rejects.toMatchObject({ code: 'invalid_output' });
   });
 
+  it('deadline이 32비트 상한(예: Swift distantFuture 4001-01-01)을 넘어도 상한으로 클램프한다', async () => {
+    const { llm, calls } = openai(() => ({ output_text: '{"a":"1"}', status: 'completed', model: 'test-model' }));
+    const r = await llm.complete(req({ deadlineAt: '4001-01-01T00:00:00.000Z' }));
+    expect(r.json).toEqual({ a: '1' });
+    expect(calls[0]!.options.timeout).toBe(2_147_483_647);
+  });
+
   it('SDK 오류를 공통 코드로 바꾸고 키를 메시지에 남기지 않는다', async () => {
     const cases: [Error, string][] = [
       [new OpenAI.AuthenticationError(401, undefined, `bad key ${SECRET}`, new Headers()), 'auth'],
@@ -187,6 +194,26 @@ describe('GeminiLlmClient', () => {
     const g = gemini(() => geminiOk('{}'));
     await expect(g.llm.complete(req({ deadlineAt: new Date(NOW - 1).toISOString() }))).rejects.toMatchObject({ code: 'timeout' });
     expect(g.calls).toHaveLength(0);
+  });
+
+  it('deadline이 32비트 상한(예: Swift distantFuture 4001-01-01)을 넘어도 상한으로 클램프한다', async () => {
+    const { llm, calls } = openai(() => ({ output_text: '{"a":"1"}', status: 'completed', model: 'test-model' }));
+    const r = await llm.complete(req({ deadlineAt: '4001-01-01T00:00:00.000Z' }));
+    expect(r.json).toEqual({ a: '1' });
+    expect(calls[0]!.options.timeout).toBe(2_147_483_647);
+  });
+
+  it('deadline이 32비트 상한(예: Swift distantFuture 4001-01-01)을 넘어도 AbortSignal.timeout RangeError 없이 동작한다', async () => {
+    const caller = new AbortController();
+    const withoutCaller = gemini(() => geminiOk('{"a":"1"}'));
+    const r1 = await withoutCaller.llm.complete(req({ deadlineAt: '4001-01-01T00:00:00.000Z' }));
+    expect(r1.json).toEqual({ a: '1' });
+    expect(withoutCaller.calls[0]!.config['abortSignal']).toBeUndefined();
+
+    const withCaller = gemini(() => geminiOk('{"a":"2"}'));
+    const r2 = await withCaller.llm.complete(req({ deadlineAt: '4001-01-01T00:00:00.000Z', signal: caller.signal }));
+    expect(r2.json).toEqual({ a: '2' });
+    expect(withCaller.calls[0]!.config['abortSignal']).toBe(caller.signal);
   });
 
   it('SDK 오류를 공통 코드로 바꾸고 키를 메시지에 남기지 않는다', async () => {

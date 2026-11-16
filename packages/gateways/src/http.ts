@@ -60,14 +60,14 @@ export class FetchHttpClient implements HttpClient {
   private async send(req: HttpRequest): Promise<HttpResponse> {
     const url = new URL(this.baseUrl.replace(/\/$/, '') + req.path);
     for (const [k, v] of Object.entries(req.query ?? {})) url.searchParams.set(k, v);
-    const timeout = AbortSignal.timeout(req.timeoutMs);
-    const signal = req.signal ? AbortSignal.any([req.signal, timeout]) : timeout;
+    const timeout = req.timeoutMs <= 2_147_483_647 ? AbortSignal.timeout(Math.max(0, req.timeoutMs)) : undefined;
+    const signal = req.signal && timeout ? AbortSignal.any([req.signal, timeout]) : (req.signal ?? timeout);
     try {
       const res = await this.fetchImpl(url, {
         method: req.method,
         headers: { ...this.headers(), ...(req.body !== undefined ? { 'content-type': 'application/json' } : {}) },
         ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
-        signal,
+        ...(signal ? { signal } : {}),
       });
       return { status: res.status, bodyText: await res.text() };
     } catch (e) {

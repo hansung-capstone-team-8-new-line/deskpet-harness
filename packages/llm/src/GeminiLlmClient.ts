@@ -43,6 +43,8 @@ const LEVELS: Record<GeminiThinkingLevel, ThinkingLevel> = {
   high: ThinkingLevel.HIGH,
 };
 
+const MAX_TIMER_MS = 2_147_483_647;
+
 export class GeminiLlmClient implements LlmClient {
   readonly provider = 'gemini';
   private readonly client: GenerateContentApiLike;
@@ -63,11 +65,13 @@ export class GeminiLlmClient implements LlmClient {
     if (!(timeout > 0)) throw new LlmError('timeout', 'deadline already passed');
     if (req.signal?.aborted) throw new LlmError('aborted', 'aborted before call');
 
-    const signal = req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);
+    // Node.js AbortSignal.timeout / setTimeout throw RangeError or overflow above 32-bit limits (~24.8 days).
+    const timeoutSignal = timeout <= MAX_TIMER_MS ? AbortSignal.timeout(timeout) : undefined;
+    const signal = req.signal && timeoutSignal ? AbortSignal.any([req.signal, timeoutSignal]) : (req.signal ?? timeoutSignal);
     const config: Record<string, unknown> = {
       systemInstruction: req.instructions,
       maxOutputTokens: req.maxOutputTokens + (this.o.thinkingAllowance ?? 1024),
-      abortSignal: signal,
+      ...(signal ? { abortSignal: signal } : {}),
       // httpOptions.timeout은 쓰지 않는다: SDK가 X-Server-Timeout 헤더(초)로 보내는데 짧은 값(예: 4초)은 서버가 400으로 거부한다.
       // 시간 제한은 abortSignal로 클라이언트에서 건다.
       httpOptions: { retryOptions: { attempts: 1 } },

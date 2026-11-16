@@ -44,9 +44,11 @@ export class OpenAiLlmClient implements LlmClient {
   }
 
   async complete(req: LlmRequest): Promise<LlmResponse> {
-    const timeout = Date.parse(req.deadlineAt) - this.now();
-    if (!(timeout > 0)) throw new LlmError('timeout', 'deadline already passed');
+    const rawTimeout = Date.parse(req.deadlineAt) - this.now();
+    if (!(rawTimeout > 0)) throw new LlmError('timeout', 'deadline already passed');
     if (req.signal?.aborted) throw new LlmError('aborted', 'aborted before call');
+    // Node.js setTimeout overflows above signed 32-bit max (2_147_483_647 ms) and fires in 1ms.
+    const timeout = Math.min(rawTimeout, 2_147_483_647);
 
     const body: Record<string, unknown> = {
       model: this.o.model,

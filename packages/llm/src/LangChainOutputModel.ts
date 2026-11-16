@@ -42,7 +42,7 @@ export class LangChainOutputModel implements OutputModel {
           ['system', input.instructions],
           ['human', input.prompt],
         ],
-        { signal: AbortSignal.timeout(input.deadlineMs) },
+        input.deadlineMs <= 2_147_483_647 ? { signal: AbortSignal.timeout(Math.max(0, input.deadlineMs)) } : undefined,
       );
     } catch (e) {
       if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) throw new LlmError('timeout', 'output model timed out');
