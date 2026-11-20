@@ -10,17 +10,17 @@ import './quietWarnings.js';
  *   pnpm harness --no-github-writes       # GitHub 승인만 끔 / --no-eureka-writes: Eureka 쓰기만 끔
  *
  * .env
- *   HARNESS_WS_TOKEN (필수, 16자 이상 — 클라이언트 hello 인증), HARNESS_WS_HOST(기본 127.0.0.1), HARNESS_WS_PORT(기본 8787),
- *   HARNESS_WS_ALLOWED_ORIGINS (브라우저 Origin 허용 목록, 쉼표 구분. 비우면 브라우저 접속 거부)
- *   HARNESS_WS_ALLOWED_CLIENTS (다른 기기 접속 허용 IP·CIDR, 쉼표 구분. HARNESS_WS_HOST를 loopback이 아닌 값으로 줄 때 필수)
+ *   HARNESS_WS_TOKEN (필수, 길이 제한 없음 — 파이프라인 hello 인증), HARNESS_WS_HOST(기본 127.0.0.1), HARNESS_WS_PORT(기본 8787),
+ *   HARNESS_WS_ALLOWED_ORIGINS (브라우저 Origin 허용 목록, 쉼표 구분. 비우면 모두 허용 — D-60)
+ *   HARNESS_WS_ALLOWED_CLIENTS (다른 기기 접속 허용 IP·CIDR, 쉼표 구분. 비우면 누구나 — D-60)
  *   HARNESS_WS_TLS_CERT / HARNESS_WS_TLS_KEY (선택, PEM 파일 경로 → wss://)
- *   HARNESS_WS_VIEWER_TOKEN (선택, 16자 이상 — 웹 화면용 구독 전용 토큰. pipeline 토큰과 달라야 함.
+ *   HARNESS_WS_VIEWER_TOKEN (선택 — 웹 화면용 구독 전용 토큰.
  *     비우면 웹 화면(보기 전용)은 토큰 없이 접속된다 (D-45). 접속 IP 허용 목록·Origin 검사는 그대로)
  *   pnpm start -- --web / pnpm harness --web : 서버가 뜨면 이 기기의 기본 브라우저로 웹 화면을 연다 (D-46, 임시)
  *   pnpm start는 감시 프로세스(scripts/supervise.ts)로 서버를 띄워, 웹에서 업데이트하면 자동으로 다시 시작한다 (D-50)
  *   DESKPET_HISTORY_PATH (세션 기록 JSONL, 기본 DESKPET_STORE_PATH와 같은 폴더의 history.jsonl, off로 끔) (D-47)
  *   HARNESS_UPDATE_CHECK (기본 on — git fetch로 새 버전 확인, off로 끔), HARNESS_UPDATE_CHECK_MINUTES (기본 30) (D-49)
- *   HARNESS_WEB_ADMIN_TOKEN (선택, 16자 이상·다른 토큰과 다름 — 웹 설정에 넣으면 업데이트 버튼 사용) (D-50)
+ *   (HARNESS_WEB_ADMIN_TOKEN은 없앴다 — 웹 업데이트 버튼은 접속한 화면 누구나, D-60)
  *   DESKPET_WIFI (기본 on — 리눅스에서 nmcli로 웹 설정의 Wi-Fi 찾기·연결, off로 끔. 관리 토큰 없이, D-59)
  *   DESKPET_UPDATE_REPOS (함께 받을 저장소 D-58. 비우면 Harness 폴더 옆 deskpet-product·pipeline·hardware 자동, off로 끔, 'name=경로,…'로 직접)
  *   현황의 Eureka 링크는 Eureka 웹 내 업무 화면, 저장소는 승인 허용 저장소(웹 설정에서 관리, 처음 값은 DESKPET_ALLOWED_REPOS → settings.json, D-52)
@@ -73,30 +73,20 @@ const fail = (msg: string): never => {
   process.exit(1);
 };
 
-const token = env['HARNESS_WS_TOKEN']?.trim() || fail('HARNESS_WS_TOKEN이 비어 있어요 (16자 이상 임의 문자열)');
-if (token.length < 16) fail('HARNESS_WS_TOKEN은 16자 이상이어야 해요');
+const token = env['HARNESS_WS_TOKEN']?.trim() || fail('HARNESS_WS_TOKEN이 비어 있어요 (아무 문자열)');
 const githubToken = env['GITHUB_TOKEN'] || fail('GITHUB_TOKEN이 비어 있어요');
 
-// ------------------------------------------------------ 다른 기기 접속 (D-25)
-// 기본은 이 기기에서만(127.0.0.1). Jetson·파이프라인 보드에서 붙으려면 HARNESS_WS_HOST=0.0.0.0(또는 이 기기의 LAN 주소)과
-// HARNESS_WS_ALLOWED_CLIENTS(접속을 받을 IP·CIDR)를 함께 준다. 둘 중 하나만 있으면 시작하지 않는다.
+// ------------------------------------------------------ 다른 기기 접속 (D-25, D-60)
+// 기본은 이 기기에서만(127.0.0.1). HARNESS_WS_HOST=0.0.0.0이면 다른 기기도 접속한다.
+// D-60 (2026-11-20 사용자 결정): 토큰 길이·중복 검사, 관리 토큰, 접속 IP·Origin 제한을 없앴다.
+// HARNESS_WS_ALLOWED_CLIENTS·HARNESS_WS_ALLOWED_ORIGINS를 비우면 누구나, 넣으면 그 목록만 받는다
 const wsHost = env['HARNESS_WS_HOST']?.trim() || '127.0.0.1';
 const lan = !['127.0.0.1', 'localhost', '::1'].includes(wsHost);
 const allowedClients = (env['HARNESS_WS_ALLOWED_CLIENTS'] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+const allowedOriginList = (env['HARNESS_WS_ALLOWED_ORIGINS'] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const tlsCert = env['HARNESS_WS_TLS_CERT']?.trim();
 const tlsKey = env['HARNESS_WS_TLS_KEY']?.trim();
-if (lan) {
-  if (!allowedClients.length) fail(`HARNESS_WS_HOST=${wsHost}로 다른 기기 접속을 열려면 HARNESS_WS_ALLOWED_CLIENTS(예: 192.168.0.20 또는 192.168.0.0/24)가 필요해요`);
-  if (token.length < 24) fail('다른 기기 접속을 열 때는 HARNESS_WS_TOKEN을 24자 이상으로 해 주세요');
-  const vt = env['HARNESS_WS_VIEWER_TOKEN']?.trim();
-  if (vt && vt.length < 24) fail('다른 기기 접속을 열 때는 HARNESS_WS_VIEWER_TOKEN도 24자 이상으로 해 주세요');
-  const at = env['HARNESS_WEB_ADMIN_TOKEN']?.trim();
-  if (at && at.length < 24) fail('다른 기기 접속을 열 때는 HARNESS_WEB_ADMIN_TOKEN도 24자 이상으로 해 주세요');
-}
-// 관리 토큰 (D-50): 웹 화면에서 업데이트를 누를 수 있게 한다. 없으면 웹은 알림만
-const adminToken = env['HARNESS_WEB_ADMIN_TOKEN']?.trim() || undefined;
-if (adminToken && adminToken.length < 16) fail('HARNESS_WEB_ADMIN_TOKEN은 16자 이상이어야 해요');
-if (adminToken && (adminToken === token || adminToken === env['HARNESS_WS_VIEWER_TOKEN']?.trim())) fail('HARNESS_WEB_ADMIN_TOKEN은 다른 토큰(HARNESS_WS_TOKEN·HARNESS_WS_VIEWER_TOKEN)과 달라야 해요');
+// 관리 토큰 (D-50)은 없앴다 (D-60): 웹 업데이트 버튼은 접속한 화면 누구나. HARNESS_WEB_ADMIN_TOKEN은 무시
 if (!!tlsCert !== !!tlsKey) fail('TLS를 쓰려면 HARNESS_WS_TLS_CERT와 HARNESS_WS_TLS_KEY를 둘 다 주세요 (PEM 파일 경로)');
 const tls = tlsCert && tlsKey ? (() => {
   try {
@@ -307,7 +297,8 @@ const server: HarnessWsServer = new HarnessWsServer({
   token,
   // D-45: 보기 전용 토큰을 비우면 웹 화면은 토큰 없이 접속 (구독만, 실행 불가)
   ...(env['HARNESS_WS_VIEWER_TOKEN']?.trim() ? { viewerToken: env['HARNESS_WS_VIEWER_TOKEN'].trim() } : { openViewer: true }),
-  ...(adminToken ? { adminToken, admin: (action: AdminAction): Promise<{ ok: boolean; message: string }> => (action === 'update.apply' ? updater.apply() : updater.check().then((s: UpdateStatus) => ({ ok: s.state !== 'check_failed', message: s.message ?? s.state }))) } : {}),
+  // 업데이트 확인·적용: 관리 토큰 없이 (D-60)
+  admin: (action: AdminAction): Promise<{ ok: boolean; message: string }> => (action === 'update.apply' ? updater.apply() : updater.check().then((s: UpdateStatus) => ({ ok: s.state !== 'check_failed', message: s.message ?? s.state }))),
   ...(history ? { history } : {}),
   info: () => serverInfo(),
   // 승인 허용 저장소는 사용자가 웹 설정에서 바꾼다 (관리 토큰 없이, 사용자 결정 2026-11-14)
@@ -328,10 +319,12 @@ const server: HarnessWsServer = new HarnessWsServer({
   ...(overview ? { overview } : {}),
   host: wsHost,
   allowedClients,
+  ...(allowedClients.length ? {} : { anyClient: true }),
+  ...(allowedOriginList.length ? {} : { anyOrigin: true }),
   ...(tls ? { tls } : {}),
   ...(webEnabled ? { web: { root: webDir } } : {}),
   port: Number(env['HARNESS_WS_PORT']) || 8787,
-  allowedOrigins: (env['HARNESS_WS_ALLOWED_ORIGINS'] ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  allowedOrigins: allowedOriginList,
   // 시작 줄(주소·epoch)은 시작 화면에 이미 나오므로 한 번만 숨긴다
   log: (l) => {
     if (quietStartLine && l.startsWith('Harness WebSocket 서버 ws')) return void (quietStartLine = false);
@@ -349,7 +342,7 @@ const siblingRepos = findSiblingRepos(appRoot, env['DESKPET_UPDATE_REPOS']);
 const updater: Updater = new Updater({
   cwd: appRoot,
   repos: siblingRepos,
-  canApply: !!adminToken,
+  canApply: true,
   inFlight: (): number => server.inFlightCount,
   restart: () => {
     if (!supervised) return 'manual';
@@ -365,7 +358,7 @@ function serverInfo() {
     startedAt: history?.sessionId ?? startedAt,
     version: updater.status.current,
     update: updater.status,
-    admin: !!adminToken,
+    admin: true,
     history: history ? { persistent: !!historyPath } : null,
     supervised,
     wifi: wifi.status,
@@ -418,7 +411,7 @@ async function main() {
   if (readOnly) warnings.push('읽기 전용(--read-only): GitHub 승인·Eureka 반영을 보내지 않아요');
   else if (!writeWarnings.length && (!allowGithubWrites || !allowEurekaWrites)) warnings.push(`쓰기 꺼짐: ${[!allowGithubWrites && 'GitHub', !allowEurekaWrites && 'Eureka'].filter(Boolean).join('·')}`);
   if (lan && !tls) warnings.push('TLS 없이 다른 기기 접속을 열었어요. 토큰이 암호화 없이 오가니 믿을 수 있는 네트워크에서만 쓰세요');
-  if (lan && !viewerToken) warnings.push(`웹 화면에 토큰이 없어요. 허용 IP(${allowedClients.join(', ')}) 안의 누구나 작업·기록을 볼 수 있어요 (HARNESS_WS_VIEWER_TOKEN)`);
+  if (lan && !allowedClients.length) warnings.push('다른 기기 접속 제한이 없어요. 같은 네트워크의 누구나 웹 화면(기록·설정·Wi-Fi·업데이트)에 들어올 수 있어요 (HARNESS_WS_ALLOWED_CLIENTS로 좁힐 수 있음)');
   if (webEnabled && !webBuilt) warnings.push(`웹 화면 빌드가 없어요 (${webDirRaw}) → pnpm start로 실행하세요`);
 
   const sections: BannerSection[] = [
@@ -426,7 +419,7 @@ async function main() {
       title: '접속',
       rows: [
         ['웹 화면', !webEnabled ? '꺼짐 (HARNESS_WEB=off)' : !webBuilt ? '빌드 없음' : `${webUrls.join(', ')}  ${viewerToken ? '(보기 전용 토큰 필요)' : '(토큰 없이 보기 전용)'}`],
-        ['다른 기기', lan ? `허용 ${allowedClients.join(', ')}${tls ? ' · TLS' : ''}` : '꺼짐 (이 기기에서만)'],
+        ['다른 기기', lan ? `${allowedClients.length ? `허용 ${allowedClients.join(', ')}` : '제한 없음'}${tls ? ' · TLS' : ''}` : '꺼짐 (이 기기에서만)'],
         ['Wi-Fi', wifiOn ? '웹 설정에서 찾기·연결 (nmcli)' : process.platform !== 'linux' ? '꺼짐 (리눅스 전용)' : '꺼짐 (DESKPET_WIFI=off)'],
         ...(eurekaBridgeMode === 'external' ? ([['Eureka 요청', '받지 않음 → pnpm eureka:server']] as BannerRow[]) : []),
       ],
@@ -450,7 +443,7 @@ async function main() {
     {
       title: '업데이트',
       rows: [
-        ['', `${updateCheck && cur ? `${updateCheckMinutes}분마다 확인` : '확인 꺼짐'} · 웹 버튼 ${adminToken ? (supervised ? '켜짐 (자동 재시작)' : '켜짐 (재시작은 직접 — pnpm start면 자동)') : '꺼짐 (HARNESS_WEB_ADMIN_TOKEN 없음)'}`],
+        ['', `${updateCheck && cur ? `${updateCheckMinutes}분마다 확인` : '확인 꺼짐'} · 웹 버튼 ${supervised ? '켜짐 (자동 재시작)' : '켜짐 (재시작은 직접 — pnpm start면 자동)'}`],
         ['', `함께 받기: ${siblingRepos.length ? siblingRepos.map((r) => `${r.name} (${shortPath(r.cwd)})`).join(', ') + ' — 코드만' : (env['DESKPET_UPDATE_REPOS'] ?? '').trim().toLowerCase() === 'off' ? '꺼짐' : '없음 (옆 폴더에 deskpet-product·pipeline·hardware 없음)'}`],
       ],
     },
@@ -500,7 +493,7 @@ function printDetails() {
     `웹 화면 접속: ${env['HARNESS_WS_VIEWER_TOKEN']?.trim() ? '보기 전용 토큰 설정됨' : '토큰 없이 보기 전용 (HARNESS_WS_VIEWER_TOKEN 비어 있음, D-45)'}${webEnabled ? ' — 이 서버가 내보낸 화면은 Origin 설정 없이 접속' : ''}${origins.length ? `, 추가 허용 Origin ${origins.join(', ')}` : ''}`,
     `세션 기록(D-47): ${history ? (historyPath ?? '메모리') : '꺼짐 (DESKPET_HISTORY_PATH=off)'}`,
     `Wiki: ${wikiDir.enabled ? `${wikiDir.raw}${wikiDir.source === 'default' ? ' (기본값)' : ''} → ${wikiDir.dir}` : `꺼짐 — ${wikiDir.reason}`}`,
-    `업데이트(D-49·D-50): ${updater.status.current ? `${updater.status.current.commit} ${updater.status.current.subject}` : '버전 알 수 없음'} · 확인 ${updateCheck ? `${updateCheckMinutes}분마다 (HARNESS_UPDATE_CHECK_MINUTES)` : '꺼짐'} · 웹 버튼 ${adminToken ? '켜짐' : '꺼짐 (HARNESS_WEB_ADMIN_TOKEN)'} · 자동 재시작 ${supervised ? '켜짐 (pnpm start)' : '꺼짐 (pnpm harness)'}`,
+    `업데이트(D-49·D-50): ${updater.status.current ? `${updater.status.current.commit} ${updater.status.current.subject}` : '버전 알 수 없음'} · 확인 ${updateCheck ? `${updateCheckMinutes}분마다 (HARNESS_UPDATE_CHECK_MINUTES)` : '꺼짐'} · 웹 버튼 켜짐 · 자동 재시작 ${supervised ? '켜짐 (pnpm start)' : '꺼짐 (pnpm harness)'}`,
   ];
   console.log(['  [자세한 설정]', ...lines.map((l) => `  · ${l}`)].join('\n'));
 }

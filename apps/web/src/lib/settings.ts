@@ -84,23 +84,3 @@ export function clearConnection() {
     }
   }
 }
-
-// ------------------------------------------------------------- 관리 토큰
-const ADMIN_KEY = 'deskpet.admin';
-
-export function loadAdminToken(): string {
-  try {
-    return sessionStorage.getItem(ADMIN_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-export function saveAdminToken(t: string) {
-  try {
-    if (t) sessionStorage.setItem(ADMIN_KEY, t);
-    else sessionStorage.removeItem(ADMIN_KEY);
-  } catch {
-    /* 이 탭 메모리에만 */
-  }
-}

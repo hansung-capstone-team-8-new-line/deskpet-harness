@@ -199,10 +199,32 @@ describe('관리 동작 (D-50)', () => {
     expect(await v.waitFor((f) => f.type === 'admin.result')).toMatchObject({ ok: false, message: 'admin_disabled' });
   });
 
-  it('관리 토큰은 16자 이상, 다른 토큰과 달라야 한다', () => {
+  it('D-60: 토큰 길이·중복 검사 없음, 빈 토큰만 거부', () => {
     const w = createWorld();
-    const base = { inbound: new DirectHarnessInbound({ harness: w.harness, output: new OutputService() }), store: w.store, token: TOKEN, port: 0 };
-    expect(() => new HarnessWsServer({ ...base, adminToken: 'short' })).toThrow();
-    expect(() => new HarnessWsServer({ ...base, adminToken: TOKEN })).toThrow();
+    const base = { inbound: new DirectHarnessInbound({ harness: w.harness, output: new OutputService() }), store: w.store, port: 0 };
+    expect(() => new HarnessWsServer({ ...base, token: 'short', adminToken: 'short' })).not.toThrow();
+    expect(() => new HarnessWsServer({ ...base, token: '' })).toThrow();
+  });
+
+  it('D-60: 관리 토큰 없이 처리기만 주면 접속한 화면 누구나 업데이트한다', async () => {
+    const w = createWorld();
+    const calls: string[] = [];
+    const server = new HarnessWsServer({
+      inbound: new DirectHarnessInbound({ harness: w.harness, output: new OutputService() }),
+      store: w.store,
+      token: TOKEN,
+      openViewer: true,
+      port: 0,
+      admin: async (action) => {
+        calls.push(action);
+        return { ok: true, message: `did ${action}` };
+      },
+    });
+    servers.push(server);
+    const { port } = await server.start();
+    const v = await client(port, 'viewer', '');
+    v.send({ type: 'admin', action: 'update.apply', id: 'z' });
+    expect(await v.waitFor((f) => f.type === 'admin.result')).toMatchObject({ ok: true, message: 'did update.apply' });
+    expect(calls).toEqual(['update.apply']);
   });
 });

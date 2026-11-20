@@ -40,7 +40,6 @@ const q2 = await askApproval(w, 'req-approve-2'); // 확인 대기
 await w.deliverQuestion(q2);
 
 // 세션 기록(D-47) 확인용: 지난 세션 몇 건 + 이번 세션 (fixture 문장, 실제 기록 아님)
-const ADMIN = 'fixture-admin-token-123';
 const history = new HistoryLog();
 {
   const prev = '2026-11-13T05:10:00.000Z';
@@ -113,7 +112,6 @@ const server = new HarnessWsServer({
   history,
   overview,
   info,
-  adminToken: ADMIN,
   wifi: async (r) => {
     if (r.action === 'status') return { ok: true, message: '', data: { status: await fakeWifi.refresh() } };
     const res = r.action === 'scan' ? await fakeWifi.scan() : await fakeWifi.connect({ ssid: r.ssid ?? '', ...(r.password ? { password: r.password } : {}), ...(r.identity ? { identity: r.identity } : {}) });
@@ -154,5 +152,5 @@ const server = new HarnessWsServer({
 const { port } = await server.start();
 await fakeWifi.refresh();
 overview.start(60 * 60_000);
-console.log(`fixture 서버: ws://127.0.0.1:${port}  보기 전용 토큰: ${VIEWER}  실행용 토큰: ${PIPELINE}  관리 토큰: ${ADMIN}  (fixture 전용 값, 실제 토큰 아님)`);
+console.log(`fixture 서버: ws://127.0.0.1:${port}  보기 전용 토큰: ${VIEWER}  실행용 토큰: ${PIPELINE}  (fixture 전용 값, 실제 토큰 아님)`);
 process.on('SIGINT', () => void server.stop(1_000).then(() => process.exit(0)));

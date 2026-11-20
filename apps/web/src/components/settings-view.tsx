@@ -21,8 +21,8 @@ const UPDATE_STATE_LABEL: Record<string, string> = {
 };
 
 const ADMIN_MESSAGE: Record<string, string> = {
-  admin_disabled: '서버에 관리 토큰(HARNESS_WEB_ADMIN_TOKEN)이 설정되지 않았어요.',
-  admin_unauthorized: '관리 토큰이 맞지 않아요.',
+  admin_disabled: '이 서버는 웹 업데이트를 받지 않아요.',
+  admin_unauthorized: '서버가 관리 토큰을 요구해요 (이전 버전 서버).',
   not_connected: '서버에 연결된 뒤 다시 시도하세요.',
   timeout: '응답이 없어요.',
   internal: '서버에서 처리하지 못했어요. 서버 콘솔을 확인하세요.',
@@ -39,8 +39,6 @@ export function SettingsView({
   settings,
   onSettings,
   onReconnect,
-  adminToken,
-  onAdminToken,
 }: {
   conn: HarnessConnection;
   view: ConnView;
@@ -48,28 +46,23 @@ export function SettingsView({
   settings: Settings;
   onSettings: (p: Partial<Settings>) => void;
   onReconnect: (c: SavedConnection) => void;
-  adminToken: string;
-  onAdminToken: (t: string) => void;
 }) {
   const [url, setUrl] = useState(connection.url);
-  const [admin, setAdmin] = useState(adminToken);
   const [msg, setMsg] = useState<string>();
   const [checking, setChecking] = useState(false);
   const info = view.info;
   const u = info?.update;
   const urlChanged = url.trim() !== connection.url;
-  const changed = urlChanged || admin.trim() !== adminToken;
 
   return (
     <div className="mt-5 grid max-w-3xl gap-6">
-      <Section title="연결" desc="서버 주소와 관리 토큰. 주소를 바꾸면 다시 연결합니다.">
+      <Section title="연결" desc="서버 주소. 바꾸면 다시 연결합니다.">
         <form
           className="space-y-3"
           onSubmit={(e) => {
             e.preventDefault();
             if (!url.trim()) return;
-            onAdminToken(admin.trim());
-            setMsg(admin.trim() !== adminToken ? (admin.trim() ? '관리 토큰을 넣었어요.' : '관리 토큰을 지웠어요.') : undefined);
+            setMsg(undefined);
             // 보기 전용 토큰(서버가 요구할 때 연결 화면에서 넣은 값)은 그대로 둔다
             if (urlChanged) onReconnect({ ...connection, url: url.trim() });
           }}
@@ -77,30 +70,21 @@ export function SettingsView({
           <Field id="set-url" label="서버 주소">
             <Input id="set-url" value={url} onChange={(e) => setUrl(e.target.value)} autoComplete="off" spellCheck={false} />
           </Field>
-          <Field
-            id="set-admin"
-            label="관리 토큰"
-            help={info?.admin ? '서버 .env의 HARNESS_WEB_ADMIN_TOKEN과 같은 값을 넣으면 업데이트 버튼을 쓸 수 있어요. 이 탭에만 두고, 탭을 닫으면 지워집니다.' : '이 서버는 관리 토큰(HARNESS_WEB_ADMIN_TOKEN)이 설정되지 않아 웹에서 업데이트할 수 없어요. 새 버전 알림만 보여요.'}
-          >
-            <Input id="set-admin" type="password" value={admin} onChange={(e) => setAdmin(e.target.value)} autoComplete="off" disabled={!info?.admin} />
-          </Field>
           <div className="flex flex-wrap gap-2">
-            <Button type="submit" size="sm" disabled={!url.trim() || !changed}>
-              {urlChanged ? '저장하고 다시 연결' : '저장'}
+            <Button type="submit" size="sm" disabled={!url.trim() || !urlChanged}>
+              저장하고 다시 연결
             </Button>
             {info?.admin && (
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={!admin.trim() || checking || view.state !== 'connected'}
+                disabled={checking || view.state !== 'connected'}
                 onClick={() => {
-                  // 입력한 값을 저장하고 그 값으로 확인한다 (토큰이 맞는지도 함께 확인됨)
-                  const t = admin.trim();
-                  onAdminToken(t);
+                  // 관리 토큰 없이 (D-60)
                   setChecking(true);
                   void conn
-                    .admin(t, 'update.check')
+                    .admin('', 'update.check')
                     .then((r) => setMsg(r.ok ? CHECK_OK : adminMessage(r.message)))
                     .finally(() => setChecking(false));
                 }}
@@ -112,7 +96,7 @@ export function SettingsView({
           {msg && (
             <p role="status" className="text-sm text-muted-foreground">
               {/* 확인 결과는 서버가 보낸 최신 상태로 그린다 */}
-              {msg === CHECK_OK ? `관리 토큰이 맞아요. ${checkResultText(u)}` : msg}
+              {msg === CHECK_OK ? checkResultText(u) : msg}
             </p>
           )}
         </form>

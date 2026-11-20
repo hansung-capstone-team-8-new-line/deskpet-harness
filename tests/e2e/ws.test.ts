@@ -13,7 +13,7 @@ afterEach(async () => {
   for (const s of servers.splice(0)) await s.stop(1_000);
 });
 
-async function boot(opts: { allowedOrigins?: string[]; maxPayloadBytes?: number; maxInFlightTotal?: number } = {}) {
+async function boot(opts: { allowedOrigins?: string[]; maxPayloadBytes?: number; maxInFlightTotal?: number; anyOrigin?: boolean } = {}) {
   const w = createWorld();
   const server = new HarnessWsServer({ inbound: new DirectHarnessInbound({ harness: w.harness, output: new OutputService() }), store: w.store, token: TOKEN, port: 0, helloTimeoutMs: 300, now: () => w.clock.nowMs(), ...opts });
   servers.push(server);
@@ -140,6 +140,17 @@ describe('Harness WebSocket 경계 — 인증·접근', () => {
       ok.on('error', rej);
     });
     ok.close();
+  });
+
+  it('D-60: anyOrigin이면 어떤 브라우저 Origin도 받는다', async () => {
+    const { url } = await boot({ anyOrigin: true });
+    const { WebSocket: WsClient } = await import('ws');
+    const any = new WsClient(url, { origin: 'http://192.168.55.100:5173' });
+    await new Promise<void>((res, rej) => {
+      any.on('open', () => res());
+      any.on('error', rej);
+    });
+    any.close();
   });
 });
 

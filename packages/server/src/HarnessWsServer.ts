@@ -40,11 +40,11 @@ export interface HarnessWsServerOptions {
    */
   openViewer?: boolean;
   /**
-   * 관리 토큰 (D-50, 선택, 16자 이상). 웹 화면의 업데이트 버튼 등 관리 동작에만 쓴다. 다른 토큰과 달라야 한다.
+   * 관리 토큰 (D-50, 선택). 주면 관리 동작에 이 토큰을 요구한다. D-60부터 server.ts는 주지 않는다 (누구나).
    * 없으면 관리 동작을 받지 않는다
    */
   adminToken?: string;
-  /** 관리 동작 처리. adminToken이 맞을 때만 부른다 */
+  /** 관리 동작 처리. adminToken이 있으면 맞을 때만, 없으면 접속한 연결 누구나 (D-60) */
   admin?: (action: AdminAction) => Promise<{ ok: boolean; message: string }>;
   /** 사용자 설정 저장 (D-52, 승인 허용 저장소). 접속한 연결 누구나 (viewer 포함) */
   settings?: (s: { allowedRepositories: string[] }) => Promise<{ ok: boolean; message: string }>;
@@ -64,6 +64,12 @@ export interface HarnessWsServerOptions {
    * 비우면 loopback만 받는다. 다른 기기(Jetson·파이프라인 보드)에서 붙으려면 그 주소를 넣는다
    */
   allowedClients?: string[];
+  /**
+   * 접속 제한 끄기 (D-60, 2026-11-20 사용자 결정). anyClient: 클라이언트 IP 검사 없음 / anyOrigin: 브라우저 Origin 검사 없음.
+   * 토큰과 역할 구분(웹 화면은 보기·설정만)은 그대로
+   */
+  anyClient?: boolean;
+  anyOrigin?: boolean;
   /** wss(TLS) 인증서·키 (PEM 문자열). 주면 wss://로 연다 (D-25) */
   tls?: { cert: string; key: string };
   /**
@@ -147,17 +153,17 @@ export class HarnessWsServer {
   private readonly log: (line: string) => void;
 
   constructor(private readonly o: HarnessWsServerOptions) {
-    if (!o.token || o.token.length < 16) throw new Error('server token must be at least 16 characters');
+    // 토큰 길이 검사는 없앴다 (D-60). 비어 있으면 안 된다
+    if (!o.token) throw new Error('server token is required');
     this.tokenDigest = digest(o.token);
     if (o.openViewer && o.viewerToken !== undefined) throw new Error('openViewer and viewerToken cannot be used together');
     if (o.viewerToken !== undefined) {
-      if (o.viewerToken.length < 16) throw new Error('viewer token must be at least 16 characters');
+      if (!o.viewerToken) throw new Error('viewer token must not be empty');
       if (o.viewerToken === o.token) throw new Error('viewer token must differ from the pipeline token');
       this.viewerDigest = digest(o.viewerToken);
     }
     if (o.adminToken !== undefined) {
-      if (o.adminToken.length < 16) throw new Error('admin token must be at least 16 characters');
-      if (o.adminToken === o.token || o.adminToken === o.viewerToken) throw new Error('admin token must differ from the other tokens');
+      if (!o.adminToken) throw new Error('admin token must not be empty');
       this.adminDigest = digest(o.adminToken);
     }
     this.log = o.log ?? (() => {});
@@ -169,14 +175,14 @@ export class HarnessWsServer {
     const clients = parseClientRules(this.o.allowedClients ?? []);
     const verifyClient = (info: { origin: string; req: IncomingMessage }, done: (ok: boolean, code?: number, msg?: string) => void) => {
       const ip = normalizeIp(info.req.socket.remoteAddress ?? '');
-      if (!isLoopback(ip) && !clients.some((r) => r(ip))) {
+      if (!this.o.anyClient && !isLoopback(ip) && !clients.some((r) => r(ip))) {
         this.log(`거부: 허용되지 않은 클라이언트 주소 ${ip || '(알 수 없음)'}`);
         return done(false, 403, 'client address not allowed');
       }
       const origin = info.origin;
       // 이 서버가 내보낸 웹 화면(같은 IP·localhost 주소)은 Origin 목록 없이 받는다 (D-42)
       const sameOrigin = !!this.o.web && !!origin && isSameOriginLiteral(origin, info.req.headers.host, !!this.o.tls);
-      if (origin && !allowed.has(origin) && !sameOrigin) {
+      if (origin && !this.o.anyOrigin && !allowed.has(origin) && !sameOrigin) {
         this.log(`거부: 허용되지 않은 Origin ${origin}`);
         return done(false, 403, 'origin not allowed');
       }
@@ -186,7 +192,7 @@ export class HarnessWsServer {
     const web: StaticHandler | undefined = this.o.web ? createStaticHandler(this.o.web) : undefined;
     const onHttp = (req: IncomingMessage, res: ServerResponse) => {
       const ip = normalizeIp(req.socket.remoteAddress ?? '');
-      if (!isLoopback(ip) && !clients.some((r) => r(ip))) {
+      if (!this.o.anyClient && !isLoopback(ip) && !clients.some((r) => r(ip))) {
         this.log(`거부(HTTP): 허용되지 않은 클라이언트 주소 ${ip || '(알 수 없음)'}`);
         res.writeHead(403, { ...WEB_SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' });
         return void res.end('client address not allowed');
@@ -363,10 +369,11 @@ export class HarnessWsServer {
   }
 
   // ---------------------------------------------------------------------- admin
-  private async onAdmin(conn: Conn, frame: { token: string; action: AdminAction; id?: string }) {
+  private async onAdmin(conn: Conn, frame: { token?: string | undefined; action: AdminAction; id?: string | undefined }) {
     const reply = (ok: boolean, message: string) => this.send(conn, { type: 'admin.result', ...(frame.id ? { id: frame.id } : {}), action: frame.action, ok, message });
-    if (!this.adminDigest || !this.o.admin) return reply(false, 'admin_disabled');
-    if (!timingSafeEqual(digest(frame.token), this.adminDigest)) {
+    if (!this.o.admin) return reply(false, 'admin_disabled');
+    // 관리 토큰이 없으면 확인하지 않는다 (D-60)
+    if (this.adminDigest && !timingSafeEqual(digest(frame.token ?? ''), this.adminDigest)) {
       conn.adminFailures = (conn.adminFailures ?? 0) + 1;
       this.log(`거부: 관리 토큰 불일치 (#${conn.id}, ${conn.adminFailures}회)`);
       reply(false, 'admin_unauthorized');

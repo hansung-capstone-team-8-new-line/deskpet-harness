@@ -30,7 +30,8 @@ export const ClientFrame = z.discriminatedUnion('type', [
   z.object({ type: z.literal('overview.refresh') }),
   z.object({
     type: z.literal('admin'),
-    token: z.string().max(512),
+    /** 서버에 관리 토큰이 없으면 보내지 않아도 된다 (D-60) */
+    token: z.string().max(512).optional(),
     action: z.enum(['update.check', 'update.apply']),
     id: z.string().max(100).optional(),
   }),

@@ -1,19 +1,23 @@
 # 다른 기기에서 접속하기 · Jetson 실행 (D-25)
 
-기본은 **이 기기에서만** 받는다 (`127.0.0.1`). Jetson·파이프라인 보드·다른 PC에서 붙으려면 아래 설정을 함께 준다.
+기본은 **이 기기에서만** 받는다 (`127.0.0.1`). Jetson·파이프라인 보드·다른 PC에서 붙으려면 `HARNESS_WS_HOST=0.0.0.0`을 준다.
+
+> **D-60 (2026-11-20 사용자 결정)**: 토큰 길이·중복 검사, 관리 토큰, 접속 IP·Origin 제한을 없앴다.
+> `HARNESS_WS_ALLOWED_CLIENTS`·`HARNESS_WS_ALLOWED_ORIGINS`를 비우면 **누구나** 접속하고, 넣으면 그 목록만 받는다 (아래 설명은 목록을 넣을 때).
+> 토큰과 역할 구분(웹 화면은 보기·설정만, 실행은 pipeline 토큰)은 그대로다. 공용·학교 Wi-Fi에서는 같은 네트워크의 누구나 웹 화면(기록·설정·Wi-Fi·업데이트)에 들어올 수 있다.
 
 ## 서버 설정 (`.env`)
 
 ```
 HARNESS_WS_HOST=0.0.0.0                       # 모든 네트워크 카드에서 받기 (또는 이 기기의 LAN 주소)
 HARNESS_WS_ALLOWED_CLIENTS=192.168.0.20       # 접속을 받을 기기 IP, 여러 개는 쉼표. 대역은 192.168.0.0/24
-HARNESS_WS_TOKEN=<24자 이상>
-HARNESS_WS_VIEWER_TOKEN=<24자 이상, 위와 다른 값>   # 웹 화면을 쓸 때
+HARNESS_WS_TOKEN=<아무 문자열>
+HARNESS_WS_VIEWER_TOKEN=                      # 선택. 비우면 웹 화면은 토큰 없이 보기 전용
 HARNESS_WS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://<웹을 여는 주소>:5173
 ```
 
 - 이 기기 자신(loopback)은 항상 허용된다. 목록에 없는 주소는 연결 단계에서 거부된다 (서버 로그 `거부: 허용되지 않은 클라이언트 주소`).
-- `HARNESS_WS_HOST`만 열고 `HARNESS_WS_ALLOWED_CLIENTS`가 없으면 서버가 시작하지 않는다. 토큰이 24자 미만이어도 시작하지 않는다.
+- (D-60 이전) `HARNESS_WS_HOST`만 열고 `HARNESS_WS_ALLOWED_CLIENTS`가 없으면 시작하지 않던 검사와 토큰 24자 검사는 없앴다.
 - 시작 화면에 `다른 기기 접속: 허용 … → 이 기기 주소 ws://192.168.0.x:8787`이 나온다. 다른 기기는 그 주소로 붙는다.
 - **TLS 없이 열면 토큰이 암호화 없이 오간다.** 집·연구실처럼 믿을 수 있는 같은 네트워크에서만 쓴다. 필요하면 `HARNESS_WS_TLS_CERT`/`HARNESS_WS_TLS_KEY`(PEM 파일)로 `wss://`를 연다. 자체 서명 인증서면 클라이언트 쪽에서 `NODE_EXTRA_CA_CERTS=<인증서>`로 신뢰시켜야 한다.
 

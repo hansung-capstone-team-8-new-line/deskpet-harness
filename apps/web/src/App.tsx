@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { HarnessConnection, type ConnView } from '@/lib/connection';
 import { STATUS_LABEL, STATUS_ORDER, filterRows, toRows, type StatusKey } from '@/lib/model';
-import { clearConnection, loadAdminToken, loadConnection, saveAdminToken, saveConnection, useSettings, type SavedConnection } from '@/lib/settings';
+import { clearConnection, loadConnection, saveConnection, useSettings, type SavedConnection } from '@/lib/settings';
 import { cn } from '@/lib/utils';
 
 /**
@@ -77,7 +77,6 @@ function Dashboard({ conn, saved, onReconnect, onDisconnect }: { conn: HarnessCo
   const view = useSyncExternalStore(conn.subscribe, conn.getView);
   const [settings, setSettings] = useSettings();
   const [tab, setTab] = useState<Tab>('tasks');
-  const [adminToken, setAdminToken] = useState(loadAdminToken);
   const [applyMsg, setApplyMsg] = useState<string>();
   const updatedHere = useRef(false);
   try {
@@ -141,8 +140,6 @@ function Dashboard({ conn, saved, onReconnect, onDisconnect }: { conn: HarnessCo
       <ConnectionNotice view={view} sync={conn.projector.syncStates().find((s) => s.source === 'harness')} onRetry={() => conn.reconnectNow()} />
       <UpdateBanner
         view={view}
-        adminToken={adminToken}
-        onOpenSettings={() => setTab('settings')}
         onApply={async () => {
           setApplyMsg(undefined);
           try {
@@ -151,7 +148,7 @@ function Dashboard({ conn, saved, onReconnect, onDisconnect }: { conn: HarnessCo
             /* 무시 */
           }
           updatedHere.current = true;
-          const r = await conn.admin(adminToken, 'update.apply');
+          const r = await conn.admin('', 'update.apply');
           if (!r.ok) {
             updatedHere.current = false;
             try {
@@ -180,11 +177,6 @@ function Dashboard({ conn, saved, onReconnect, onDisconnect }: { conn: HarnessCo
           settings={settings}
           onSettings={setSettings}
           onReconnect={onReconnect}
-          adminToken={adminToken}
-          onAdminToken={(t) => {
-            saveAdminToken(t);
-            setAdminToken(t);
-          }}
         />
       )}
 

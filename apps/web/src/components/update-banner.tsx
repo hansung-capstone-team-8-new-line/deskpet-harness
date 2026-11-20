@@ -5,10 +5,10 @@ import { pendingUpdates } from '@/lib/server-info';
 
 /**
  * 업데이트 알림 (D-49) + 업데이트 버튼 (D-50).
- * - 새 커밋이 있으면 모든 화면에 알림. 버튼은 관리 토큰을 넣은 화면에만
+ * - 새 커밋이 있으면 모든 화면에 알림과 업데이트 버튼 (관리 토큰 없이, D-60)
  * - 서버가 새 버전으로 다시 켜졌는데 이 화면이 옛 코드면 새로 고침 안내
  */
-export function UpdateBanner({ view, adminToken, onApply, onOpenSettings }: { view: ConnView; adminToken: string; onApply: () => Promise<void>; onOpenSettings: () => void }) {
+export function UpdateBanner({ view, onApply }: { view: ConnView; onApply: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const info = view.info;
   const u = info?.update;
@@ -74,27 +74,22 @@ export function UpdateBanner({ view, adminToken, onApply, onOpenSettings }: { vi
             </div>
           ))}
           {u.message && <p className="mt-1">{u.message}</p>}
-          {!canApply && <p className="mt-1">서버 .env에 HARNESS_WEB_ADMIN_TOKEN을 넣으면 웹에서 업데이트할 수 있어요. 지금은 터미널에서 git pull 후 다시 실행하세요.</p>}
+          {!canApply && <p className="mt-1">이 서버는 웹 업데이트를 받지 않아요. 터미널에서 git pull 후 다시 실행하세요.</p>}
         </>
       }
     >
-      {canApply &&
-        (adminToken ? (
-          <Button
-            size="sm"
-            disabled={busy || view.state !== 'connected'}
-            onClick={() => {
-              setBusy(true);
-              void onApply().finally(() => setBusy(false));
-            }}
-          >
-            {busy ? '업데이트 중' : '업데이트'}
-          </Button>
-        ) : (
-          <Button size="sm" variant="outline" onClick={onOpenSettings}>
-            관리 토큰 넣기
-          </Button>
-        ))}
+      {canApply && (
+        <Button
+          size="sm"
+          disabled={busy || view.state !== 'connected'}
+          onClick={() => {
+            setBusy(true);
+            void onApply().finally(() => setBusy(false));
+          }}
+        >
+          {busy ? '업데이트 중' : '업데이트'}
+        </Button>
+      )}
     </Notice>
   );
 }

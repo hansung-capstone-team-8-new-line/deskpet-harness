@@ -13,7 +13,7 @@
  * Harness 안의 G-01 단계 완료(complete_stage)는 그대로 Harness 서버가 Eureka에 직접 쓴다.
  *
  * .env
- *   EUREKA_WS_TOKEN (없으면 HARNESS_WS_TOKEN, 16자 이상), EUREKA_WS_HOST(기본 127.0.0.1), EUREKA_WS_PORT(기본 8789)
+ *   EUREKA_WS_TOKEN (없으면 HARNESS_WS_TOKEN, 길이 제한 없음 — D-60), EUREKA_WS_HOST(기본 127.0.0.1), EUREKA_WS_PORT(기본 8789)
  *   EUREKA_WS_ALLOWED_CLIENTS (다른 기기 접속 허용 IP·CIDR. EUREKA_WS_HOST를 loopback이 아닌 값으로 줄 때 필수)
  *   EUREKA_STORE_PATH (쓰기 작업 기록 SQLite. Harness의 DESKPET_STORE_PATH와 다른 파일이어야 함)
  *   DESKPET_ALLOWED_REPOS (PR 연결 후보로 받을 저장소 owner/name 목록, D-36. 비우면 제한 없음. 웹 설정에서 저장한 settings.json이 있으면 그것을 씀, D-52)
@@ -39,14 +39,12 @@ const fail = (msg: string): never => {
 let allowWrites = !process.argv.includes('--read-only');
 const writeWarnings: string[] = [];
 
-const token = env['EUREKA_WS_TOKEN']?.trim() || env['HARNESS_WS_TOKEN']?.trim() || fail('EUREKA_WS_TOKEN(또는 HARNESS_WS_TOKEN)이 비어 있어요 (16자 이상)');
-if (token.length < 16) fail('토큰은 16자 이상이어야 해요');
+const token = env['EUREKA_WS_TOKEN']?.trim() || env['HARNESS_WS_TOKEN']?.trim() || fail('EUREKA_WS_TOKEN(또는 HARNESS_WS_TOKEN)이 비어 있어요');
 const host = env['EUREKA_WS_HOST']?.trim() || '127.0.0.1';
 const port = Number(env['EUREKA_WS_PORT']) || 8789;
 const lan = !['127.0.0.1', 'localhost', '::1'].includes(host);
 const allowedClients = (env['EUREKA_WS_ALLOWED_CLIENTS'] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-if (lan && !allowedClients.length) fail(`EUREKA_WS_HOST=${host}로 다른 기기 접속을 열려면 EUREKA_WS_ALLOWED_CLIENTS가 필요해요`);
-if (lan && token.length < 24) fail('다른 기기 접속을 열 때는 토큰을 24자 이상으로 해 주세요');
+// D-60: 다른 기기 접속을 열 때 IP 목록·토큰 길이 검사는 없앴다. EUREKA_WS_ALLOWED_CLIENTS를 비우면 누구나
 
 const base = env['EUREKA_BASE_URL']?.trim() || EUREKA_DEFAULT_BASE_URL;
 
@@ -96,6 +94,7 @@ const server = new HarnessWsServer({
   host,
   port,
   allowedClients,
+  ...(allowedClients.length ? {} : { anyClient: true }),
   log: (l) => console.log(`[eureka-server] ${l}`),
   ...(env['DESKPET_TIMING_LOG']?.trim() === 'off' ? {} : { onCompleted: (i: { kind: string; requestId: string; ms: number; ok: boolean }) => console.log(`[timing] ${i.kind} ${i.requestId} ${i.ms}ms${i.ok ? '' : ' (거부·오류)'}`) }),
 });
@@ -107,7 +106,7 @@ async function main() {
   console.log(`받는 요청: eureka.execute · eureka.reconcile · eureka.reminders · eureka.reminder · eureka.links`);
   console.log(storePath ? `저장소: ${storePath}` : '저장소: 메모리 (EUREKA_STORE_PATH 미설정 → 끄면 기록이 사라짐)');
   const r = await server.start();
-  console.log(`주소: ws://${r.host}:${r.port}${lan ? ` (허용 ${allowedClients.join(', ')})` : ' (이 기기에서만)'}`);
+  console.log(`주소: ws://${r.host}:${r.port}${lan ? ` (${allowedClients.length ? `허용 ${allowedClients.join(', ')}` : '접속 제한 없음'})` : ' (이 기기에서만)'}`);
 }
 
 let closing = false;
