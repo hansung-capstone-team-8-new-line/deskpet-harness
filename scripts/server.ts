@@ -21,6 +21,7 @@ import './quietWarnings.js';
  *   DESKPET_HISTORY_PATH (세션 기록 JSONL, 기본 DESKPET_STORE_PATH와 같은 폴더의 history.jsonl, off로 끔) (D-47)
  *   HARNESS_UPDATE_CHECK (기본 on — git fetch로 새 버전 확인, off로 끔), HARNESS_UPDATE_CHECK_MINUTES (기본 30) (D-49)
  *   HARNESS_WEB_ADMIN_TOKEN (선택, 16자 이상·다른 토큰과 다름 — 웹 설정에 넣으면 업데이트 버튼 사용) (D-50)
+ *   DESKPET_WIFI (기본 on — 리눅스에서 nmcli로 웹 설정의 Wi-Fi 찾기·연결, off로 끔. 관리 토큰 없이, D-59)
  *   DESKPET_UPDATE_REPOS (함께 받을 저장소 D-58. 비우면 Harness 폴더 옆 deskpet-product·pipeline·hardware 자동, off로 끔, 'name=경로,…'로 직접)
  *   현황의 Eureka 링크는 Eureka 웹 내 업무 화면, 저장소는 승인 허용 저장소(웹 설정에서 관리, 처음 값은 DESKPET_ALLOWED_REPOS → settings.json, D-52)
  *   DESKPET_PR_AUTO_LINK (기본 on — PR 제목·본문·브랜치의 EU-<업무번호>[.<단계순서>]로 단계 기록에 PR 주소 자동 기록, D-57), DESKPET_PR_AUTO_LINK_MINUTES (기본 5)
@@ -34,6 +35,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { renderBanner, type BannerRow, type BannerSection } from './banner.js';
 import { Updater, findSiblingRepos, type UpdateStatus } from './updater.js';
+import { WifiManager } from './wifi.js';
 import { loadRuntimeSettings, saveRuntimeSettings } from './runtimeSettings.js';
 import { RESTART_EXIT_CODE } from './restartCode.js';
 import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
@@ -286,6 +288,13 @@ const autoLinker =
       })
     : undefined;
 
+// Wi-Fi 설정 (D-59): 웹 설정에서 관리 토큰 없이 찾기·연결. 리눅스(nmcli)에서만
+const wifiOn = process.platform === 'linux' && (env['DESKPET_WIFI'] ?? 'on').trim().toLowerCase() !== 'off';
+const wifi = new WifiManager({
+  enabled: wifiOn,
+  disabledReason: process.platform !== 'linux' ? '이 서버는 리눅스가 아니라 Wi-Fi를 설정할 수 없어요 (젯슨에서만 동작)' : '꺼짐 (DESKPET_WIFI=off)',
+  onChange: () => server.publishInfo(), log: (l) => console.log(`[wifi] ${l}`) });
+
 const server: HarnessWsServer = new HarnessWsServer({
   // 파이프라인 문서 형식(harness.run 등)도 같은 서버에서 받는다 (docs/pipeline-bridge.md)
   inbound: new DirectHarnessInbound({
@@ -303,6 +312,19 @@ const server: HarnessWsServer = new HarnessWsServer({
   info: () => serverInfo(),
   // 승인 허용 저장소는 사용자가 웹 설정에서 바꾼다 (관리 토큰 없이, 사용자 결정 2026-11-14)
   settings: (s) => applySettings(s),
+  // Wi-Fi (D-59): 관리 토큰 없이 (사용자 결정 2026-11-20)
+  ...(wifiOn
+    ? {
+        wifi: async (r: { action: 'status' | 'scan' | 'connect'; ssid?: string; password?: string; identity?: string }) => {
+          if (r.action === 'status') {
+            const status = await wifi.refresh();
+            return { ok: status.available, message: status.available ? (status.state ?? '') : (status.reason ?? ''), data: { status } };
+          }
+          const res = r.action === 'scan' ? await wifi.scan() : await wifi.connect({ ssid: r.ssid ?? '', ...(r.password ? { password: r.password } : {}), ...(r.identity ? { identity: r.identity } : {}) });
+          return { ok: res.ok, message: res.message, data: { status: res.status, ...(res.networks ? { networks: res.networks } : {}) } };
+        },
+      }
+    : {}),
   ...(overview ? { overview } : {}),
   host: wsHost,
   allowedClients,
@@ -346,6 +368,7 @@ function serverInfo() {
     admin: !!adminToken,
     history: history ? { persistent: !!historyPath } : null,
     supervised,
+    wifi: wifi.status,
     settings: { allowedRepositories: [...allowedRepos], source: settingsSource, persistent: !!settingsPath, ...(settingsUpdatedAt ? { updatedAt: settingsUpdatedAt } : {}) },
   };
 }
@@ -404,6 +427,7 @@ async function main() {
       rows: [
         ['웹 화면', !webEnabled ? '꺼짐 (HARNESS_WEB=off)' : !webBuilt ? '빌드 없음' : `${webUrls.join(', ')}  ${viewerToken ? '(보기 전용 토큰 필요)' : '(토큰 없이 보기 전용)'}`],
         ['다른 기기', lan ? `허용 ${allowedClients.join(', ')}${tls ? ' · TLS' : ''}` : '꺼짐 (이 기기에서만)'],
+        ['Wi-Fi', wifiOn ? '웹 설정에서 찾기·연결 (nmcli)' : process.platform !== 'linux' ? '꺼짐 (리눅스 전용)' : '꺼짐 (DESKPET_WIFI=off)'],
         ...(eurekaBridgeMode === 'external' ? ([['Eureka 요청', '받지 않음 → pnpm eureka:server']] as BannerRow[]) : []),
       ],
     },
@@ -436,6 +460,7 @@ async function main() {
   await server.start();
   recovery.start();
   if (updateCheck && cur) updater.start(updateCheckMinutes * 60_000);
+  if (wifiOn) wifi.start();
   overview?.start(overviewMinutes * 60_000);
   autoLinker?.start(autoLinkMinutes * 60_000);
   const now = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
@@ -511,6 +536,7 @@ async function shutdown(sig: string, exitCode = 0) {
   closing = true;
   console.log(`\n${sig} 수신 — 처리 중인 요청을 마치고 종료합니다 (최대 30초)`);
   updater.stop();
+  wifi.stop();
   overview?.stop();
   autoLinker?.stop();
   await recovery.stop();

@@ -48,6 +48,8 @@ export interface HarnessWsServerOptions {
   admin?: (action: AdminAction) => Promise<{ ok: boolean; message: string }>;
   /** 사용자 설정 저장 (D-52, 승인 허용 저장소). 접속한 연결 누구나 (viewer 포함) */
   settings?: (s: { allowedRepositories: string[] }) => Promise<{ ok: boolean; message: string }>;
+  /** Wi-Fi 설정 (D-59). 접속한 연결 누구나 (viewer 포함). 비밀번호는 넘기기만 한다 */
+  wifi?: (r: { action: 'status' | 'scan' | 'connect'; ssid?: string; password?: string; identity?: string }) => Promise<{ ok: boolean; message: string; data?: unknown }>;
   /** 세션 기록 (D-47). 주면 실행 요청 결과를 남기고 viewer에게 보여 준다 */
   history?: HistoryLog;
   /** 서버 정보 (D-49): 접속 직후 보내고, publishInfo()로 다시 보낸다 */
@@ -336,6 +338,19 @@ export class HarnessWsServer {
         try {
           const r = await this.o.settings(frame.settings);
           return reply(r.ok, r.message);
+        } catch {
+          return reply(false, 'internal');
+        }
+      }
+      case 'wifi': {
+        const { id, action, ssid, password, identity } = frame;
+        const reply = (ok: boolean, message: string, data?: unknown) => this.send(conn, { type: 'wifi.result', ...(id ? { id } : {}), action, ok, message, ...(data !== undefined ? { data } : {}) });
+        if (!this.o.wifi) return reply(false, 'wifi_disabled');
+        // 비밀번호·아이디는 로그에 남기지 않는다
+        if (action === 'connect') this.log(`Wi-Fi 연결 요청 (#${conn.id}, ${conn.role})`);
+        try {
+          const r = await this.o.wifi({ action, ...(ssid !== undefined ? { ssid } : {}), ...(password !== undefined ? { password } : {}), ...(identity !== undefined ? { identity } : {}) });
+          return reply(r.ok, r.message, r.data);
         } catch {
           return reply(false, 'internal');
         }

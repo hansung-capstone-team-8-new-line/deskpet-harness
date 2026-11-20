@@ -11,6 +11,7 @@ import { OutputService } from '@deskpet/output';
 import { DirectHarnessInbound, EurekaBridge, HarnessWsServer, HistoryLog, OverviewService, PipelineBridge } from '@deskpet/server';
 import { answer, askApproval, review } from '../tests/support/flows.js';
 import { createWorld } from '../tests/support/world.js';
+import { WifiManager } from './wifi.js';
 
 const VIEWER = 'fixture-viewer-token-123';
 const PIPELINE = 'fixture-pipeline-token-123';
@@ -71,7 +72,27 @@ let update: Record<string, unknown> = {
 };
 const repos: string[] = ['NewLine/DeskPet'];
 let settingsAt: string | undefined;
-const info = () => ({ startedAt: history.sessionId, version: update['current'], update, admin: true, history: { persistent: false }, supervised: false, settings: { allowedRepositories: [...repos], source: settingsAt ? 'file' : 'env', persistent: false, ...(settingsAt ? { updatedAt: settingsAt } : {}) } });
+// Wi-Fi(D-59) 확인용: 가짜 nmcli. 비밀번호가 'wrong'이면 실패
+let wifiSsid = 'hansung-GTC';
+const fakeWifi = new WifiManager({
+  run: async (_cmd, args) => {
+    const a = args.join(' ');
+    if (a.includes('device status')) return { code: 0, stdout: `wlP1p1s0:wifi:connected:${wifiSsid}\n`, stderr: '' };
+    if (a.startsWith('-t -f ACTIVE')) return { code: 0, stdout: `yes:${wifiSsid}:72\n`, stderr: '' };
+    if (a.includes('IP4.ADDRESS')) return { code: 0, stdout: '192.168.0.31/24\n', stderr: '' };
+    if (a.includes('IN-USE,SSID')) return { code: 0, stdout: `${wifiSsid === 'hansung-GTC' ? '*' : ' '}:hansung-GTC:72:WPA2 802.1X\n${wifiSsid === 'DeskPet-Home' ? '*' : ' '}:DeskPet-Home:81:WPA2\n :Cafe\\:Free:35:--\n`, stderr: '' };
+    if (args.includes('connect') || (args[0] === 'connection' && args[1] === 'up')) {
+      if (args.includes('wrong')) return { code: 4, stdout: '', stderr: 'Error: Secrets were required, but not provided.' };
+      await new Promise((r) => setTimeout(r, 1200));
+      wifiSsid = args[0] === 'connection' ? String(args[3]) : String(args[3]);
+      return { code: 0, stdout: 'ok', stderr: '' };
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  },
+  onChange: () => server.publishInfo(),
+});
+const info = () => ({
+  wifi: fakeWifi.status, startedAt: history.sessionId, version: update['current'], update, admin: true, history: { persistent: false }, supervised: false, settings: { allowedRepositories: [...repos], source: settingsAt ? 'file' : 'env', persistent: false, ...(settingsAt ? { updatedAt: settingsAt } : {}) } });
 
 // 현황(D-51) 확인용: 가짜 Eureka 업무 + 가짜 GitHub 열린 PR
 w.github.openPrs = [
@@ -93,6 +114,11 @@ const server = new HarnessWsServer({
   overview,
   info,
   adminToken: ADMIN,
+  wifi: async (r) => {
+    if (r.action === 'status') return { ok: true, message: '', data: { status: await fakeWifi.refresh() } };
+    const res = r.action === 'scan' ? await fakeWifi.scan() : await fakeWifi.connect({ ssid: r.ssid ?? '', ...(r.password ? { password: r.password } : {}), ...(r.identity ? { identity: r.identity } : {}) });
+    return { ok: res.ok, message: res.message, data: { status: res.status, ...(res.networks ? { networks: res.networks } : {}) } };
+  },
   settings: async (s) => {
     repos.splice(0, repos.length, ...s.allowedRepositories);
     settingsAt = new Date().toISOString();
@@ -126,6 +152,7 @@ const server = new HarnessWsServer({
   log: (l) => console.log(`[fixture] ${l}`),
 });
 const { port } = await server.start();
+await fakeWifi.refresh();
 overview.start(60 * 60_000);
 console.log(`fixture 서버: ws://127.0.0.1:${port}  보기 전용 토큰: ${VIEWER}  실행용 토큰: ${PIPELINE}  관리 토큰: ${ADMIN}  (fixture 전용 값, 실제 토큰 아님)`);
 process.on('SIGINT', () => void server.stop(1_000).then(() => process.exit(0)));

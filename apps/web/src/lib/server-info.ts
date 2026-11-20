@@ -53,6 +53,34 @@ export interface UpdateStatus {
   log?: string;
 }
 
+/** Wi-Fi (D-59). 서버 정의: scripts/wifi.ts */
+export interface WifiStatus {
+  available: boolean;
+  reason?: string;
+  device?: string;
+  state?: string;
+  ssid?: string;
+  signal?: number;
+  ip?: string;
+  checkedAt?: string;
+}
+
+export interface WifiNetwork {
+  ssid: string;
+  signal: number;
+  security: string;
+  inUse: boolean;
+  enterprise: boolean;
+}
+
+export const WIFI_STATE_LABEL: Record<string, string> = {
+  connected: '연결됨',
+  connecting: '연결 중',
+  disconnected: '연결 안 됨',
+  unavailable: '사용할 수 없음',
+  unmanaged: '관리 안 함',
+};
+
 export interface ServerInfo {
   startedAt?: string;
   version?: { commit: string; subject: string; branch: string };
@@ -60,6 +88,8 @@ export interface ServerInfo {
   admin?: boolean;
   history?: { persistent: boolean } | null;
   supervised?: boolean;
+  /** Wi-Fi 상태 (D-59) */
+  wifi?: WifiStatus;
   /** 웹에서 바꾸는 서버 설정 (D-52) */
   settings?: { allowedRepositories: string[]; source: 'file' | 'env'; persistent: boolean; updatedAt?: string };
 }

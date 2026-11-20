@@ -36,6 +36,18 @@ export const ClientFrame = z.discriminatedUnion('type', [
   }),
   /** 사용자 설정 저장 (D-52): 승인 허용 저장소. 관리 토큰 없이 접속한 화면 누구나 (사용자 결정 2026-11-14) */
   z.object({ type: z.literal('settings.set'), id: z.string().max(100).optional(), settings: z.object({ allowedRepositories: z.array(z.string().max(200)).max(50) }) }),
+  /**
+   * Wi-Fi 설정 (D-59): 상태·찾기·연결. 관리 토큰 없이 접속한 화면 누구나 (사용자 결정 2026-11-20).
+   * password·identity는 서버가 NetworkManager에 넘기기만 하고 기록·로그에 남기지 않는다
+   */
+  z.object({
+    type: z.literal('wifi'),
+    id: z.string().max(100).optional(),
+    action: z.enum(['status', 'scan', 'connect']),
+    ssid: z.string().max(128).optional(),
+    password: z.string().max(128).optional(),
+    identity: z.string().max(128).optional(),
+  }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
@@ -81,6 +93,8 @@ export type ServerFrame =
   | { type: 'overview'; overview: unknown }
   | { type: 'admin.result'; id?: string; action: string; ok: boolean; message: string }
   | { type: 'settings.result'; id?: string; ok: boolean; message: string }
+  /** Wi-Fi 결과 (D-59). data: { status, networks? } */
+  | { type: 'wifi.result'; id?: string; action: string; ok: boolean; message: string; data?: unknown }
   | { type: 'error'; code: ErrorCode; message: string };
 
 /** 연결 종료 코드 (4000번대: 애플리케이션 정의) */

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { ConnView, HarnessConnection } from '@/lib/connection';
-import { checkResultText, formatDateTime } from '@/lib/server-info';
+import { WIFI_STATE_LABEL, checkResultText, formatDateTime, type WifiNetwork } from '@/lib/server-info';
 import type { SavedConnection, Settings } from '@/lib/settings';
 
 const CHECK_OK = '__check_ok__';
@@ -119,6 +119,8 @@ export function SettingsView({
       </Section>
 
       <RepoSettings conn={conn} view={view} />
+
+      <WifiSettings conn={conn} view={view} />
 
       <Section title="표시" desc="이 브라우저에만 저장됩니다.">
         <div className="space-y-3">
@@ -282,6 +284,168 @@ function RepoSettings({ conn, view }: { conn: HarnessConnection; view: ConnView 
             {server.source === 'file' ? `웹 설정에서 저장한 목록${server.updatedAt ? ` (${formatDateTime(server.updatedAt)})` : ''}` : '.env DESKPET_ALLOWED_REPOS 값 (웹에서 저장하면 이후 이 목록을 씀)'}
             {server.persistent ? '' : ' · 서버 저장소가 메모리라 서버를 끄면 .env 값으로 돌아가요'}
           </p>
+          {msg && (
+            <p role="status" className="text-sm text-muted-foreground">
+              {msg}
+            </p>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+const WIFI_MESSAGE: Record<string, string> = {
+  wifi_disabled: '이 서버는 Wi-Fi 설정을 쓰지 않아요 (리눅스 전용, DESKPET_WIFI=off면 꺼짐).',
+  not_connected: '서버에 연결된 뒤 다시 시도하세요.',
+  timeout: '응답이 없어요.',
+  internal: '서버에서 처리하지 못했어요. 서버 콘솔을 확인하세요.',
+};
+
+/** Wi-Fi (D-59). 관리 토큰 없이 찾기·연결 (사용자 결정 2026-11-20). 비밀번호는 이 화면에 두지 않는다 */
+function WifiSettings({ conn, view }: { conn: HarnessConnection; view: ConnView }) {
+  const status = view.info?.wifi;
+  const [networks, setNetworks] = useState<WifiNetwork[] | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [target, setTarget] = useState<WifiNetwork | { ssid: string; manual: true } | null>(null);
+  const [ssid, setSsid] = useState('');
+  const [password, setPassword] = useState('');
+  const [identity, setIdentity] = useState('');
+  const [useAccount, setUseAccount] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string>();
+  const online = view.state === 'connected';
+
+  const scan = () => {
+    setScanning(true);
+    setMsg(undefined);
+    void conn
+      .wifi('scan')
+      .then((r) => {
+        const d = r.data as { networks?: WifiNetwork[] } | undefined;
+        if (d?.networks) setNetworks(d.networks);
+        if (!r.ok) setMsg(WIFI_MESSAGE[r.message] ?? r.message);
+      })
+      .finally(() => setScanning(false));
+  };
+
+  const pick = (n: WifiNetwork | null) => {
+    setTarget(n ?? { ssid: '', manual: true });
+    setSsid(n?.ssid ?? '');
+    setPassword('');
+    setIdentity('');
+    setUseAccount(!!n?.enterprise);
+    setMsg(undefined);
+  };
+
+  const connect = () => {
+    const name = ssid.trim();
+    if (!name) return setMsg('Wi-Fi 이름을 넣어 주세요');
+    setBusy(true);
+    setMsg(`${name}에 연결하는 중이에요. 이 화면을 Wi-Fi로 보고 있다면 잠시 끊길 수 있어요.`);
+    void conn
+      .wifi('connect', { ssid: name, ...(password ? { password } : {}), ...(useAccount && identity.trim() ? { identity: identity.trim() } : {}) })
+      .then((r) => {
+        setMsg(WIFI_MESSAGE[r.message] ?? r.message);
+        if (r.ok) {
+          setTarget(null);
+          setNetworks(null);
+        }
+      })
+      .finally(() => {
+        setBusy(false);
+        setPassword('');
+      });
+  };
+
+  const needsPassword = target && !('manual' in target) ? target.security !== '' : true;
+
+  return (
+    <Section title="Wi-Fi" desc="젯슨이 연결할 Wi-Fi를 고릅니다. 비밀번호는 젯슨의 네트워크 설정에만 저장되고, 이 화면과 Harness 기록에는 남지 않아요.">
+      {!status ? (
+        <p className="text-sm text-muted-foreground">서버 정보를 받는 중이에요.</p>
+      ) : !status.available ? (
+        <p className="text-sm text-muted-foreground">{status.reason ?? '이 서버에서는 Wi-Fi를 설정할 수 없어요.'}</p>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-sm">
+            {WIFI_STATE_LABEL[status.state ?? ''] ?? status.state ?? '-'}
+            {status.ssid ? <span className="font-medium"> · {status.ssid}</span> : null}
+            {status.signal ? <span className="text-muted-foreground"> · 신호 {status.signal}%</span> : null}
+            {status.ip ? <span className="text-muted-foreground"> · 주소 {status.ip}</span> : null}
+            {status.device ? <span className="text-muted-foreground"> ({status.device})</span> : null}
+          </p>
+
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" disabled={!online || scanning || busy} onClick={scan}>
+              {scanning ? '찾는 중' : '주변 Wi-Fi 찾기'}
+            </Button>
+            <Button type="button" size="sm" variant="ghost" disabled={!online || busy} onClick={() => pick(null)}>
+              이름 직접 입력
+            </Button>
+          </div>
+
+          {networks && networks.length > 0 && (
+            <ul className="max-h-64 divide-y overflow-auto rounded-md border text-sm" aria-label="주변 Wi-Fi">
+              {networks.map((n) => (
+                <li key={n.ssid}>
+                  <button
+                    type="button"
+                    className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${target && target.ssid === n.ssid ? 'bg-muted' : ''}`}
+                    onClick={() => pick(n)}
+                    disabled={busy}
+                  >
+                    <span className="min-w-0 truncate">
+                      {n.ssid}
+                      {n.inUse ? <span className="text-muted-foreground"> · 연결됨</span> : null}
+                    </span>
+                    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                      {n.enterprise ? '계정 · ' : n.security ? '잠김 · ' : '개방 · '}
+                      {n.signal}%
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {target && (
+            <form
+              className="space-y-3 rounded-md border p-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                connect();
+              }}
+            >
+              {'manual' in target ? (
+                <Field id="wifi-ssid" label="Wi-Fi 이름 (SSID)">
+                  <Input id="wifi-ssid" value={ssid} onChange={(e) => setSsid(e.target.value)} autoComplete="off" spellCheck={false} />
+                </Field>
+              ) : (
+                <p className="text-sm font-medium">{target.ssid}</p>
+              )}
+              <Check id="wifi-account" checked={useAccount} onChange={setUseAccount} label="학교·회사 계정으로 로그인하는 Wi-Fi (아이디 필요)" />
+              {useAccount && (
+                <Field id="wifi-identity" label="아이디">
+                  <Input id="wifi-identity" value={identity} onChange={(e) => setIdentity(e.target.value)} autoComplete="off" spellCheck={false} />
+                </Field>
+              )}
+              {(needsPassword || useAccount) && (
+                <Field id="wifi-password" label="비밀번호">
+                  <Input id="wifi-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+                </Field>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button type="submit" size="sm" disabled={!online || busy || !ssid.trim() || (useAccount && !identity.trim())}>
+                  {busy ? '연결 중' : '연결'}
+                </Button>
+                <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setTarget(null)}>
+                  취소
+                </Button>
+              </div>
+            </form>
+          )}
+
           {msg && (
             <p role="status" className="text-sm text-muted-foreground">
               {msg}

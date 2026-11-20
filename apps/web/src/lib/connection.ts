@@ -33,6 +33,8 @@ export interface ConnView {
 export interface AdminResult {
   ok: boolean;
   message: string;
+  /** wifi.result의 상태·목록 (D-59) */
+  data?: unknown;
 }
 
 const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000];
@@ -99,6 +101,11 @@ export class HarnessConnection {
   /** 사용자 설정 저장 (D-52) */
   saveSettings(settings: { allowedRepositories: string[] }): Promise<AdminResult> {
     return this.call({ type: 'settings.set', settings });
+  }
+
+  /** Wi-Fi (D-59): 관리 토큰 없이. 비밀번호는 보내기만 하고 저장하지 않는다 */
+  wifi(action: 'status' | 'scan' | 'connect', p: { ssid?: string; password?: string; identity?: string } = {}): Promise<AdminResult> {
+    return this.call({ type: 'wifi', action, ...p });
   }
 
   admin(token: string, action: 'update.check' | 'update.apply'): Promise<AdminResult> {
@@ -188,12 +195,13 @@ export class HarnessConnection {
         break;
       }
       case 'settings.result':
+      case 'wifi.result':
       case 'admin.result': {
         const id = String(f['id'] ?? '');
         const w = this.adminWaiters.get(id);
         if (w) {
           this.adminWaiters.delete(id);
-          w({ ok: f['ok'] === true, message: String(f['message'] ?? '') });
+          w({ ok: f['ok'] === true, message: String(f['message'] ?? ''), ...(f['data'] !== undefined ? { data: f['data'] } : {}) });
         }
         break;
       }
