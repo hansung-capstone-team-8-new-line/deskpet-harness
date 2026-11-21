@@ -47,7 +47,7 @@ export interface HarnessWsServerOptions {
   /** 관리 동작 처리. adminToken이 있으면 맞을 때만, 없으면 접속한 연결 누구나 (D-60) */
   admin?: (action: AdminAction) => Promise<{ ok: boolean; message: string }>;
   /** 사용자 설정 저장 (D-52, 승인 허용 저장소). 접속한 연결 누구나 (viewer 포함) */
-  settings?: (s: { allowedRepositories: string[] }) => Promise<{ ok: boolean; message: string }>;
+  settings?: (s: { allowedRepositories?: string[] | undefined; guideRules?: Record<string, string[]> | undefined }) => Promise<{ ok: boolean; message: string }>;
   /** Wi-Fi 설정 (D-59). 접속한 연결 누구나 (viewer 포함). 비밀번호는 넘기기만 한다 */
   wifi?: (r: { action: 'status' | 'scan' | 'connect'; ssid?: string; password?: string; identity?: string }) => Promise<{ ok: boolean; message: string; data?: unknown }>;
   /** 세션 기록 (D-47). 주면 실행 요청 결과를 남기고 viewer에게 보여 준다 */

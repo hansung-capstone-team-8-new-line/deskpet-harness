@@ -36,7 +36,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { renderBanner, type BannerRow, type BannerSection } from './banner.js';
 import { Updater, findSiblingRepos, type UpdateStatus } from './updater.js';
 import { WifiManager } from './wifi.js';
-import { loadRuntimeSettings, saveRuntimeSettings } from './runtimeSettings.js';
+import { cleanGuideRules, loadRuntimeSettings, saveRuntimeSettings } from './runtimeSettings.js';
 import { RESTART_EXIT_CODE } from './restartCode.js';
 import { APP_ROOT, resolveWikiDir } from './wikiPath.js';
 import { networkInterfaces } from 'node:os';
@@ -191,7 +191,9 @@ const wikiDir = resolveWikiDir(env['DESKPET_WIKI_DIR']);
 const wiki = wikiDir.enabled ? new FileWikiReader({ root: wikiDir.dir }) : undefined;
 // 요청이 끝난 뒤 확정된 결과(늦게 끝난 Eureka 반영, 주기 복구)는 pipeline 연결에 notice로 알린다 (D-23)
 let notify: (n: FollowUpNotice) => void = () => undefined;
-const harness = new HarnessService({ store, github, eureka, mcpManager, workspace, worktreeManager, clock: systemClock, ids: randomIdGen, config, holderId: `server-${process.pid}`, ...(llm.guideClient ? { llm: llm.guideClient } : {}), ...(wiki ? { wiki } : {}), onFollowUp: (n) => notify(n) });
+// Guide 사용자 규칙 (D-61): 웹 설정에서 바꾼다. 아래 settings.json을 읽은 뒤 채운다
+const guideRules: Record<string, string[]> = {};
+const harness = new HarnessService({ guideUserRules: () => guideRules, store, github, eureka, mcpManager, workspace, worktreeManager, clock: systemClock, ids: randomIdGen, config, holderId: `server-${process.pid}`, ...(llm.guideClient ? { llm: llm.guideClient } : {}), ...(wiki ? { wiki } : {}), onFollowUp: (n) => notify(n) });
 // 결과 불명·판정 대기 작업 주기 확인. 다시 보내지 않고 조회만 한다 (D-23). RECOVERY_INTERVAL_MS(기본 30초)
 const recovery = new RecoveryWorker({ harness, store, clock: systemClock, intervalMs: Number(env['RECOVERY_INTERVAL_MS']) || 30_000, log: (l) => console.log(`[recovery] ${l}`) });
 const output = new OutputService(llm.outputModel ? { model: llm.outputModel, ...(llm.outputTimeoutMs ? { modelTimeoutMs: llm.outputTimeoutMs } : {}) } : {});
@@ -205,30 +207,59 @@ if (loadedSettings.error) writeWarnings.push(loadedSettings.error);
   const parsed = parseAllowedRepositories(loadedSettings.settings.allowedRepositories.join(','));
   allowedRepos.splice(0, allowedRepos.length, ...parsed.repos);
 }
+Object.assign(guideRules, loadedSettings.settings.guideRules ?? {});
 let settingsSource: 'file' | 'env' = loadedSettings.source;
 let settingsUpdatedAt = loadedSettings.settings.updatedAt;
 
-/** 웹 설정 저장 (D-52). 접속한 화면 누구나 부를 수 있다 */
-async function applySettings(s: { allowedRepositories: string[] } | undefined): Promise<{ ok: boolean; message: string }> {
-  if (!s) return { ok: false, message: '바꿀 설정이 없어요' };
-  const parsed = parseAllowedRepositories(s.allowedRepositories.join(','));
-  if (parsed.invalid.length) return { ok: false, message: `저장소 형식이 틀렸어요 (owner/name): ${parsed.invalid.join(', ')}` };
-  // 대소문자만 다른 중복은 처음 쓴 것만 남긴다
-  const repos = parsed.repos.filter((r, i) => parsed.repos.findIndex((x) => x.toLowerCase() === r.toLowerCase()) === i);
+/** 웹 설정 저장 (D-52, D-61). 접속한 화면 누구나 부를 수 있다. 보낸 항목만 바꾼다 */
+const GUIDE_RULE_LIMIT = { perGuide: 30, chars: 500 };
+async function applySettings(s: { allowedRepositories?: string[] | undefined; guideRules?: Record<string, string[]> | undefined } | undefined): Promise<{ ok: boolean; message: string }> {
+  if (!s || (!s.allowedRepositories && !s.guideRules)) return { ok: false, message: '바꿀 설정이 없어요' };
+  let repos = [...allowedRepos];
+  if (s.allowedRepositories) {
+    const parsed = parseAllowedRepositories(s.allowedRepositories.join(','));
+    if (parsed.invalid.length) return { ok: false, message: `저장소 형식이 틀렸어요 (owner/name): ${parsed.invalid.join(', ')}` };
+    // 대소문자만 다른 중복은 처음 쓴 것만 남긴다
+    repos = parsed.repos.filter((r, i) => parsed.repos.findIndex((x) => x.toLowerCase() === r.toLowerCase()) === i);
+  }
+  const rules = { ...guideRules };
+  if (s.guideRules) {
+    const known = new Set(harness.guides().map((g) => g.mcpId.toLowerCase()));
+    const next = cleanGuideRules(s.guideRules);
+    const unknown = Object.keys(s.guideRules).filter((k) => !known.has(k.toLowerCase()));
+    if (unknown.length) return { ok: false, message: `없는 Guide예요: ${unknown.join(', ')}` };
+    for (const [k, v] of Object.entries(next)) {
+      if (v.length > GUIDE_RULE_LIMIT.perGuide) return { ok: false, message: `${k === '*' ? '공통' : k} 규칙은 ${GUIDE_RULE_LIMIT.perGuide}개까지예요` };
+      if (v.some((r) => r.length > GUIDE_RULE_LIMIT.chars)) return { ok: false, message: `규칙 한 줄은 ${GUIDE_RULE_LIMIT.chars}자까지예요` };
+    }
+    // 보낸 Guide만 바꾼다 (빈 목록이면 그 Guide 규칙을 지움). 이름은 등록된 Guide 표기로
+    for (const k of Object.keys(s.guideRules)) {
+      const key = harness.guides().find((g) => g.mcpId.toLowerCase() === k.toLowerCase())!.mcpId;
+      delete rules[key];
+      if (next[k]?.length) rules[key] = next[k]!;
+    }
+  }
   settingsUpdatedAt = new Date().toISOString();
   if (settingsPath) {
     try {
-      saveRuntimeSettings(settingsPath, { allowedRepositories: repos, updatedAt: settingsUpdatedAt });
+      saveRuntimeSettings(settingsPath, { allowedRepositories: repos, ...(Object.keys(rules).length ? { guideRules: rules } : {}), updatedAt: settingsUpdatedAt });
     } catch (e) {
       return { ok: false, message: `설정 파일에 저장하지 못했어요 (${e instanceof Error ? e.message : String(e)})` };
     }
   }
-  allowedRepos.splice(0, allowedRepos.length, ...repos);
+  if (s.allowedRepositories) {
+    allowedRepos.splice(0, allowedRepos.length, ...repos);
+    console.log(`[settings] 승인 허용 저장소: ${repos.length ? repos.join(', ') : '제한 없음'}${settingsPath ? '' : ' (저장소가 메모리라 서버를 끄면 .env 값으로 돌아감)'}`);
+    void overview?.refresh(true);
+  }
+  if (s.guideRules) {
+    for (const k of Object.keys(guideRules)) delete guideRules[k];
+    Object.assign(guideRules, rules);
+    console.log(`[settings] Guide 사용자 규칙: ${Object.entries(rules).map(([k, v]) => `${k === '*' ? '공통' : k} ${v.length}개`).join(', ') || '없음'}`);
+  }
   settingsSource = 'file';
-  console.log(`[settings] 승인 허용 저장소: ${repos.length ? repos.join(', ') : '제한 없음'}${settingsPath ? '' : ' (저장소가 메모리라 서버를 끄면 .env 값으로 돌아감)'}`);
   server.publishInfo();
-  void overview?.refresh(true);
-  return { ok: true, message: settingsPath ? '저장했어요' : '적용했어요 (서버를 끄면 .env 값으로 돌아가요 — DESKPET_STORE_PATH를 넣으면 파일에 남아요)' };
+  return { ok: true, message: settingsPath ? '저장했어요' : '적용했어요 (서버를 끄면 사라져요 — DESKPET_STORE_PATH를 넣으면 파일에 남아요)' };
 }
 
 const historyRaw = env['DESKPET_HISTORY_PATH']?.trim();
@@ -362,7 +393,8 @@ function serverInfo() {
     history: history ? { persistent: !!historyPath } : null,
     supervised,
     wifi: wifi.status,
-    settings: { allowedRepositories: [...allowedRepos], source: settingsSource, persistent: !!settingsPath, ...(settingsUpdatedAt ? { updatedAt: settingsUpdatedAt } : {}) },
+    guides: harness.guides(),
+    settings: { allowedRepositories: [...allowedRepos], guideRules: { ...guideRules }, source: settingsSource, persistent: !!settingsPath, ...(settingsUpdatedAt ? { updatedAt: settingsUpdatedAt } : {}) },
   };
 }
 

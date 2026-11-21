@@ -36,7 +36,15 @@ export const ClientFrame = z.discriminatedUnion('type', [
     id: z.string().max(100).optional(),
   }),
   /** 사용자 설정 저장 (D-52): 승인 허용 저장소. 관리 토큰 없이 접속한 화면 누구나 (사용자 결정 2026-11-14) */
-  z.object({ type: z.literal('settings.set'), id: z.string().max(100).optional(), settings: z.object({ allowedRepositories: z.array(z.string().max(200)).max(50) }) }),
+  /** guideRules (D-61): mcpId → 규칙 문장. 보낸 항목만 바꾼다 */
+  z.object({
+    type: z.literal('settings.set'),
+    id: z.string().max(100).optional(),
+    settings: z.object({
+      allowedRepositories: z.array(z.string().max(200)).max(50).optional(),
+      guideRules: z.record(z.string().max(100), z.array(z.string().max(1000)).max(50)).optional(),
+    }),
+  }),
   /**
    * Wi-Fi 설정 (D-59): 상태·찾기·연결. 관리 토큰 없이 접속한 화면 누구나 (사용자 결정 2026-11-20).
    * password·identity는 서버가 NetworkManager에 넘기기만 하고 기록·로그에 남기지 않는다

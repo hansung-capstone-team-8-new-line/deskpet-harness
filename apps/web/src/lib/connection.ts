@@ -99,7 +99,7 @@ export class HarnessConnection {
 
   /** 관리 동작 (D-50). 관리 토큰은 보내기만 하고 저장하지 않는다 */
   /** 사용자 설정 저장 (D-52) */
-  saveSettings(settings: { allowedRepositories: string[] }): Promise<AdminResult> {
+  saveSettings(settings: { allowedRepositories?: string[]; guideRules?: Record<string, string[]> }): Promise<AdminResult> {
     return this.call({ type: 'settings.set', settings });
   }
 

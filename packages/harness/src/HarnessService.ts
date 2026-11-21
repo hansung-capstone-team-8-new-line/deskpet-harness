@@ -84,6 +84,8 @@ export interface HarnessDeps {
   workspace?: WorkspaceGatewayPort;
   worktreeManager?: WorktreeIsolatorPort;
   guideRegistry?: McpGuideRegistry;
+  /** 웹 설정의 Guide 사용자 규칙 (D-61). mcpId → 규칙 문장, '*'는 공통 */
+  guideUserRules?: () => Record<string, string[]>;
   triage?: IntentTriage;
   llm?: LlmClient;
   sensor?: Sensor;
@@ -194,6 +196,7 @@ export class HarnessService {
         }),
         ...(d.workspace ? [new WorkspaceMcpGuide({ workspace: d.workspace })] : []),
       ]);
+    if (d.guideUserRules) this.guideRegistry.setUserRules(d.guideUserRules);
 
     this.permissionQueue = new PipelinePermissionQueue(
       ({ requestId, kind, purpose, requiredSlots, scope }) => {
@@ -225,6 +228,11 @@ export class HarnessService {
   }
 
   // ===================================================================== handle
+  /** 등록된 Guide 목록 (D-61, 웹 설정 표시용). 마지막은 범용 Guide('*') */
+  guides(): { mcpId: string; version: string; description?: string }[] {
+    return this.guideRegistry.list().map((g) => ({ mcpId: g.mcpId, version: g.version, ...(g.description ? { description: g.description } : {}) }));
+  }
+
   async handle(raw: HarnessRequest): Promise<HarnessResult> {
     const parsed = HarnessRequestSchema.safeParse(raw);
     if (!parsed.success) return this.processingFailure(raw?.requestId ?? 'unknown', 'INVALID_INPUT', parsed.error.message);

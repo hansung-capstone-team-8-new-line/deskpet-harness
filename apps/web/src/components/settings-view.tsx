@@ -106,6 +106,8 @@ export function SettingsView({
 
       <WifiSettings conn={conn} view={view} />
 
+      <GuideRules conn={conn} view={view} />
+
       <Section title="표시" desc="이 브라우저에만 저장됩니다.">
         <div className="space-y-3">
           <Check id="set-hide" checked={settings.hideFinished} onChange={(v) => onSettings({ hideFinished: v })} label="작업 목록에서 완료·취소된 작업 숨기기" />
@@ -435,6 +437,101 @@ function WifiSettings({ conn, view }: { conn: HarnessConnection; view: ConnView 
               {msg}
             </p>
           )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+
+/** 텍스트 칸의 줄 → 규칙 목록 */
+const toRules = (text: string) => text.split('\n').map((x) => x.trim()).filter(Boolean);
+
+/**
+ * MCP Guide 사용자 규칙 (D-61). 코드에 있는 Guide 규칙·가드는 그대로 두고, 여기 넣은 규칙을 LLM Worker 지시문 끝에 덧붙인다.
+ * '*'(공통)는 모든 Guide에 붙는다
+ */
+function GuideRules({ conn, view }: { conn: HarnessConnection; view: ConnView }) {
+  const guides = view.info?.guides;
+  const saved = view.info?.settings?.guideRules ?? {};
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string>();
+  const [msg, setMsg] = useState<{ id: string; text: string }>();
+  // 공통('*')을 맨 위로
+  const list = guides ? [...guides].sort((a, b) => Number(b.mcpId === '*') - Number(a.mcpId === '*')) : [];
+
+  return (
+    <Section title="Guide 규칙" desc="MCP Guide마다 LLM에게 줄 규칙을 한 줄에 하나씩 덧붙입니다. 코드에 있는 기본 규칙과 승인 전 확인 같은 안전장치는 바뀌지 않아요.">
+      {!guides ? (
+        <p className="text-sm text-muted-foreground">이 서버는 Guide 규칙 설정을 지원하지 않거나, 서버 정보를 받는 중이에요.</p>
+      ) : (
+        <div className="space-y-4">
+          {list.map((g) => {
+            const id = g.mcpId;
+            const current = (saved[id] ?? []).join('\n');
+            const text = drafts[id] ?? current;
+            const dirty = drafts[id] !== undefined && toRules(drafts[id]!).join('\n') !== current;
+            return (
+              <div key={id} className="space-y-1.5">
+                <label htmlFor={`guide-${id}`} className="text-sm font-medium">
+                  {id === '*' ? '공통 (모든 Guide)' : id}
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">{id === '*' ? '모든 Guide 지시문에 붙어요' : g.description}</span>
+                </label>
+                <textarea
+                  id={`guide-${id}`}
+                  rows={Math.min(8, Math.max(3, text.split('\n').length + 1))}
+                  value={text}
+                  onChange={(e) => setDrafts({ ...drafts, [id]: e.target.value })}
+                  placeholder={id === '*' ? '예: 답변은 한국어 존댓말로 짧게 한다' : '한 줄에 규칙 하나'}
+                  spellCheck={false}
+                  className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!dirty || saving === id || view.state !== 'connected'}
+                    onClick={() => {
+                      setSaving(id);
+                      void conn
+                        .saveSettings({ guideRules: { [id]: toRules(text) } })
+                        .then((r) => {
+                          setMsg({ id, text: r.ok ? r.message : adminMessage(r.message) });
+                          if (r.ok) {
+                            const next = { ...drafts };
+                            delete next[id];
+                            setDrafts(next);
+                          }
+                        })
+                        .finally(() => setSaving(undefined));
+                    }}
+                  >
+                    {saving === id ? '저장 중' : '저장'}
+                  </Button>
+                  {dirty && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        const next = { ...drafts };
+                        delete next[id];
+                        setDrafts(next);
+                      }}
+                    >
+                      되돌리기
+                    </Button>
+                  )}
+                  <span className="text-xs text-muted-foreground">{toRules(text).length}개</span>
+                  {msg?.id === id && (
+                    <span role="status" className="text-xs text-muted-foreground">
+                      {msg.text}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </Section>

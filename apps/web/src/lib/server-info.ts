@@ -91,7 +91,9 @@ export interface ServerInfo {
   /** Wi-Fi 상태 (D-59) */
   wifi?: WifiStatus;
   /** 웹에서 바꾸는 서버 설정 (D-52) */
-  settings?: { allowedRepositories: string[]; source: 'file' | 'env'; persistent: boolean; updatedAt?: string };
+  settings?: { allowedRepositories: string[]; guideRules?: Record<string, string[]>; source: 'file' | 'env'; persistent: boolean; updatedAt?: string };
+  /** 등록된 MCP Guide (D-61). mcpId '*'는 범용(모든 Guide 공통 규칙 자리) */
+  guides?: { mcpId: string; version: string; description?: string }[];
 }
 
 /** 업데이트할 저장소 목록: Harness + 함께 받는 저장소 중 뒤처진 것 (D-58) */
