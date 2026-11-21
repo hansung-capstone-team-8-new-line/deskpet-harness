@@ -6,7 +6,7 @@ import { formatTime, type Row } from '@/lib/model';
 export function TaskTable({ rows, selectedId, onSelect, emptyText }: { rows: Row[]; selectedId?: string; onSelect: (id: string) => void; emptyText: string }) {
   return (
     <Table>
-      <TableCaption className="sr-only">작업과 확인 질문 목록. 행에서 Enter를 누르면 상세가 열립니다.</TableCaption>
+      <TableCaption className="sr-only">작업·확인 질문 목록. 행에서 Enter로 상세 열기</TableCaption>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
           <TableHead className="w-28">상태</TableHead>

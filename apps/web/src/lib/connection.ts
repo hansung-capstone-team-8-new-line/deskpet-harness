@@ -142,7 +142,7 @@ export class HarnessConnection {
     try {
       ws = new WebSocket(this.url);
     } catch {
-      this.bump({ lastError: '서버 주소가 올바르지 않아요.' });
+      this.bump({ lastError: '서버 주소 오류' });
       return this.scheduleRetry();
     }
     this.ws = ws;
@@ -151,15 +151,15 @@ export class HarnessConnection {
     ws.addEventListener('close', (ev) => {
       if (this.ws !== ws) return;
       if (ev.code === 4001 && ev.reason.includes('admin')) {
-        this.bump({ lastError: '관리 토큰을 여러 번 틀려 서버가 연결을 닫았어요. 설정에서 관리 토큰을 확인하세요.' });
+        this.bump({ lastError: '관리 토큰 반복 실패로 연결 종료 (이전 버전 서버)' });
         return this.scheduleRetry();
       }
       if (ev.code === 4001) {
-        this.bump({ state: 'auth_failed', lastError: '토큰이 맞지 않아요. 보기 전용 토큰(HARNESS_WS_VIEWER_TOKEN)을 확인하세요.' });
+        this.bump({ state: 'auth_failed', lastError: '토큰 불일치. 보기 전용 토큰(HARNESS_WS_VIEWER_TOKEN) 확인' });
         return;
       }
       if (!this.stopped) {
-        this.bump({ lastError: ev.code === 1006 ? '서버에 연결할 수 없어요. pnpm harness가 실행 중인지, 허용 Origin 설정을 확인하세요.' : `연결이 닫혔어요 (${ev.code}${ev.reason ? ` ${ev.reason}` : ''})` });
+        this.bump({ lastError: ev.code === 1006 ? '서버 연결 불가. pnpm harness 실행·허용 Origin 확인' : `연결 닫힘 (${ev.code}${ev.reason ? ` ${ev.reason}` : ''})` });
         this.scheduleRetry();
       }
     });

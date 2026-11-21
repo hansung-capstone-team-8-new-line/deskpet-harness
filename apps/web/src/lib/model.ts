@@ -20,13 +20,13 @@ export const STATUS_LABEL: Record<StatusKey, string> = {
 export const STATUS_ORDER: StatusKey[] = ['awaiting', 'unknown', 'pending_assessment', 'in_progress', 'failed', 'cancelled', 'succeeded'];
 
 export const STATUS_HELP: Record<StatusKey, string> = {
-  awaiting: '사용자의 확인 답변을 기다리고 있어요.',
-  in_progress: '작업을 처리하고 있어요.',
-  pending_assessment: '응답은 받았지만 결과 판정이 끝나지 않았어요. 다시 보내지 않고 기록으로 다시 판정해요.',
-  unknown: '요청을 보냈을 수 있지만 결과를 확인하지 못했어요. 중복을 막기 위해 자동으로 다시 보내지 않아요.',
-  failed: '작업이 실패했어요.',
-  succeeded: '결과를 확인했고 성공했어요.',
-  cancelled: '실행하지 않고 취소했어요.',
+  awaiting: '사용자 확인 답변 대기',
+  in_progress: '처리 중',
+  pending_assessment: '응답 받음, 결과 판정 전. 재전송 없이 기록으로 재판정',
+  unknown: '전송 여부 불명, 결과 미확인. 중복 방지로 자동 재전송 안 함',
+  failed: '실패',
+  succeeded: '성공 확인',
+  cancelled: '실행 없이 취소',
 };
 
 const ACTION_LABEL: Record<string, string> = {

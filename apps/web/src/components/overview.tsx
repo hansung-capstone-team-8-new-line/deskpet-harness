@@ -83,9 +83,9 @@ export function CurrentWorkCard({ conn, overview }: { conn: HarnessConnection; o
       </div>
 
       {overview.state === 'loading' ? (
-        <p className="mt-3 text-sm text-muted-foreground">Eureka에서 업무를 읽는 중이에요.</p>
+        <p className="mt-3 text-sm text-muted-foreground">Eureka 업무 읽는 중</p>
       ) : !item ? (
-        <p className="mt-3 text-sm text-muted-foreground">{overview.state === 'failed' ? 'Eureka 업무를 읽지 못했어요.' : '진행 중인 업무가 없어요.'}</p>
+        <p className="mt-3 text-sm text-muted-foreground">{overview.state === 'failed' ? 'Eureka 업무 읽기 실패' : '진행 중 업무 없음'}</p>
       ) : (
         <div className="mt-3 grid gap-3">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -122,7 +122,7 @@ export function CurrentWorkCard({ conn, overview }: { conn: HarnessConnection; o
           <div>
             <p className="text-sm font-medium">연결된 PR</p>
             {item.prs.length === 0 ? (
-              <p className="text-sm text-muted-foreground">단계 기록에 적힌 PR 주소가 없어요.</p>
+              <p className="text-sm text-muted-foreground">단계 기록에 PR 주소 없음</p>
             ) : (
               <ul className="mt-1 grid gap-1 text-sm">
                 {item.prs.map((p) => (
@@ -166,7 +166,7 @@ export function RemindersAndLinks({ overview }: { overview?: Overview }) {
           리마인더
         </h2>
         {reminders.length === 0 ? (
-          <p className="mt-2 text-sm text-muted-foreground">가까운 마감이 없어요.</p>
+          <p className="mt-2 text-sm text-muted-foreground">가까운 마감 없음</p>
         ) : (
           <ul className="mt-2 divide-y text-sm">
             {reminders.map((r) => (

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { ConnectForm } from '@/components/connect-form';
 import { DetailPanel } from '@/components/detail-panel';
 import { HistoryView } from '@/components/history-view';
+import { GuideView } from '@/components/guide-view';
 import { CurrentWorkCard, RemindersAndLinks } from '@/components/overview';
 import { SettingsView, adminMessage } from '@/components/settings-view';
 import { TaskTable } from '@/components/task-table';
@@ -70,8 +71,8 @@ export function App() {
   );
 }
 
-type Tab = 'tasks' | 'history' | 'settings';
-const TAB_LABEL: Record<Tab, string> = { tasks: '작업', history: '기록', settings: '설정' };
+type Tab = 'tasks' | 'history' | 'guide' | 'settings';
+const TAB_LABEL: Record<Tab, string> = { tasks: '작업', history: '기록', guide: 'Guide', settings: '설정' };
 
 function Dashboard({ conn, saved, onReconnect, onDisconnect }: { conn: HarnessConnection; saved: SavedConnection; onReconnect: (c: SavedConnection) => void; onDisconnect: (error?: string) => void }) {
   const view = useSyncExternalStore(conn.subscribe, conn.getView);
@@ -169,6 +170,7 @@ function Dashboard({ conn, saved, onReconnect, onDisconnect }: { conn: HarnessCo
 
       {tab === 'tasks' && <TasksView conn={conn} view={view} hideFinished={settings.hideFinished} />}
       {tab === 'history' && <HistoryView conn={conn} view={view} />}
+      {tab === 'guide' && <GuideView conn={conn} view={view} />}
       {tab === 'settings' && (
         <SettingsView
           conn={conn}
@@ -180,7 +182,7 @@ function Dashboard({ conn, saved, onReconnect, onDisconnect }: { conn: HarnessCo
         />
       )}
 
-      <p className="mt-6 text-xs text-muted-foreground">이 화면은 상태를 보여 주기만 합니다. 승인 등 변경은 DeskPet의 확인 절차로만 처리됩니다.</p>
+      <p className="mt-6 text-xs text-muted-foreground">상태 표시 전용. 승인 등 변경은 DeskPet 확인 절차로만 처리</p>
     </div>
   );
 }
@@ -251,13 +253,13 @@ function TasksView({ conn, view, hideFinished }: { conn: HarnessConnection; view
           rows={visible}
           selectedId={selectedId}
           onSelect={setSelectedId}
-          emptyText={!view.hasData ? '서버에서 상태를 받는 중이에요.' : rows.length === 0 ? '표시할 작업이 없어요.' : '조건에 맞는 작업이 없어요.'}
+          emptyText={!view.hasData ? '서버 상태 받는 중' : rows.length === 0 ? '작업 없음' : '조건에 맞는 작업 없음'}
         />
         <div className="lg:sticky lg:top-4 lg:self-start">
           {selected ? (
             <DetailPanel row={selected} onClose={() => setSelectedId(undefined)} />
           ) : (
-            <p className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">행을 선택하면 상세 결과를 볼 수 있어요.</p>
+            <p className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">행 선택 시 상세 표시</p>
           )}
         </div>
       </div>
@@ -293,10 +295,10 @@ function ConnectionNotice({ view, sync, onRetry }: { view: ConnView; sync?: { sy
     return (
       <div role="alert" className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 px-4 py-3 text-sm">
         <div>
-          <p className="font-medium">서버와 연결이 끊겼어요.</p>
+          <p className="font-medium">서버 연결 끊김</p>
           <p className="text-muted-foreground">
-            {view.hasData ? '아래 목록은 마지막으로 받은 상태예요. ' : ''}
-            {view.retryInSec !== undefined ? `${view.retryInSec}초 후 다시 연결합니다.` : '다시 연결하는 중이에요.'}
+            {view.hasData ? '아래 목록은 마지막으로 받은 상태. ' : ''}
+            {view.retryInSec !== undefined ? `${view.retryInSec}초 후 재연결` : '재연결 중'}
             {view.lastError ? ` (${view.lastError})` : ''}
           </p>
         </div>
@@ -309,9 +311,9 @@ function ConnectionNotice({ view, sync, onRetry }: { view: ConnView; sync?: { sy
   if (view.state === 'connected' && sync?.synchronizationState === 'incomplete') {
     return (
       <div role="alert" className="mt-4 rounded-md border border-warning/40 px-4 py-3 text-sm">
-        <p className="font-medium">동기화가 완전하지 않아요.</p>
+        <p className="font-medium">동기화 불완전</p>
         <p className="text-muted-foreground">
-          일부 변경을 놓쳤을 수 있어 다시 받아오는 중이에요{sync.incompleteReason ? ` (${sync.incompleteReason})` : ''}.
+          일부 변경 누락 가능, 다시 받는 중{sync.incompleteReason ? ` (${sync.incompleteReason})` : ''}
         </p>
       </div>
     );

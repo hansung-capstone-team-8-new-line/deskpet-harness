@@ -93,11 +93,7 @@ const fakeWifi = new WifiManager({
 const fixtureGuideRules: Record<string, string[]> = { github: ['리뷰는 세 줄 이내로 요약한다'] };
 const info = () => ({
   wifi: fakeWifi.status,
-  guides: [
-    { mcpId: 'github', version: '1.0', description: 'GitHub PR 리뷰 조회·승인 및 저장소 작업을 수행하는 레퍼런스 Guide' },
-    { mcpId: 'workspace', version: '1.0', description: '코드베이스 탐색·파일 읽기·부분 수정·테스트/빌드 실행을 수행하는 헤드리스 바이브 코딩 Guide' },
-    { mcpId: '*', version: 'generic-1.0', description: '등록된 모든 MCP 도구를 자유롭게 활용해 목표를 수행하는 범용 Guide' },
-  ], startedAt: history.sessionId, version: update['current'], update, admin: true, history: { persistent: false }, supervised: false, settings: { allowedRepositories: [...repos], guideRules: { ...fixtureGuideRules }, source: settingsAt ? 'file' : 'env', persistent: false, ...(settingsAt ? { updatedAt: settingsAt } : {}) } });
+  guides: w.harness.guides(), startedAt: history.sessionId, version: update['current'], update, admin: true, history: { persistent: false }, supervised: false, settings: { allowedRepositories: [...repos], guideRules: { ...fixtureGuideRules }, source: settingsAt ? 'file' : 'env', persistent: false, ...(settingsAt ? { updatedAt: settingsAt } : {}) } });
 
 // 현황(D-51) 확인용: 가짜 Eureka 업무 + 가짜 GitHub 열린 PR
 w.github.openPrs = [
@@ -129,7 +125,7 @@ const server = new HarnessWsServer({
     settingsAt = new Date().toISOString();
     server.publishInfo();
     void overview.refresh(true);
-    return { ok: true, message: '적용했어요 (fixture — 파일에 저장하지 않음)' };
+    return { ok: true, message: '적용됨 (fixture — 파일 저장 안 함)' };
   },
   admin: async (action) => {
     if (action === 'update.check') return { ok: true, message: 'checked' };
@@ -138,7 +134,7 @@ const server = new HarnessWsServer({
       server.publishInfo();
       await new Promise((r) => setTimeout(r, 800));
     }
-    update = { ...update, state: 'restart_required', step: undefined, behind: 0, commits: [], message: 'f00ba12로 업데이트했어요 (fixture — 실제 변경 없음)' };
+    update = { ...update, state: 'restart_required', step: undefined, behind: 0, commits: [], message: 'f00ba12로 업데이트됨 (fixture — 실제 변경 없음)' };
     server.publishInfo();
     return { ok: true, message: String(update['message']) };
   },

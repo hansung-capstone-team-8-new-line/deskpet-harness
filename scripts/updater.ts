@@ -126,7 +126,7 @@ export class Updater {
   async readCurrent(): Promise<void> {
     const cur = await this.current();
     if (cur) this.set({ current: cur });
-    else this.set({ state: 'disabled', message: 'git 저장소가 아니라 업데이트를 확인할 수 없어요' }, true);
+    else this.set({ state: 'disabled', message: 'git 저장소 아님. 업데이트 확인 불가' }, true);
   }
 
   private async current(cwd = this.o.cwd): Promise<UpdateStatus['current'] | undefined> {
@@ -176,14 +176,14 @@ export class Updater {
     | { ok: false; message: string; log?: string }
   > {
     const current = await this.current(cwd);
-    if (!current) return { ok: false, message: 'git 저장소가 아니에요' };
+    if (!current) return { ok: false, message: 'git 저장소 아님' };
     const up = await this.git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], 30_000, cwd);
     const upstream = up.stdout.trim();
-    if (up.code !== 0 || !upstream) return { ok: false, message: `현재 브랜치(${current.branch})에 연결된 원격 브랜치가 없어요 (git branch -u origin/${current.branch})` };
+    if (up.code !== 0 || !upstream) return { ok: false, message: `현재 브랜치(${current.branch})에 연결된 원격 브랜치 없음 (git branch -u origin/${current.branch})` };
     if (fetch) {
       const remote = upstream.split('/')[0]!;
       const f = await this.git(['fetch', '--quiet', remote], 60_000, cwd);
-      if (f.code !== 0) return { ok: false, message: '원격 저장소에서 새 버전을 확인하지 못했어요 (네트워크·인증)', log: tail(f) };
+      if (f.code !== 0) return { ok: false, message: '원격 새 버전 확인 실패 (네트워크·인증)', log: tail(f) };
     }
     const counts = await this.git(['rev-list', '--left-right', '--count', `HEAD...${upstream}`], 30_000, cwd);
     const [ahead = 0, behind = 0] = counts.stdout.trim().split(/\s+/).map(Number);
@@ -196,11 +196,11 @@ export class Updater {
   }
 
   async apply(): Promise<{ ok: boolean; message: string }> {
-    if (!this.o.canApply) return { ok: false, message: '관리 토큰이 설정되지 않아 웹에서 업데이트할 수 없어요' };
-    if (this.s.state === 'updating' || this.s.state === 'restarting') return { ok: false, message: '이미 업데이트하고 있어요' };
-    if (this.s.state === 'disabled') return { ok: false, message: this.s.message ?? '업데이트할 수 없어요' };
+    if (!this.o.canApply) return { ok: false, message: '웹 업데이트 꺼짐' };
+    if (this.s.state === 'updating' || this.s.state === 'restarting') return { ok: false, message: '이미 업데이트 중' };
+    if (this.s.state === 'disabled') return { ok: false, message: this.s.message ?? '업데이트 불가' };
     const busy = this.o.inFlight();
-    if (busy > 0) return { ok: false, message: `처리 중인 요청 ${busy}건이 끝난 뒤 다시 눌러 주세요` };
+    if (busy > 0) return { ok: false, message: `처리 중 요청 ${busy}건. 끝난 뒤 재시도` };
 
     // 로컬 수정은 모든 저장소에서 먼저 확인한다 (하나라도 있으면 아무것도 받지 않음)
     for (const [name, cwd] of [['harness', this.o.cwd], ...(this.o.repos ?? []).map((r) => [r.name, r.cwd])] as [string, string][]) {
@@ -208,7 +208,7 @@ export class Updater {
       const files = dirty.stdout.split('\n').map((l) => l.slice(3).trim()).filter(Boolean);
       if (dirty.code !== 0 || files.length) {
         const where = this.o.repos?.length ? `${name}: ` : '';
-        const msg = dirty.code !== 0 ? `${where}git 상태를 읽지 못했어요` : `${where}커밋하지 않은 변경이 있어 업데이트하지 않았어요: ${files.slice(0, 5).join(', ')}${files.length > 5 ? ` 외 ${files.length - 5}개` : ''}`;
+        const msg = dirty.code !== 0 ? `${where}git 상태 읽기 실패` : `${where}커밋 안 한 변경 있음, 업데이트 안 함: ${files.slice(0, 5).join(', ')}${files.length > 5 ? ` 외 ${files.length - 5}개` : ''}`;
         this.set({ message: msg });
         return { ok: false, message: msg };
       }
@@ -234,45 +234,45 @@ export class Updater {
       }
       const m = await this.git(['merge', '--ff-only', c.upstream], 60_000, repo.cwd);
       if (m.code !== 0) {
-        repos.push({ ...base, commit: c.current.commit, behind: c.behind, commits: c.commits, error: '빨리 감기로 받지 못했어요' });
+        repos.push({ ...base, commit: c.current.commit, behind: c.behind, commits: c.commits, error: '빨리 감기 실패' });
         this.set({ repos: [...repos, ...this.restRepos(repos)] });
-        return this.failed(step, `${repo.name}: ${c.ahead > 0 ? `이 기기에만 있는 커밋 ${c.ahead}개가 있어 빨리 감기로 받을 수 없어요. 터미널에서 정리해 주세요` : '새 코드를 받지 못했어요'}${pulled.length ? ` (먼저 받은 저장소: ${pulled.join(', ')})` : ''}`, tail(m));
+        return this.failed(step, `${repo.name}: ${c.ahead > 0 ? `이 기기에만 있는 커밋 ${c.ahead}개. 빨리 감기 불가, 터미널에서 정리 필요` : '새 코드 받기 실패'}${pulled.length ? ` (먼저 받은 저장소: ${pulled.join(', ')})` : ''}`, tail(m));
       }
       const after = (await this.current(repo.cwd))?.commit ?? '';
       repos.push({ ...base, commit: after, behind: 0, commits: [], updated: { from: c.current.commit, to: after } });
       pulled.push(repo.name);
     }
     if (repos.length) this.set({ repos });
-    const others = pulled.length ? ` ${pulled.join('·')}는 코드만 받았어요 — 켜져 있으면 직접 다시 실행하세요` : '';
+    const others = pulled.length ? ` ${pulled.join('·')} 코드만 받음 — 실행 중이면 직접 재실행` : '';
 
     this.set({ step: STEP.pull });
     const cmp = await this.compare(true);
     if (!cmp.ok) return this.failed(STEP.pull, cmp.message, cmp.log);
     if (cmp.behind === 0) {
-      const message = pulled.length ? `Harness는 이미 최신이에요.${others}` : '이미 최신 버전이에요';
+      const message = pulled.length ? `Harness 최신.${others}` : '이미 최신';
       this.set({ state: 'up_to_date', step: undefined, current: cmp.current, upstream: cmp.upstream, behind: 0, ahead: cmp.ahead, commits: [], checkedAt: this.iso(), ...(pulled.length ? { message } : {}) });
       if (pulled.length) this.o.log?.(message);
       return { ok: true, message };
     }
     const before = cmp.current.commit;
     const merge = await this.git(['merge', '--ff-only', cmp.upstream], 60_000);
-    if (merge.code !== 0) return this.failed(STEP.pull, cmp.ahead > 0 ? `이 기기에만 있는 커밋 ${cmp.ahead}개가 있어 빨리 감기로 받을 수 없어요. 터미널에서 정리해 주세요` : '새 코드를 받지 못했어요', tail(merge));
+    if (merge.code !== 0) return this.failed(STEP.pull, cmp.ahead > 0 ? `이 기기에만 있는 커밋 ${cmp.ahead}개. 빨리 감기 불가, 터미널에서 정리 필요` : '새 코드 받기 실패', tail(merge));
 
     const changed = await this.git(['diff', '--name-only', before, 'HEAD']);
     const needInstall = changed.stdout.split('\n').some((f) => /(^|\/)package\.json$|^pnpm-lock\.yaml$|^pnpm-workspace\.yaml$/.test(f.trim()));
     if (needInstall) {
       this.set({ step: STEP.install });
       const i = await this.run('pnpm', ['install', '--frozen-lockfile'], { cwd: this.o.cwd, timeoutMs: 10 * 60_000 });
-      if (i.code !== 0) return this.failed(STEP.install, `패키지 설치에 실패했어요 (이전 버전 ${before})`, tail(i));
+      if (i.code !== 0) return this.failed(STEP.install, `패키지 설치 실패 (이전 버전 ${before})`, tail(i));
     }
     this.set({ step: STEP.build });
     const b = await this.run('pnpm', ['web:build'], { cwd: this.o.cwd, timeoutMs: 10 * 60_000 });
-    if (b.code !== 0) return this.failed(STEP.build, `웹 화면 빌드에 실패했어요 (이전 버전 ${before})`, tail(b));
+    if (b.code !== 0) return this.failed(STEP.build, `웹 화면 빌드 실패 (이전 버전 ${before})`, tail(b));
 
     const cur = await this.current();
     this.set({ step: STEP.restart, ...(cur ? { current: cur } : {}), behind: 0, commits: [] });
     const how = this.o.restart();
-    const message = (how === 'restarting' ? `${cur?.commit ?? ''}로 업데이트했어요. 서버를 다시 시작합니다` : `${cur?.commit ?? ''}로 업데이트했어요. 서버를 다시 실행해야 적용돼요 (pnpm start로 켜면 다음부터 자동 재시작)`) + (others ? `.${others}` : '');
+    const message = (how === 'restarting' ? `${cur?.commit ?? ''}로 업데이트됨. 서버 재시작` : `${cur?.commit ?? ''}로 업데이트됨. 서버 재실행 필요 (pnpm start면 다음부터 자동 재시작)`) + (others ? `.${others}` : '');
     this.set({ state: how === 'restarting' ? 'restarting' : 'restart_required', step: undefined, message });
     this.o.log?.(message);
     return { ok: true, message };

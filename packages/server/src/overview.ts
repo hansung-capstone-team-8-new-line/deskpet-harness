@@ -124,8 +124,8 @@ export class OverviewService {
     this.running = this.load()
       .then((next) => this.set(next))
       .catch((e: unknown) => {
-        this.opt.log?.(`현황을 읽지 못했어요: ${e instanceof Error ? e.message : String(e)}`);
-        this.set({ ...this.o, state: 'failed', refreshing: false, problems: ['현황을 읽지 못했어요'] });
+        this.opt.log?.(`현황 읽기 실패: ${e instanceof Error ? e.message : String(e)}`);
+        this.set({ ...this.o, state: 'failed', refreshing: false, problems: ['현황 읽기 실패'] });
       })
       .finally(() => {
         this.running = undefined;
@@ -151,10 +151,10 @@ export class OverviewService {
       const list = await this.opt.eureka.listTasks({ onlyOpen: true, limit: 100 }, this.deadline());
       if (list.ok) {
         eurekaOk = true;
-        if (list.data!.completeness === 'partial') problems.push('Eureka 업무가 많아 일부만 읽었어요');
+        if (list.data!.completeness === 'partial') problems.push('Eureka 업무 일부만 읽음 (너무 많음)');
         items = sortItems(list.data!.items, this.now()).map(toItem);
-      } else problems.push(`Eureka 업무를 읽지 못했어요 (${list.result.error?.provisionalCode ?? '오류'})`);
-    } else problems.push('Eureka가 연결되지 않았어요');
+      } else problems.push(`Eureka 업무 읽기 실패 (${list.result.error?.provisionalCode ?? '오류'})`);
+    } else problems.push('Eureka 연결 안 됨');
 
     // 단계 기록의 PR 주소 (상위 업무만)
     const max = this.opt.maxItemsForLinks ?? 10;
@@ -176,7 +176,7 @@ export class OverviewService {
             }
         }
       }
-      if (failed) problems.push(`단계 기록 ${failed}개를 읽지 못했어요`);
+      if (failed) problems.push(`단계 기록 ${failed}개 읽기 실패`);
     }
     for (const it of items) delete (it as { _noteStages?: unknown })._noteStages;
 
@@ -192,7 +192,7 @@ export class OverviewService {
           failed++;
         }
       }
-      if (failed) problems.push(`연결된 PR ${failed}개의 상태를 읽지 못했어요`);
+      if (failed) problems.push(`연결 PR ${failed}개 상태 읽기 실패`);
     }
 
     // 저장소: 설정한 저장소 + 업무에 연결된 PR의 저장소
@@ -212,12 +212,12 @@ export class OverviewService {
           repo.openPrs = b.prs.map(({ body: _body, ...p }) => p);
           repo.hasMore = b.hasMore;
         } catch (e) {
-          repo.error = (e as { kind?: string }).kind === 'not_found' ? '저장소를 찾지 못했어요 (이름·토큰 권한 확인)' : '열린 PR을 읽지 못했어요';
+          repo.error = (e as { kind?: string }).kind === 'not_found' ? '저장소 없음 (이름·토큰 권한 확인)' : '열린 PR 읽기 실패';
         }
       }
       repos.push(repo);
     }
-    if (!repos.length) problems.push('표시할 GitHub 저장소가 없어요 (웹 설정 > 승인 허용 저장소)');
+    if (!repos.length) problems.push('표시할 GitHub 저장소 없음 (웹 설정 > 승인 허용 저장소)');
 
     const days = this.opt.reminderDays ?? 7;
     const now = this.now();

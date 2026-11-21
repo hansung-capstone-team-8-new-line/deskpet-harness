@@ -214,11 +214,11 @@ let settingsUpdatedAt = loadedSettings.settings.updatedAt;
 /** 웹 설정 저장 (D-52, D-61). 접속한 화면 누구나 부를 수 있다. 보낸 항목만 바꾼다 */
 const GUIDE_RULE_LIMIT = { perGuide: 30, chars: 500 };
 async function applySettings(s: { allowedRepositories?: string[] | undefined; guideRules?: Record<string, string[]> | undefined } | undefined): Promise<{ ok: boolean; message: string }> {
-  if (!s || (!s.allowedRepositories && !s.guideRules)) return { ok: false, message: '바꿀 설정이 없어요' };
+  if (!s || (!s.allowedRepositories && !s.guideRules)) return { ok: false, message: '바꿀 설정 없음' };
   let repos = [...allowedRepos];
   if (s.allowedRepositories) {
     const parsed = parseAllowedRepositories(s.allowedRepositories.join(','));
-    if (parsed.invalid.length) return { ok: false, message: `저장소 형식이 틀렸어요 (owner/name): ${parsed.invalid.join(', ')}` };
+    if (parsed.invalid.length) return { ok: false, message: `저장소 형식 오류 (owner/name): ${parsed.invalid.join(', ')}` };
     // 대소문자만 다른 중복은 처음 쓴 것만 남긴다
     repos = parsed.repos.filter((r, i) => parsed.repos.findIndex((x) => x.toLowerCase() === r.toLowerCase()) === i);
   }
@@ -227,10 +227,10 @@ async function applySettings(s: { allowedRepositories?: string[] | undefined; gu
     const known = new Set(harness.guides().map((g) => g.mcpId.toLowerCase()));
     const next = cleanGuideRules(s.guideRules);
     const unknown = Object.keys(s.guideRules).filter((k) => !known.has(k.toLowerCase()));
-    if (unknown.length) return { ok: false, message: `없는 Guide예요: ${unknown.join(', ')}` };
+    if (unknown.length) return { ok: false, message: `없는 Guide: ${unknown.join(', ')}` };
     for (const [k, v] of Object.entries(next)) {
-      if (v.length > GUIDE_RULE_LIMIT.perGuide) return { ok: false, message: `${k === '*' ? '공통' : k} 규칙은 ${GUIDE_RULE_LIMIT.perGuide}개까지예요` };
-      if (v.some((r) => r.length > GUIDE_RULE_LIMIT.chars)) return { ok: false, message: `규칙 한 줄은 ${GUIDE_RULE_LIMIT.chars}자까지예요` };
+      if (v.length > GUIDE_RULE_LIMIT.perGuide) return { ok: false, message: `${k === '*' ? '공통' : k} 규칙 최대 ${GUIDE_RULE_LIMIT.perGuide}개` };
+      if (v.some((r) => r.length > GUIDE_RULE_LIMIT.chars)) return { ok: false, message: `규칙 한 줄 최대 ${GUIDE_RULE_LIMIT.chars}자` };
     }
     // 보낸 Guide만 바꾼다 (빈 목록이면 그 Guide 규칙을 지움). 이름은 등록된 Guide 표기로
     for (const k of Object.keys(s.guideRules)) {
@@ -244,7 +244,7 @@ async function applySettings(s: { allowedRepositories?: string[] | undefined; gu
     try {
       saveRuntimeSettings(settingsPath, { allowedRepositories: repos, ...(Object.keys(rules).length ? { guideRules: rules } : {}), updatedAt: settingsUpdatedAt });
     } catch (e) {
-      return { ok: false, message: `설정 파일에 저장하지 못했어요 (${e instanceof Error ? e.message : String(e)})` };
+      return { ok: false, message: `설정 파일 저장 실패 (${e instanceof Error ? e.message : String(e)})` };
     }
   }
   if (s.allowedRepositories) {
@@ -259,7 +259,7 @@ async function applySettings(s: { allowedRepositories?: string[] | undefined; gu
   }
   settingsSource = 'file';
   server.publishInfo();
-  return { ok: true, message: settingsPath ? '저장했어요' : '적용했어요 (서버를 끄면 사라져요 — DESKPET_STORE_PATH를 넣으면 파일에 남아요)' };
+  return { ok: true, message: settingsPath ? '저장됨' : '적용됨 (메모리 — 서버 종료 시 삭제, DESKPET_STORE_PATH로 파일 저장)' };
 }
 
 const historyRaw = env['DESKPET_HISTORY_PATH']?.trim();
@@ -313,7 +313,7 @@ const autoLinker =
 const wifiOn = process.platform === 'linux' && (env['DESKPET_WIFI'] ?? 'on').trim().toLowerCase() !== 'off';
 const wifi = new WifiManager({
   enabled: wifiOn,
-  disabledReason: process.platform !== 'linux' ? '이 서버는 리눅스가 아니라 Wi-Fi를 설정할 수 없어요 (젯슨에서만 동작)' : '꺼짐 (DESKPET_WIFI=off)',
+  disabledReason: process.platform !== 'linux' ? '리눅스 아님. Wi-Fi 설정 불가 (젯슨 전용)' : '꺼짐 (DESKPET_WIFI=off)',
   onChange: () => server.publishInfo(), log: (l) => console.log(`[wifi] ${l}`) });
 
 const server: HarnessWsServer = new HarnessWsServer({

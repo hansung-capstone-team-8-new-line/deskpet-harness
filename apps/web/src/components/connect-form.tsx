@@ -8,7 +8,7 @@ export function ConnectForm({ initialUrl, error, onConnect }: { initialUrl: stri
   return (
     <main className="mx-auto max-w-md px-6 py-16">
       <h1 className="text-xl font-semibold">작업 상태</h1>
-      <p className="mt-1 text-sm text-muted-foreground">Harness 서버에 보기 전용으로 연결합니다.</p>
+      <p className="mt-1 text-sm text-muted-foreground">Harness 서버 보기 전용 연결</p>
       <form
         className="mt-8 space-y-4"
         onSubmit={(e) => {
@@ -28,7 +28,7 @@ export function ConnectForm({ initialUrl, error, onConnect }: { initialUrl: stri
           </label>
           <Input id="ws-token" type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" aria-describedby="ws-token-help" />
           <p id="ws-token-help" className="text-xs text-muted-foreground">
-            서버 .env에 HARNESS_WS_VIEWER_TOKEN이 있을 때만 넣습니다. 비어 있으면 토큰 없이 연결됩니다. 이 탭을 닫으면 지워집니다.
+            서버 .env에 HARNESS_WS_VIEWER_TOKEN이 있을 때만 입력. 비우면 토큰 없이 연결. 탭 닫으면 삭제
           </p>
         </div>
         {error && (

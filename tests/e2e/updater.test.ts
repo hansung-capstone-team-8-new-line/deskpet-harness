@@ -126,7 +126,7 @@ describe('업데이트 적용 (D-50)', () => {
   it('처리 중인 요청이 있거나 관리 토큰이 없으면 하지 않는다', async () => {
     const { local, push } = setup();
     push('a.txt', 'x', 'new');
-    expect((await make(local, { inFlight: 2 }).u.apply()).message).toContain('처리 중인 요청 2건');
+    expect((await make(local, { inFlight: 2 }).u.apply()).message).toContain('처리 중 요청 2건');
     expect((await make(local, { canApply: false }).u.apply()).ok).toBe(false);
     expect(git(local, 'log', '-1', '--format=%s')).toBe('first');
   });
@@ -146,7 +146,7 @@ describe('업데이트 적용 (D-50)', () => {
   it('최신이면 아무것도 하지 않는다', async () => {
     const { local } = setup();
     const { u, pnpm } = make(local);
-    expect(await u.apply()).toEqual({ ok: true, message: '이미 최신 버전이에요' });
+    expect(await u.apply()).toEqual({ ok: true, message: '이미 최신' });
     expect(pnpm).toEqual([]);
   });
 });
@@ -191,7 +191,7 @@ describe('함께 받는 저장소 (D-58)', () => {
     expect(git(p.local, 'log', '-1', '--format=%s')).toBe('pipeline fix');
     expect(pnpm).toEqual([]);
     expect(u.status.state).toBe('up_to_date');
-    expect(u.status.message).toContain('pipeline는 코드만 받았어요');
+    expect(u.status.message).toContain('pipeline 코드만 받음');
     expect(u.status.repos![0]!.updated).toBeTruthy();
   });
 
@@ -213,7 +213,7 @@ describe('함께 받는 저장소 (D-58)', () => {
     writeFileSync(join(p.local, 'a.txt'), 'local edit');
     const r = await u.apply();
     expect(r.ok).toBe(false);
-    expect(r.message).toContain('pipeline: 커밋하지 않은 변경');
+    expect(r.message).toContain('pipeline: 커밋 안 한 변경');
     expect(git(h.local, 'log', '-1', '--format=%s')).toBe('first');
   });
 

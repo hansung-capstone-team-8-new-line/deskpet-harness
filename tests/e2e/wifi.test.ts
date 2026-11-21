@@ -71,7 +71,7 @@ describe('WifiManager', () => {
     const logs: string[] = [];
     const f = await new WifiManager({ run: bad.run, log: (l) => logs.push(l) }).connect({ ssid: 'Home', password: 'secret123' });
     expect(f.ok).toBe(false);
-    expect(f.message).toBe('비밀번호(또는 아이디)가 맞지 않는 것 같아요');
+    expect(f.message).toBe('비밀번호(또는 아이디) 불일치');
     expect(JSON.stringify(logs)).not.toContain('secret123');
   });
 

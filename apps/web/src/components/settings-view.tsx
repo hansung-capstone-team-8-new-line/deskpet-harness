@@ -21,11 +21,11 @@ const UPDATE_STATE_LABEL: Record<string, string> = {
 };
 
 const ADMIN_MESSAGE: Record<string, string> = {
-  admin_disabled: '이 서버는 웹 업데이트를 받지 않아요.',
-  admin_unauthorized: '서버가 관리 토큰을 요구해요 (이전 버전 서버).',
-  not_connected: '서버에 연결된 뒤 다시 시도하세요.',
-  timeout: '응답이 없어요.',
-  internal: '서버에서 처리하지 못했어요. 서버 콘솔을 확인하세요.',
+  admin_disabled: '웹 업데이트 미지원 서버',
+  admin_unauthorized: '관리 토큰 요구 (이전 버전 서버)',
+  not_connected: '서버 연결 후 재시도',
+  timeout: '응답 없음',
+  internal: '서버 처리 실패. 서버 콘솔 확인',
 };
 export function adminMessage(m: string): string {
   return ADMIN_MESSAGE[m] ?? m;
@@ -56,7 +56,7 @@ export function SettingsView({
 
   return (
     <div className="mt-5 grid max-w-3xl gap-6">
-      <Section title="연결" desc="서버 주소. 바꾸면 다시 연결합니다.">
+      <Section title="연결" desc="서버 주소. 변경 시 재연결">
         <form
           className="space-y-3"
           onSubmit={(e) => {
@@ -106,9 +106,8 @@ export function SettingsView({
 
       <WifiSettings conn={conn} view={view} />
 
-      <GuideRules conn={conn} view={view} />
 
-      <Section title="표시" desc="이 브라우저에만 저장됩니다.">
+      <Section title="표시" desc="이 브라우저에만 저장">
         <div className="space-y-3">
           <Check id="set-hide" checked={settings.hideFinished} onChange={(v) => onSettings({ hideFinished: v })} label="작업 목록에서 완료·취소된 작업 숨기기" />
           <Check id="set-reload" checked={settings.autoReload} onChange={(v) => onSettings({ autoReload: v })} label="웹에서 업데이트한 뒤 화면 자동 새로 고침" />
@@ -201,17 +200,17 @@ function RepoSettings({ conn, view }: { conn: HarnessConnection; view: ConnView 
 
   const add = () => {
     const v = input.trim().replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '');
-    if (!REPO_RE.test(v)) return setMsg('owner/name 형식으로 넣어 주세요 (예: hansung-capstone-team-8-new-line/deskpet-harness)');
-    if (list.some((r) => r.toLowerCase() === v.toLowerCase())) return setMsg('이미 있어요');
+    if (!REPO_RE.test(v)) return setMsg('owner/name 형식 (예: hansung-capstone-team-8-new-line/deskpet-harness)');
+    if (list.some((r) => r.toLowerCase() === v.toLowerCase())) return setMsg('이미 있음');
     setDraft([...list, v]);
     setInput('');
     setMsg(undefined);
   };
 
   return (
-    <Section title="승인 허용 저장소" desc="이 저장소의 PR만 승인할 수 있어요. 현황의 링크·열린 PR도 이 목록을 씁니다. 비어 있으면 모든 저장소의 PR을 승인할 수 있어요.">
+    <Section title="승인 허용 저장소" desc="이 저장소 PR만 승인 가능. 현황 링크·열린 PR도 이 목록 사용. 비우면 제한 없음">
       {!server ? (
-        <p className="text-sm text-muted-foreground">서버 정보를 받는 중이에요.</p>
+        <p className="text-sm text-muted-foreground">서버 정보 받는 중</p>
       ) : (
         <div className="space-y-3">
           {list.length === 0 ? (
@@ -268,7 +267,7 @@ function RepoSettings({ conn, view }: { conn: HarnessConnection; view: ConnView 
           </div>
           <p className="text-xs text-muted-foreground">
             {server.source === 'file' ? `웹 설정에서 저장한 목록${server.updatedAt ? ` (${formatDateTime(server.updatedAt)})` : ''}` : '.env DESKPET_ALLOWED_REPOS 값 (웹에서 저장하면 이후 이 목록을 씀)'}
-            {server.persistent ? '' : ' · 서버 저장소가 메모리라 서버를 끄면 .env 값으로 돌아가요'}
+            {server.persistent ? '' : ' · 메모리 저장소. 서버 종료 시 .env 값으로 복귀'}
           </p>
           {msg && (
             <p role="status" className="text-sm text-muted-foreground">
@@ -282,10 +281,10 @@ function RepoSettings({ conn, view }: { conn: HarnessConnection; view: ConnView 
 }
 
 const WIFI_MESSAGE: Record<string, string> = {
-  wifi_disabled: '이 서버는 Wi-Fi 설정을 쓰지 않아요 (리눅스 전용, DESKPET_WIFI=off면 꺼짐).',
-  not_connected: '서버에 연결된 뒤 다시 시도하세요.',
-  timeout: '응답이 없어요.',
-  internal: '서버에서 처리하지 못했어요. 서버 콘솔을 확인하세요.',
+  wifi_disabled: 'Wi-Fi 설정 미지원 서버 (리눅스 전용, DESKPET_WIFI=off면 꺼짐)',
+  not_connected: '서버 연결 후 재시도',
+  timeout: '응답 없음',
+  internal: '서버 처리 실패. 서버 콘솔 확인',
 };
 
 /** Wi-Fi (D-59). 관리 토큰 없이 찾기·연결 (사용자 결정 2026-11-20). 비밀번호는 이 화면에 두지 않는다 */
@@ -326,9 +325,9 @@ function WifiSettings({ conn, view }: { conn: HarnessConnection; view: ConnView 
 
   const connect = () => {
     const name = ssid.trim();
-    if (!name) return setMsg('Wi-Fi 이름을 넣어 주세요');
+    if (!name) return setMsg('Wi-Fi 이름 필요');
     setBusy(true);
-    setMsg(`${name}에 연결하는 중이에요. 이 화면을 Wi-Fi로 보고 있다면 잠시 끊길 수 있어요.`);
+    setMsg(`${name} 연결 중. Wi-Fi로 접속 중이면 잠시 끊길 수 있음`);
     void conn
       .wifi('connect', { ssid: name, ...(password ? { password } : {}), ...(useAccount && identity.trim() ? { identity: identity.trim() } : {}) })
       .then((r) => {
@@ -347,11 +346,11 @@ function WifiSettings({ conn, view }: { conn: HarnessConnection; view: ConnView 
   const needsPassword = target && !('manual' in target) ? target.security !== '' : true;
 
   return (
-    <Section title="Wi-Fi" desc="젯슨이 연결할 Wi-Fi를 고릅니다. 비밀번호는 젯슨의 네트워크 설정에만 저장되고, 이 화면과 Harness 기록에는 남지 않아요.">
+    <Section title="Wi-Fi" desc="젯슨 Wi-Fi 선택. 비밀번호는 젯슨 네트워크 설정에만 저장 (화면·Harness 기록에 남지 않음)">
       {!status ? (
-        <p className="text-sm text-muted-foreground">서버 정보를 받는 중이에요.</p>
+        <p className="text-sm text-muted-foreground">서버 정보 받는 중</p>
       ) : !status.available ? (
-        <p className="text-sm text-muted-foreground">{status.reason ?? '이 서버에서는 Wi-Fi를 설정할 수 없어요.'}</p>
+        <p className="text-sm text-muted-foreground">{status.reason ?? 'Wi-Fi 설정 불가'}</p>
       ) : (
         <div className="space-y-3">
           <p className="text-sm">
@@ -443,97 +442,3 @@ function WifiSettings({ conn, view }: { conn: HarnessConnection; view: ConnView 
   );
 }
 
-
-/** 텍스트 칸의 줄 → 규칙 목록 */
-const toRules = (text: string) => text.split('\n').map((x) => x.trim()).filter(Boolean);
-
-/**
- * MCP Guide 사용자 규칙 (D-61). 코드에 있는 Guide 규칙·가드는 그대로 두고, 여기 넣은 규칙을 LLM Worker 지시문 끝에 덧붙인다.
- * '*'(공통)는 모든 Guide에 붙는다
- */
-function GuideRules({ conn, view }: { conn: HarnessConnection; view: ConnView }) {
-  const guides = view.info?.guides;
-  const saved = view.info?.settings?.guideRules ?? {};
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState<string>();
-  const [msg, setMsg] = useState<{ id: string; text: string }>();
-  // 공통('*')을 맨 위로
-  const list = guides ? [...guides].sort((a, b) => Number(b.mcpId === '*') - Number(a.mcpId === '*')) : [];
-
-  return (
-    <Section title="Guide 규칙" desc="MCP Guide마다 LLM에게 줄 규칙을 한 줄에 하나씩 덧붙입니다. 코드에 있는 기본 규칙과 승인 전 확인 같은 안전장치는 바뀌지 않아요.">
-      {!guides ? (
-        <p className="text-sm text-muted-foreground">이 서버는 Guide 규칙 설정을 지원하지 않거나, 서버 정보를 받는 중이에요.</p>
-      ) : (
-        <div className="space-y-4">
-          {list.map((g) => {
-            const id = g.mcpId;
-            const current = (saved[id] ?? []).join('\n');
-            const text = drafts[id] ?? current;
-            const dirty = drafts[id] !== undefined && toRules(drafts[id]!).join('\n') !== current;
-            return (
-              <div key={id} className="space-y-1.5">
-                <label htmlFor={`guide-${id}`} className="text-sm font-medium">
-                  {id === '*' ? '공통 (모든 Guide)' : id}
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">{id === '*' ? '모든 Guide 지시문에 붙어요' : g.description}</span>
-                </label>
-                <textarea
-                  id={`guide-${id}`}
-                  rows={Math.min(8, Math.max(3, text.split('\n').length + 1))}
-                  value={text}
-                  onChange={(e) => setDrafts({ ...drafts, [id]: e.target.value })}
-                  placeholder={id === '*' ? '예: 답변은 한국어 존댓말로 짧게 한다' : '한 줄에 규칙 하나'}
-                  spellCheck={false}
-                  className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                />
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={!dirty || saving === id || view.state !== 'connected'}
-                    onClick={() => {
-                      setSaving(id);
-                      void conn
-                        .saveSettings({ guideRules: { [id]: toRules(text) } })
-                        .then((r) => {
-                          setMsg({ id, text: r.ok ? r.message : adminMessage(r.message) });
-                          if (r.ok) {
-                            const next = { ...drafts };
-                            delete next[id];
-                            setDrafts(next);
-                          }
-                        })
-                        .finally(() => setSaving(undefined));
-                    }}
-                  >
-                    {saving === id ? '저장 중' : '저장'}
-                  </Button>
-                  {dirty && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        const next = { ...drafts };
-                        delete next[id];
-                        setDrafts(next);
-                      }}
-                    >
-                      되돌리기
-                    </Button>
-                  )}
-                  <span className="text-xs text-muted-foreground">{toRules(text).length}개</span>
-                  {msg?.id === id && (
-                    <span role="status" className="text-xs text-muted-foreground">
-                      {msg.text}
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </Section>
-  );
-}

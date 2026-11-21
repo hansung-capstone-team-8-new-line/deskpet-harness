@@ -132,7 +132,7 @@ export class WifiManager {
     if (this.o.enabled === false) return this.s;
     const dev = await this.nm(['-t', '-f', 'DEVICE,TYPE,STATE,CONNECTION', 'device', 'status']);
     if (dev.code !== 0) {
-      this.set({ available: false, reason: dev.code === -1 ? '이 기기에는 NetworkManager(nmcli)가 없어요' : 'Wi-Fi 상태를 읽지 못했어요', checkedAt: this.iso() });
+      this.set({ available: false, reason: dev.code === -1 ? 'NetworkManager(nmcli) 없음' : 'Wi-Fi 상태 읽기 실패', checkedAt: this.iso() });
       return this.s;
     }
     const wifi = dev.stdout
@@ -140,7 +140,7 @@ export class WifiManager {
       .map(splitTerse)
       .find((f) => f[1] === 'wifi');
     if (!wifi) {
-      this.set({ available: false, reason: 'Wi-Fi 장치가 없어요', checkedAt: this.iso() });
+      this.set({ available: false, reason: 'Wi-Fi 장치 없음', checkedAt: this.iso() });
       return this.s;
     }
     const [device = '', , state = ''] = wifi;
@@ -162,24 +162,24 @@ export class WifiManager {
 
   async scan(): Promise<WifiResult> {
     const st = await this.refresh();
-    if (!st.available) return { ok: false, message: st.reason ?? 'Wi-Fi를 쓸 수 없어요', status: st };
+    if (!st.available) return { ok: false, message: st.reason ?? 'Wi-Fi 사용 불가', status: st };
     const args = ['-t', '-f', 'IN-USE,SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list', 'ifname', st.device!];
     let r = await this.nm([...args, '--rescan', 'yes'], 30_000);
     // 다시 찾기 권한이 없거나 너무 자주 누르면 마지막 결과라도
     if (r.code !== 0) r = await this.nm([...args, '--rescan', 'no']);
-    if (r.code !== 0) return { ok: false, message: this.explain(r.stderr || r.stdout, '주변 Wi-Fi를 찾지 못했어요'), status: st };
+    if (r.code !== 0) return { ok: false, message: this.explain(r.stderr || r.stdout, '주변 Wi-Fi 찾기 실패'), status: st };
     const networks = parseNetworks(r.stdout);
-    return { ok: true, message: networks.length ? `${networks.length}개 찾음` : '찾은 Wi-Fi가 없어요', status: st, networks };
+    return { ok: true, message: networks.length ? `${networks.length}개 찾음` : '찾은 Wi-Fi 없음', status: st, networks };
   }
 
   async connect(req: WifiConnectRequest): Promise<WifiResult> {
     const ssid = req.ssid?.trim();
-    if (!ssid || ssid.length > 32 * 4) return { ok: false, message: 'Wi-Fi 이름을 확인해 주세요' };
-    if (req.password && (req.password.length > 128 || /[\r\n\0]/.test(req.password))) return { ok: false, message: '비밀번호 형식을 확인해 주세요' };
-    if (req.identity && (req.identity.length > 128 || /[\r\n\0]/.test(req.identity))) return { ok: false, message: '아이디 형식을 확인해 주세요' };
-    if (this.busy) return { ok: false, message: '다른 Wi-Fi 연결을 처리하고 있어요. 잠시 뒤 다시 눌러 주세요' };
+    if (!ssid || ssid.length > 32 * 4) return { ok: false, message: 'Wi-Fi 이름 확인 필요' };
+    if (req.password && (req.password.length > 128 || /[\r\n\0]/.test(req.password))) return { ok: false, message: '비밀번호 형식 오류' };
+    if (req.identity && (req.identity.length > 128 || /[\r\n\0]/.test(req.identity))) return { ok: false, message: '아이디 형식 오류' };
+    if (this.busy) return { ok: false, message: '다른 Wi-Fi 연결 처리 중. 잠시 후 재시도' };
     const st = await this.refresh();
-    if (!st.available) return { ok: false, message: st.reason ?? 'Wi-Fi를 쓸 수 없어요', status: st };
+    if (!st.available) return { ok: false, message: st.reason ?? 'Wi-Fi 사용 불가', status: st };
     this.busy = true;
     this.o.log?.(`Wi-Fi 연결 요청: ${ssid}${req.identity ? ' (계정 Wi-Fi)' : ''}`);
     const secret = [req.password, req.identity].filter((x): x is string => !!x);
@@ -194,19 +194,19 @@ export class WifiManager {
           'wifi-sec.key-mgmt', 'wpa-eap', '802-1x.eap', 'peap', '802-1x.phase2-auth', 'mschapv2',
           '802-1x.identity', req.identity, '802-1x.password', req.password ?? '',
         ]);
-        if (add.code !== 0) return { ok: false, message: this.explain(this.hide(add.stderr || add.stdout, secret), 'Wi-Fi 설정을 만들지 못했어요'), status: await this.refresh() };
+        if (add.code !== 0) return { ok: false, message: this.explain(this.hide(add.stderr || add.stdout, secret), 'Wi-Fi 설정 생성 실패'), status: await this.refresh() };
         r = await this.nm(['connection', 'up', 'id', ssid], 60_000);
       } else {
         r = await this.nm(['device', 'wifi', 'connect', ssid, ...(req.password ? ['password', req.password] : []), 'ifname', dev], 60_000);
       }
       const status = await this.refresh();
       if (r.code !== 0) {
-        const msg = this.explain(this.hide(r.stderr || r.stdout, secret), '연결하지 못했어요');
+        const msg = this.explain(this.hide(r.stderr || r.stdout, secret), '연결 실패');
         this.o.log?.(`Wi-Fi 연결 실패: ${ssid} — ${msg}`);
         return { ok: false, message: msg, status };
       }
       this.o.log?.(`Wi-Fi 연결됨: ${ssid}${status.ip ? ` (${status.ip})` : ''}`);
-      return { ok: true, message: `${ssid}에 연결했어요${status.ip ? ` — 주소 ${status.ip}` : ''}`, status };
+      return { ok: true, message: `${ssid} 연결됨${status.ip ? ` — 주소 ${status.ip}` : ''}`, status };
     } finally {
       this.busy = false;
     }
@@ -215,10 +215,10 @@ export class WifiManager {
   /** nmcli 오류를 알아듣기 쉬운 문장으로 */
   private explain(out: string, fallback: string): string {
     const t = out.trim();
-    if (/not authorized|permission|권한/i.test(t)) return 'Wi-Fi를 바꿀 권한이 없어요. 젯슨에 polkit 규칙을 넣어 주세요 (docs/wifi.md)';
-    if (/secrets were required|wrong password|802-1x|psk/i.test(t)) return '비밀번호(또는 아이디)가 맞지 않는 것 같아요';
-    if (/no network with ssid/i.test(t)) return '그 이름의 Wi-Fi를 찾지 못했어요. 다시 찾아 주세요';
-    if (/timeout|timed out/i.test(t)) return '연결 시간이 초과됐어요. 신호가 약하거나 비밀번호가 틀렸을 수 있어요';
+    if (/not authorized|permission|권한/i.test(t)) return 'Wi-Fi 변경 권한 없음. 젯슨에 polkit 규칙 필요 (docs/wifi.md)';
+    if (/secrets were required|wrong password|802-1x|psk/i.test(t)) return '비밀번호(또는 아이디) 불일치';
+    if (/no network with ssid/i.test(t)) return '해당 이름 Wi-Fi 없음. 다시 찾기';
+    if (/timeout|timed out/i.test(t)) return '연결 시간 초과. 약한 신호 또는 비밀번호 오류 가능';
     const line = t.split('\n').filter(Boolean).pop();
     return line ? `${fallback}: ${line.replace(/^Error:\s*/i, '').slice(0, 200)}` : fallback;
   }

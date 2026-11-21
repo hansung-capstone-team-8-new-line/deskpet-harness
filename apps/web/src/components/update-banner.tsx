@@ -17,7 +17,7 @@ export function UpdateBanner({ view, onApply }: { view: ConnView; onApply: () =>
   // 1) 서버는 새 버전인데 화면은 옛 버전
   if (view.state === 'connected' && commit && view.firstCommit && commit !== view.firstCommit) {
     return (
-      <Notice title={`서버가 새 버전(${commit})으로 다시 시작했어요.`} body="이 화면은 이전 버전이에요. 새로 고치면 새 화면을 받아요.">
+      <Notice title={`서버 새 버전(${commit})으로 재시작됨`} body="이 화면은 이전 버전. 새로 고침 필요">
         <Button size="sm" onClick={() => location.reload()}>
           새로 고침
         </Button>
@@ -27,10 +27,10 @@ export function UpdateBanner({ view, onApply }: { view: ConnView; onApply: () =>
   if (!u) return null;
 
   if (u.state === 'updating' || u.state === 'restarting') {
-    return <Notice title={u.state === 'restarting' ? '업데이트를 마치고 서버를 다시 시작하는 중이에요.' : `업데이트 중이에요 — ${u.step ?? ''}`} body="잠시 연결이 끊겼다가 자동으로 다시 연결돼요." />;
+    return <Notice title={u.state === 'restarting' ? '업데이트 완료, 서버 재시작 중' : `업데이트 중 — ${u.step ?? ''}`} body="잠시 끊긴 뒤 자동 재연결" />;
   }
   if (u.state === 'restart_required') {
-    return <Notice title="업데이트를 받았어요. 서버를 다시 실행해야 적용돼요." body={`${u.message ?? ''} 터미널에서 서버를 끄고(Ctrl+C) 다시 실행하세요.`} />;
+    return <Notice title="업데이트 받음. 서버 재실행 필요" body={`${u.message ?? ''} 터미널에서 서버 종료(Ctrl+C) 후 재실행`} />;
   }
   if (u.state === 'failed') {
     return (
@@ -46,7 +46,7 @@ export function UpdateBanner({ view, onApply }: { view: ConnView; onApply: () =>
   }
   // 함께 받는 저장소만 받은 뒤 (Harness는 최신 → 재시작 없음) 결과 안내 (D-58)
   if (u.state === 'up_to_date' && u.message && (u.repos ?? []).some((r) => r.updated)) {
-    return <Notice title="업데이트를 받았어요." body={u.message} />;
+    return <Notice title="업데이트 받음" body={u.message} />;
   }
   const pending = u.state === 'available' ? pendingUpdates(u) : [];
   if (!pending.length) return null;
@@ -55,7 +55,7 @@ export function UpdateBanner({ view, onApply }: { view: ConnView; onApply: () =>
   const total = pending.reduce((n, p) => n + p.behind, 0);
   return (
     <Notice
-      title={`새 버전이 있어요 — ${pending.map((p) => p.name).join(', ')} (커밋 ${total}개)`}
+      title={`새 버전 있음 — ${pending.map((p) => p.name).join(', ')} (커밋 ${total}개)`}
       body={
         <>
           {pending.map((p) => (
@@ -74,7 +74,7 @@ export function UpdateBanner({ view, onApply }: { view: ConnView; onApply: () =>
             </div>
           ))}
           {u.message && <p className="mt-1">{u.message}</p>}
-          {!canApply && <p className="mt-1">이 서버는 웹 업데이트를 받지 않아요. 터미널에서 git pull 후 다시 실행하세요.</p>}
+          {!canApply && <p className="mt-1">웹 업데이트 미지원 서버. 터미널에서 git pull 후 재실행</p>}
         </>
       }
     >

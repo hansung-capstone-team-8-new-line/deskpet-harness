@@ -93,7 +93,7 @@ export interface ServerInfo {
   /** 웹에서 바꾸는 서버 설정 (D-52) */
   settings?: { allowedRepositories: string[]; guideRules?: Record<string, string[]>; source: 'file' | 'env'; persistent: boolean; updatedAt?: string };
   /** 등록된 MCP Guide (D-61). mcpId '*'는 범용(모든 Guide 공통 규칙 자리) */
-  guides?: { mcpId: string; version: string; description?: string }[];
+  guides?: { mcpId: string; version: string; description?: string; defaultPrompt?: string }[];
 }
 
 /** 업데이트할 저장소 목록: Harness + 함께 받는 저장소 중 뒤처진 것 (D-58) */
@@ -106,13 +106,13 @@ export function pendingUpdates(u: UpdateStatus): { name: string; behind: number;
 
 /** 설정의 '지금 새 버전 확인' 결과 문구 */
 export function checkResultText(u: UpdateStatus | undefined): string {
-  if (!u) return '확인했어요.';
-  if (u.state === 'check_failed') return `확인하지 못했어요: ${u.message ?? ''}`;
+  if (!u) return '확인 완료';
+  if (u.state === 'check_failed') return `확인 실패: ${u.message ?? ''}`;
   const p = pendingUpdates(u);
   const failed = (u.repos ?? []).filter((r) => r.error).map((r) => `${r.name}(${r.error})`);
   const tailNote = failed.length ? ` 확인 못 한 저장소: ${failed.join(', ')}` : '';
-  if (!p.length) return `지금 최신이에요.${tailNote}`;
-  return `새 버전이 있어요 — ${p.map((x) => `${x.name} ${x.behind}개`).join(', ')}. 화면 위 알림의 '업데이트'를 누르세요.${tailNote}`;
+  if (!p.length) return `최신${tailNote}`;
+  return `새 버전 있음 — ${p.map((x) => `${x.name} ${x.behind}개`).join(', ')}. 상단 알림에서 업데이트${tailNote}`;
 }
 
 export const HISTORY_STATUS_LABEL: Record<HistoryStatus, string> = {

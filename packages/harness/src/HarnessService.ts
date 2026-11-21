@@ -48,6 +48,7 @@ import { StoreDispatchOwner } from './dispatch/DispatchOwner.js';
 import { reviewFacts, type ReviewFacts } from './facts.js';
 import { DirectEurekaExecutor } from './eureka/DirectEurekaExecutor.js';
 import { McpGuideRegistry } from './guide/BaseMcpGuide.js';
+import type { GuidePromptContext } from './guide/McpGuide.js';
 import type { DispatchAuthoritySource } from './guide/fastPathDispatch.js';
 import { GitHubMcpGuide } from './guide/GitHubMcpGuide.js';
 import { WorkspaceMcpGuide } from './guide/WorkspaceMcpGuide.js';
@@ -228,9 +229,28 @@ export class HarnessService {
   }
 
   // ===================================================================== handle
-  /** 등록된 Guide 목록 (D-61, 웹 설정 표시용). 마지막은 범용 Guide('*') */
-  guides(): { mcpId: string; version: string; description?: string }[] {
-    return this.guideRegistry.list().map((g) => ({ mcpId: g.mcpId, version: g.version, ...(g.description ? { description: g.description } : {}) }));
+  /**
+   * 등록된 Guide 목록 (D-61, 웹 Guide 탭 표시용). 마지막은 범용 Guide('*').
+   * defaultPrompt: 코드의 기본 지시문 (사용자 규칙 제외). 요청·문맥·도구 목록 자리는 예시 값으로 채운다
+   */
+  guides(): { mcpId: string; version: string; description?: string; defaultPrompt?: string }[] {
+    return this.guideRegistry.list().map((g) => {
+      let defaultPrompt: string | undefined;
+      try {
+        defaultPrompt = g.buildInstructions({
+          goal: '(요청 목표)',
+          mcpId: g.mcpId === '*' ? '(MCP 이름)' : g.mcpId,
+          turn: { rawText: '(사용자 발화)' },
+          context: {},
+          availableTools: [],
+          fastPathTools: [],
+          workerId: 'worker-1',
+        } as unknown as GuidePromptContext);
+      } catch {
+        defaultPrompt = undefined;
+      }
+      return { mcpId: g.mcpId, version: g.version, ...(g.description ? { description: g.description } : {}), ...(defaultPrompt ? { defaultPrompt } : {}) };
+    });
   }
 
   async handle(raw: HarnessRequest): Promise<HarnessResult> {

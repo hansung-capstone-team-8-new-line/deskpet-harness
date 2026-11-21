@@ -92,7 +92,7 @@ describe('웹 현황 (D-51)', () => {
     const o = svc.get();
     expect(o.items).toEqual([]);
     expect(o.problems[0]).toContain('EUREKA_AUTH_ERROR');
-    expect(o.links.repos[0]!.error).toContain('저장소를 찾지 못했어요');
+    expect(o.links.repos[0]!.error).toContain('저장소 없음');
     expect(o.state).toBe('failed');
   });
 

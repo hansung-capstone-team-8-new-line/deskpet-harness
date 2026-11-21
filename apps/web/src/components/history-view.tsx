@@ -34,7 +34,7 @@ export function HistoryView({ conn, view }: { conn: HarnessConnection; view: Con
   const persistent = view.info?.history?.persistent;
 
   if (view.info && view.info.history === null) {
-    return <p className="mt-5 rounded-md border border-dashed p-4 text-sm text-muted-foreground">이 서버는 세션 기록을 남기지 않아요 (DESKPET_HISTORY_PATH=off).</p>;
+    return <p className="mt-5 rounded-md border border-dashed p-4 text-sm text-muted-foreground">세션 기록 꺼짐 (DESKPET_HISTORY_PATH=off)</p>;
   }
 
   return (
@@ -64,12 +64,12 @@ export function HistoryView({ conn, view }: { conn: HarnessConnection; view: Con
           {visible.length}건{visible.length !== h.entries.length ? ` / 불러온 ${h.entries.length}건` : ''}
         </span>
       </div>
-      {persistent === false && <p className="mt-2 text-xs text-muted-foreground">서버가 메모리에만 기록하고 있어요. 서버를 끄면 이 기록은 사라져요 (DESKPET_STORE_PATH 설정 시 파일에 남음).</p>}
+      {persistent === false && <p className="mt-2 text-xs text-muted-foreground">메모리에만 기록. 서버 종료 시 삭제 (DESKPET_STORE_PATH 설정 시 파일 저장)</p>}
 
       {!h.loaded ? (
-        <p className="mt-4 text-sm text-muted-foreground">기록을 불러오는 중이에요.</p>
+        <p className="mt-4 text-sm text-muted-foreground">기록 불러오는 중</p>
       ) : sessions.length === 0 ? (
-        <p className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">{h.entries.length === 0 ? '아직 기록이 없어요. DeskPet에 말을 걸면 여기에 쌓여요.' : '조건에 맞는 기록이 없어요.'}</p>
+        <p className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">{h.entries.length === 0 ? '기록 없음' : '조건에 맞는 기록 없음'}</p>
       ) : (
         sessions.map((s) => (
           <section key={s.sessionId} className="mt-5" aria-label={`세션 ${formatDateTime(s.sessionId)}`}>
