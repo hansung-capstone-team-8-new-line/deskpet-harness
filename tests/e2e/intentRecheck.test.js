@@ -1,0 +1,123 @@
+import { describe, expect, it } from 'vitest';
+import { LlmError } from '@deskpet/contracts';
+import { harnessRequest, prContext, voiceTurn } from '../support/builders.js';
+import { answer, review, speak } from '../support/flows.js';
+import { createScriptedSwarmLlm } from '../support/llm.js';
+import { createWorld } from '../support/world.js';
+/**
+ * Router(`llm` / `unclear`) → IntentTriage · 병렬 실행 Worker · GitHubMcpGuide 안전 규칙 검증.
+ *
+ * - Router는 비합의 `pr.review`/`pr.approve` 단축 의도 없이 `llm`·`unclear`만 사용한다.
+ * - `unclear`는 IntentTriage(재질문 / 일상 대화 응답 / 유레카 직접 조작 / 병렬 위임)를 우선 수행한다.
+ * - 승인 쓰기는 `GitHubMcpGuide`의 확인 질문과 STT/신뢰도 검사 없이는 절대 실행되지 않는다.
+ */
+let n = 0;
+const ask = (w, text, intention, o = {}) => w.harness.handle(harnessRequest(`req-ir-${++n}`, voiceTurn(`t-ir-${n}`, text, { intention, ...o }), prContext()));
+function scriptWithTriage(triageHandler) {
+    const base = createScriptedSwarmLlm();
+    return {
+        provider: 'scripted',
+        async complete(req) {
+            if (req.jsonSchema?.name === 'deskpet_intent_triage') {
+                const out = triageHandler(req);
+                if (out instanceof Error)
+                    throw out;
+                return { text: JSON.stringify(out), json: out, model: 'scripted' };
+            }
+            return base.complete(req);
+        },
+    };
+}
+describe('Router(llm / unclear) → IntentTriage 및 Agent Swarm 분기', () => {
+    it('llm 의도의 "그 PR 승인해 줘" → Swarm + GitHubMcpGuide 확인 질문까지. 바로 승인하지 않는다', async () => {
+        const w = createWorld();
+        await review(w);
+        const q = await ask(w, '좋아 그 PR 승인해 줘', 'llm');
+        expect(q.disposition).toBe('awaiting_user');
+        expect(q.pending?.purpose).toBe('confirm_pr_approval');
+        expect(w.github.submitCount).toBe(0);
+        const done = await answer(w, q, '응');
+        expect(done.actionResults.find((a) => a.action === 'submit_approval')).toMatchObject({
+            action: 'submit_approval',
+            status: 'succeeded',
+        });
+        expect(w.github.submitCount).toBe(1);
+    });
+    it('unclear 의도의 리뷰 요청 → IntentTriage(delegate_swarm)로 llm과 동일하게 Swarm에 진입해 리뷰만 수행한다', async () => {
+        let triageCalled = 0;
+        const llm = scriptWithTriage(() => {
+            triageCalled += 1;
+            return {
+                verdict: 'delegate_swarm',
+                rationale: 'user asks to inspect PR context',
+                missingSlots: [],
+                swarmGoal: 'PR 42번 리뷰해서 읽어줘',
+            };
+        });
+        const w = createWorld({ llm });
+        const r = await ask(w, '리마인드 온 것에 대해서 PR을 확인해줘', 'unclear');
+        expect(triageCalled).toBe(1);
+        expect(r.actionResults.map((a) => a.action)).toEqual(['get_review_context']);
+        expect((await speak(r)).text).toContain('PR 42번');
+        expect(w.github.submitCount).toBe(0);
+    });
+    it('unclear 의도의 일상 대화 → IntentTriage(reroute_talk)로 talk 재라우팅만 남긴다 (외부 실행 없음)', async () => {
+        const llm = scriptWithTriage(() => ({
+            verdict: 'reroute_talk',
+            rationale: 'casual_gratitude',
+            missingSlots: [],
+        }));
+        const w = createWorld({ llm });
+        const r = await ask(w, '-감사합니다.', 'unclear');
+        expect(r.disposition).toBe('completed');
+        expect(r.facts['reroute']).toBe('talk');
+        expect(r.actionResults).toHaveLength(0);
+        expect(w.github.reads).toHaveLength(0);
+        expect(w.github.submitCount).toBe(0);
+    });
+    it('LLM 장애 시 안전하게 중단하며 외부 쓰기를 실행하지 않는다', async () => {
+        const downLlm = {
+            provider: 'scripted',
+            async complete() {
+                throw new LlmError('unavailable', 'model unavailable');
+            },
+        };
+        const w = createWorld({ llm: downLlm });
+        const r = await ask(w, '그 PR 승인해 줘', 'llm');
+        expect(r.disposition).toBe('failed');
+        expect(w.github.submitCount).toBe(0);
+    });
+    it('승인 요청은 느슨하게(D-39): STT 0.67이어도 확인 질문까지. 답변·strict는 엄격', async () => {
+        const w = createWorld();
+        await review(w);
+        const q = await ask(w, '좋아 그 PR 승인해 줘', 'llm', { stt: 0.67 });
+        expect(q.pending?.purpose).toBe('confirm_pr_approval');
+        // 답변 STT가 낮으면 승인하지 않는다
+        const again = await answer(w, q, '응', { stt: 0.6 });
+        expect(again.pending?.purpose).toBe('confirm_pr_approval');
+        expect(w.github.submitCount).toBe(0);
+        const w2 = createWorld({ config: { approvalRequestInput: 'strict' } });
+        await review(w2);
+        const q2 = await ask(w2, '좋아 그 PR 승인해 줘', 'llm', { stt: 0.67 });
+        expect(q2.pending?.purpose).toBe('restate_write_command');
+        expect(w2.github.submitCount).toBe(0);
+    });
+    it('llm 진입은 IntentTriage 없이 실행 조율기로 직행한다', async () => {
+        const seenSchemas = [];
+        const base = createScriptedSwarmLlm();
+        const w = createWorld({
+            llm: {
+                provider: 'scripted',
+                async complete(req) {
+                    if (req.jsonSchema?.name)
+                        seenSchemas.push(req.jsonSchema.name);
+                    return base.complete(req);
+                },
+            },
+        });
+        const r = await ask(w, '그 PR 리뷰해 줘', 'llm');
+        expect(r.disposition).toBe('completed');
+        expect(seenSchemas).not.toContain('deskpet_intent_triage');
+        expect(seenSchemas[0]).toBe('deskpet_swarm_plan');
+    });
+});

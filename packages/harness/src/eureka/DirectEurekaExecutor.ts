@@ -167,7 +167,7 @@ export class DirectEurekaExecutor {
       const procName = stringArg(args, 'processName');
       const matched = procName
         ? procs.data?.find((p) => p.name.toLowerCase().includes(procName.toLowerCase()))
-        : procs.data?.[0];
+        : (procs.data?.find((p) => p.name === '일반 업무' || p.id.startsWith('general-work')) ?? procs.data?.[0]);
       processId = matched?.id;
     }
     if (!processId) return this.clarify('어느 Eureka 프로세스 템플릿으로 업무를 생성할지 알려주시겠어요?');

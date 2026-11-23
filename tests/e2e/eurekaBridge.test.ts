@@ -330,6 +330,19 @@ describe('EurekaAdapter — 새 헤드 의미 (wiki interface-contracts 2026-11-
     expect(server.calls.some((c) => c.path === '/_api_/processes/0/list')).toBe(false);
   });
 
+  it('create: defaultProcessId가 없어도 기본 템플릿(일반 업무)으로 바로 등록한다', async () => {
+    const clock = new FakeClock(T0);
+    const server = new FakeEurekaServer(() => clock.nowMs());
+    const store = new InMemoryOperationStore({ clock, ids: new SequentialIdGen(), capacityBytes: DEFAULT_POLICY.storeCapacityBytes, recoveryBudgetBytes: DEFAULT_POLICY.recoveryBudgetBytes, minRetentionMs: DEFAULT_POLICY.minRetentionMs, maxRecoveryAttempts: 3 });
+    const eureka = new EurekaGateway({ http: server, now: () => clock.nowMs(), allowWrites: true });
+    const bridge = new EurekaBridge({ eureka, store, clock });
+    const q = await bridge.execute(nreq('create', { task: '해안가 쓰레기 수거', target: '해안가 쓰레기 줍기' }));
+    expect(q).toMatchObject({ status: 'needs_clarification', facts: { questionKind: 'confirmation', question: "'해안가 쓰레기 수거' 업무를 새로 등록할까요?" } });
+    const ok = await bridge.execute(nreq('create', { task: '해안가 쓰레기 수거' }, { mutationApproved: true }));
+    expect(ok.status).toBe('succeeded');
+    expect(server.calls.find((c) => c.path === '/_api_/items/0/start')?.body).toMatchObject({ processId: 'general-work-v1@10204', name: '해안가 쓰레기 수거' });
+  });
+
   it('구형 형식(modelIntention 없음)은 지금처럼 name을 업무 이름으로 본다', async () => {
     const { bridge } = setup();
     expect(await bridge.execute(req('eureka.status', { name: '보고서 제출' }))).toMatchObject({ status: 'succeeded', facts: { itemId: '2001' } });

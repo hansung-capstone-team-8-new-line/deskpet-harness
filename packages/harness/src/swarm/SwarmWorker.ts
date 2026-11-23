@@ -19,6 +19,7 @@ import type { McpGuideRegistry } from '../guide/BaseMcpGuide.js';
 import type { FastPathToolDescriptor, FastPathToolHandler, McpGuide, PlannedToolCall, WorkerContext } from '../guide/McpGuide.js';
 import type { Clock, IdGen } from '../runtime/clock.js';
 import type { PipelinePermissionQueue } from './PipelinePermissionQueue.js';
+import { completeWithRetry } from './llmRetry.js';
 
 export interface SwarmWorkerDeps {
   mcpManager: McpClientPort;
@@ -569,7 +570,7 @@ export class SwarmWorker {
     summary?: string;
     reasoning: string;
   }> {
-    const res = await this.d.llm!.complete({
+    const res = await completeWithRetry(this.d.llm!, {
       purpose: 'guide',
       instructions,
       input: JSON.stringify({
@@ -592,7 +593,7 @@ export class SwarmWorker {
       maxOutputTokens: 1024,
       deadlineAt: c.deadlineAt,
       ...(c.signal ? { signal: c.signal } : {}),
-    });
+    }, { now: () => this.d.clock.nowMs() });
     const raw = (res.json ?? JSON.parse(res.text)) as Record<string, unknown>;
     const kind = raw['kind'];
     if (kind !== 'call_tool' && kind !== 'need_user' && kind !== 'finish') {

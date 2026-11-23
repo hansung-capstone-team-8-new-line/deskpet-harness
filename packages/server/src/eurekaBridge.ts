@@ -365,12 +365,23 @@ export class EurekaBridge {
     let processId = this.d.defaultProcessId;
     // 구형 형식만 task 헤드를 업무 유형 이름으로 본다. 새 형식에서 task는 업무 이름·요약이다
     const task = legacyHeads(a) ? headString(a, 'task') : undefined;
-    if (task) {
+    if (task || !processId) {
       const ps = await this.d.eureka.listProcesses(c);
-      const hit = ps.ok ? ps.data!.find((p) => p.name === task) : undefined;
-      if (hit) processId = hit.id;
+      if (!processId && !ps.ok) {
+        return fromError(a.operationId, ps.result.error, '기본 업무 템플릿을 확인하지 못했어요.');
+      }
+      if (ps.ok && ps.data?.length) {
+        const hit = task ? ps.data.find((p) => p.name === task) : undefined;
+        if (hit) {
+          processId = hit.id;
+        } else if (!processId) {
+          const defaultTemplate =
+            ps.data.find((p) => p.name === '일반 업무' || p.id.startsWith('general-work')) ?? ps.data[0];
+          processId = defaultTemplate?.id;
+        }
+      }
     }
-    if (!processId) return fail(a.operationId, 'EUREKA_INPUT_INVALID', 'no process to register the item with (set defaultProcessId)', '어떤 업무 유형으로 등록할지 정해지지 않아 등록하지 않았어요.');
+    if (!processId) return fail(a.operationId, 'EUREKA_INPUT_INVALID', 'no default process template available', '기본 업무 템플릿이 없어 등록하지 않았어요.');
     const when = due !== undefined ? formatKoreanDateTime(new Date(due).toISOString(), this.tz) : undefined;
     if (!a.mutationApproved) return confirm(a.operationId, when ? `'${name}' 업무를 마감 ${ro(when)} 새로 등록할까요?` : `'${name}' 업무를 새로 등록할까요?`);
     return this.write(a, 'register_item', { kind: 'eureka_workspace' }, { processId, name, ...(due !== undefined ? { dueAtMs: due } : {}) }, (h) =>

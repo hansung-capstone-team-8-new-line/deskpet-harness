@@ -1,0 +1,23 @@
+export const DEFAULT_POLICY = {
+    policyVersion: 'policy-0.1',
+    checkRuleVersion: 'rules-0.1',
+    minSttConfidenceForWrite: 0.85,
+    minRouteConfidenceForWrite: 0.53, // 2026-11-08 사용자 결정: 라우터 통합 신뢰도 0.53 이상이면 통과 (실증값으로 다시 조정)
+    confirmationTtlMs: 2 * 60_000,
+    clarificationTtlMs: 5 * 60_000,
+    maxGuideSteps: 6,
+    maxRecoveryAttempts: 3,
+    recoveryBudgetBytes: 16_384,
+    storeCapacityBytes: 4 * 1024 * 1024,
+    minRetentionMs: 24 * 3600_000,
+    eurekaConnectTimeoutMs: 2_000,
+    eurekaTotalTimeoutMs: 8_000,
+    githubToolTimeoutMs: 30_000,
+    llmGuideTimeoutMs: 8_000,
+    followUpReplyWaitMs: 3_000,
+    evidenceNote: false,
+    swarmInactivityTimeoutMs: 60_000,
+    prChecks: 'enforce',
+    approvalRequestInput: 'loose',
+    offerApprovalAfterReview: false,
+};

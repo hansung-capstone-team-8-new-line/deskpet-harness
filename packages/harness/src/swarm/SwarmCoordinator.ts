@@ -18,6 +18,7 @@ import type { WikiReader } from '../ports.js';
 import type { Clock, IdGen } from '../runtime/clock.js';
 import type { PipelinePermissionQueue, QueuedPermissionEntry } from './PipelinePermissionQueue.js';
 import { SwarmWorker, type SwarmWorkerOutcome } from './SwarmWorker.js';
+import { completeWithRetry } from './llmRetry.js';
 
 export interface SwarmCoordinatorDeps {
   mcpManager: McpClientPort;
@@ -532,7 +533,7 @@ export class SwarmCoordinator {
     const callBudgetMs = Math.max(this.inactivityTimeoutMs * 2, 30_000);
     const planDeadline = new Date(Math.max(Date.parse(input.constraints.deadlineAt) || 0, nowMs + callBudgetMs)).toISOString();
     try {
-      const res = await this.d.llm.complete({
+      const res = await completeWithRetry(this.d.llm, {
         purpose: 'guide',
         instructions: COORDINATOR_INSTRUCTIONS,
         input: JSON.stringify({
@@ -545,7 +546,7 @@ export class SwarmCoordinator {
         maxOutputTokens: 512,
         deadlineAt: planDeadline,
         signal: session.sessionAbort.signal,
-      });
+      }, { now: () => this.d.clock.nowMs() });
       const parsed = (res.json ?? JSON.parse(res.text)) as { tasks?: SwarmTask[] };
       if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
         return parsed.tasks.map((t, idx) => ({

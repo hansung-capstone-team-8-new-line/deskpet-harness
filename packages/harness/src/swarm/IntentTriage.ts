@@ -8,6 +8,7 @@ import {
 } from '@deskpet/contracts';
 import type { WikiReader } from '../ports.js';
 import type { Clock } from '../runtime/clock.js';
+import { completeWithRetry } from './llmRetry.js';
 
 export interface TriageContext {
   requestId: string;
@@ -92,7 +93,7 @@ export class IntentTriage {
     }
 
     try {
-      const res = await this.llm.complete({
+      const res = await completeWithRetry(this.llm, {
         purpose: 'guide',
         instructions: TRIAGE_INSTRUCTIONS,
         input: buildTriageInput(ctx, wikiExcerpts),
@@ -100,7 +101,7 @@ export class IntentTriage {
         maxOutputTokens: 512,
         deadlineAt: ctx.deadlineAt,
         ...(ctx.signal ? { signal: ctx.signal } : {}),
-      });
+      }, { now: this.clock ? () => this.clock!.nowMs() : () => Date.now() });
       const raw = (res.json ?? JSON.parse(res.text)) as Record<string, unknown>;
       let eurekaArgs: Record<string, unknown> | undefined;
       if (typeof raw['eurekaArgsJson'] === 'string' && raw['eurekaArgsJson'].trim()) {
@@ -157,7 +158,7 @@ function heuristicTriage(text: string, context: ContextPacket): TriageResult {
   if (/^(안녕|고마워|잘\s*지냈|심심|배고파|졸려|ㅋㅋ|ㅎㅎ|오늘\s*날씨)/.test(t)) {
     return { verdict: 'reroute_talk', rationale: 'casual_dialogue_heuristic', missingSlots: [] };
   }
-  if (/(유레카|eureka|업무\s*목록|할\s*일\s*목록|프로세스)/i.test(t)) {
+  if (/(유레카|eureka|업무\s*목록|할\s*일\s*목록|업무\s*(?:읽어|조회|보여|알려)|할\s*일\s*(?:읽어|조회|보여|알려)|프로세스)/i.test(t)) {
     if (/프로세스/.test(t)) {
       return {
         verdict: 'direct_eureka',
