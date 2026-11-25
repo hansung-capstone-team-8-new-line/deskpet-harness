@@ -686,7 +686,9 @@ export class SwarmCoordinator {
     signal?: AbortSignal,
   ): Promise<string> {
     const condensed = condenseTtsText(raw, 180);
-    if (condensed === raw.replace(/\s+/g, ' ').trim() && condensed.length <= 180) return condensed;
+    if (condensed === raw.replace(/\s+/g, ' ').trim() && condensed.length <= 180 && /[가-힣]/.test(condensed)) {
+      return condensed;
+    }
 
     if (this.d.llm) {
       const nowMs = this.d.clock.nowMs();

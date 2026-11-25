@@ -93,6 +93,9 @@ export class FakeEurekaServer implements HttpClient {
   private route(req: HttpRequest): HttpResponse {
     const ok = (b: unknown) => ({ status: 200, bodyText: JSON.stringify(b) });
     let m: RegExpMatchArray | null;
+    if (req.method === 'GET' && req.path === '/_api_/session') {
+      return ok({ sid: '10200', roles: ['member'] });
+    }
     if (req.method === 'GET' && req.path === '/_api_/items/0/list') {
       const all = [...this.items.values()].map((i) => this.itemJson(i));
       const limit = Number(req.query?.['limit'] ?? 100);

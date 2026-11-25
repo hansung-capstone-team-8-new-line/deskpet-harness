@@ -128,7 +128,7 @@ describe('EurekaAdapter — 쓰기 (직접 경로)', () => {
 
   it('지원하지 않는 의도·빠진 슬롯·시간대 없는 마감은 보내지 않는다', async () => {
     const { bridge, server } = setup();
-    expect(await bridge.execute(req('eureka.add_task', { name: '보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
+    expect(await bridge.execute(req('eureka.unknown_op', { name: '보고서 제출' }, { mutationApproved: true }))).toMatchObject({ status: 'failed', error: { code: 'POLICY_BLOCKED' } });
     expect(await bridge.execute(req('eureka.postpone', { name: '보고서 제출', dueAt: '2026-10-09 23:59' }, { mutationApproved: true }))).toMatchObject({ status: 'needs_clarification' });
     expect(server.writeCount('/')).toBe(0);
   });
@@ -154,16 +154,34 @@ describe('EurekaAdapter — 라우터 Operation 라벨 (wiki small-router-model,
     expect(list.facts['count']).toBe('2');
   });
 
-  it('지원하지 않는 라벨은 실행하지 않고, 무엇을 안 했는지·지원 범위를 말한다', async () => {
+  it('query + filter 헤드로 오늘·밀린·긴급·브리핑 조건 조회를 처리한다', async () => {
+    const { clock, bridge, server } = setup();
+    const now = clock.nowMs();
+    server.addItem({ id: '2010', name: '오늘 발표 준비', dueAt: now + 3_600_000, priority: 'urgent', stages: [{ id: 's10', name: '초안', status: 'doing', order: 1 }] });
+    server.addItem({ id: '2011', name: '밀린 정산', dueAt: now - 86_400_000, priority: 'normal', stages: [{ id: 's11', name: '확인', status: 'todo', order: 1 }] });
+    const today = await bridge.execute(req('eureka', { operation: 'query', filter: 'today' }));
+    expect(today.status).toBe('succeeded');
+    expect(today.facts['resultText']).toContain('오늘 발표 준비');
+    const overdue = await bridge.execute(req('eureka', { operation: 'query', filter: 'overdue' }));
+    expect(overdue.facts['resultText']).toContain('밀린 정산');
+    const urgent = await bridge.execute(req('eureka', { operation: 'query', filter: 'urgent' }));
+    expect(urgent.facts['resultText']).toContain('오늘 발표 준비');
+    const briefing = await bridge.execute(req('eureka', { operation: 'query', filter: 'briefing' }));
+    expect(briefing.facts['resultText']).toContain('오늘 마감 업무는');
+  });
+
+  it('지원하지 않는 라벨은 실행하지 않고, query_actors·query_workspace·task 라벨은 실행한다', async () => {
     const { bridge, server } = setup();
-    for (const op of ['add_task', 'delete_task', 'nonsense']) {
-      const r = await bridge.execute(req('eureka', { operation: op, name: '보고서 제출' }, { mutationApproved: true }));
-      // 라우터 24개 라벨 중 미구현은 EUREKA_OPERATION_NOT_IMPLEMENTED, 목록에 없는 값은 POLICY_BLOCKED
-      expect(r).toMatchObject({ status: 'failed', error: { code: op === 'nonsense' ? 'POLICY_BLOCKED' : 'EUREKA_OPERATION_NOT_IMPLEMENTED' } });
-      expect(r.facts['resultText']).toContain('실행하지 않았어요. 지금은 업무 조회·등록·기한·우선순위·이름 변경·완료·보류·재개·삭제, 단계 추가·삭제·순서 변경·시작·되돌리기·건너뛰기와 기록 추가를 할 수 있어요.');
-    }
-    expect((await bridge.execute(req('eureka', { operation: 'query_actors' }))).facts['resultText']).toContain('담당자 조회는 아직');
-    expect(server.calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
+    const unknown = await bridge.execute(req('eureka', { operation: 'nonsense', name: '보고서 제출' }, { mutationApproved: true }));
+    expect(unknown).toMatchObject({ status: 'failed', error: { code: 'POLICY_BLOCKED' } });
+    expect(unknown.facts['resultText']).toContain('실행하지 않았어요.');
+    const actors = await bridge.execute(req('eureka', { operation: 'query_actors' }));
+    expect(actors.status).toBe('succeeded');
+    const ws = await bridge.execute(req('eureka', { operation: 'query_workspace' }));
+    expect(ws.status).toBe('succeeded');
+    const addTask = await bridge.execute(req('eureka', { operation: 'add_task', modelIntention: 'eureka', target: '보고서 제출', task: '검토' }, { mutationApproved: true }));
+    expect(addTask.status).toBe('succeeded');
+    expect(server.calls.filter((c) => c.method !== 'GET')).toHaveLength(1);
   });
 
   it('단계 시작·되돌리기·건너뛰기·update_stage (2026-11-14): 단계를 고르고 묻고 승인 뒤 POST status 1번', async () => {

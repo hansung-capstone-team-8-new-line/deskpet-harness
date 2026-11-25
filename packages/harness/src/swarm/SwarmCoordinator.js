@@ -563,8 +563,9 @@ export class SwarmCoordinator {
     }
     async buildConciseTtsSummary(raw, changedFiles, deadlineAt, signal) {
         const condensed = condenseTtsText(raw, 180);
-        if (condensed === raw.replace(/\s+/g, ' ').trim() && condensed.length <= 180)
+        if (condensed === raw.replace(/\s+/g, ' ').trim() && condensed.length <= 180 && /[가-힣]/.test(condensed)) {
             return condensed;
+        }
         if (this.d.llm) {
             const nowMs = this.d.clock.nowMs();
             const summaryDeadline = new Date(Math.max(Date.parse(deadlineAt) || 0, nowMs + Math.max(this.inactivityTimeoutMs, 10_000))).toISOString();

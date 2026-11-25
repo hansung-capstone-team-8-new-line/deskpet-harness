@@ -75,7 +75,7 @@ export class WorkspaceMcpGuide extends BaseMcpGuide {
       '수정 전에 먼저 `workspace_find_files` 또는 `workspace_search_code`로 위치를 찾고 `workspace_read_file`로 필요한 줄 범위만 읽으세요.',
       '파일 수정은 가급적 전체 덮어쓰기 대신 정확한 `target` → `replacement` 부분 치환(`workspace_edit_file`)을 사용하세요.',
       '코드 수정 후에는 가능한 경우 `workspace_run_command`로 타입체크·린트·관련 테스트를 실행해 검증하세요.',
-      '최종 `summary`는 음성 TTS 출력용으로 1~2문장 이내의 간결한 한국어로 요약하고, 긴 코드·diff·로그 원문을 그대로 넣지 마세요.',
+      "`kind: \"finish\"`로 종료할 때는 최상위 `summary`에 '작업을 완료했어요.' 대신 실제 코드 설명·조사 결과·변경 내용을 한국어 1~2문장으로 작성하고, 긴 코드·diff·로그 원문은 넣지 마세요.",
     ];
   }
 

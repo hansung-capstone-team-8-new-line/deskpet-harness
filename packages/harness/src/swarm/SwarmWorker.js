@@ -5,14 +5,39 @@ const WORKER_STEP_SCHEMA = {
     schema: {
         type: 'object',
         properties: {
-            kind: { type: 'string', enum: ['call_tool', 'need_user', 'finish'] },
-            toolName: { type: 'string' },
-            mcpId: { type: 'string' },
-            argumentsJson: { type: 'string' },
-            questionText: { type: 'string' },
-            summary: { type: 'string' },
-            displaySummary: { type: 'string' },
-            reasoning: { type: 'string' },
+            kind: {
+                type: 'string',
+                enum: ['call_tool', 'need_user', 'finish'],
+                description: '다음 실행 단계 종류',
+            },
+            toolName: {
+                type: 'string',
+                description: "kind가 'call_tool'일 때 호출할 도구 이름",
+            },
+            mcpId: {
+                type: 'string',
+                description: "kind가 'call_tool'일 때 대상 MCP ID",
+            },
+            argumentsJson: {
+                type: 'string',
+                description: "kind가 'call_tool'일 때 도구 인자 JSON 문자열",
+            },
+            questionText: {
+                type: 'string',
+                description: "kind가 'need_user'일 때 사용자에게 물어볼 질문",
+            },
+            summary: {
+                type: 'string',
+                description: "kind가 'finish'일 때 필수. 사용자에게 음성으로 전달할 실제 답변·조사 결과·변경 내용을 한국어 1~2문장으로 작성. '작업을 완료했어요.' 같은 무의미한 상투어 금지.",
+            },
+            displaySummary: {
+                type: 'string',
+                description: "kind가 'finish'일 때 화면 표시용 결과 요약",
+            },
+            reasoning: {
+                type: 'string',
+                description: '이 단계를 선택한 판단 근거',
+            },
         },
         required: ['kind', 'reasoning'],
         additionalProperties: false,
@@ -143,14 +168,15 @@ export class SwarmWorker {
                 return interruptedOutcome();
             reportProgress(`단계 ${step + 1} 결정 (${decision.kind})`, decision.toolName);
             if (decision.kind === 'finish') {
-                const summary = decision.summary?.trim() || '작업을 완료했어요.';
+                const summary = resolveFinishSummary(decision);
+                const displaySummary = decision.displaySummary?.trim();
                 return this.finalize(guide, {
                     workerId,
                     taskId: input.task.taskId,
                     mcpId: inferredMcpId,
                     status: 'completed',
                     summary,
-                    ...(decision.displaySummary?.trim() ? { displaySummary: decision.displaySummary.trim() } : {}),
+                    ...(displaySummary && !isGenericCompletionSummary(displaySummary) ? { displaySummary } : {}),
                     toolCalls: recordedCalls,
                     data: collectedFacts,
                 }, actionResults, collectedFacts, collectedSources);
@@ -530,6 +556,24 @@ function parseJsonArgs(raw) {
     catch {
         return {};
     }
+}
+function isGenericCompletionSummary(text) {
+    const trimmed = text?.trim() ?? '';
+    if (!trimmed)
+        return true;
+    return /^(작업을\s*)?(모두\s*)?완료(했어요|했습니다|됨|되었습니다)[.!~ ]*$/.test(trimmed);
+}
+function resolveFinishSummary(decision) {
+    const summary = decision.summary?.trim();
+    if (summary && !isGenericCompletionSummary(summary))
+        return summary;
+    const displaySummary = decision.displaySummary?.trim();
+    if (displaySummary && !isGenericCompletionSummary(displaySummary))
+        return displaySummary;
+    const reasoning = decision.reasoning.trim();
+    if (reasoning && !isGenericCompletionSummary(reasoning))
+        return reasoning;
+    return summary || '작업을 완료했어요.';
 }
 function summarizeCallResult(r, maxChars = 600) {
     if (r.error)

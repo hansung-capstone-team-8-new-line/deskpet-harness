@@ -35,7 +35,7 @@ export class BaseMcpGuide {
             '[자율 실행 원칙]',
             '- 발견된 MCP 도구와 Fast-Path 도구를 자유롭게 조합해 작업을 직접 완수하세요.',
             '- Guide에 명시되지 않은 임의 제약을 가정하지 마세요.',
-            '- 최종 finish.summary는 음성 TTS로 읽히는 짧고 자연스러운 한국어 1~2문장(코드 블록·마크다운·장황한 diff 제외)으로 작성하세요.',
+            "- `kind: \"finish\"`로 종료할 때는 반드시 최상위 `summary` 필드에 사용자에게 전달할 실제 답변·조사 결과·변경 내용을 한국어 1~2문장(코드 블록·마크다운·장황한 diff 제외)으로 작성하세요. `summary`를 비우거나 '작업을 완료했어요.' 같은 무의미한 완료 문구만 적지 마세요.",
         ].join('\n'));
         return sections.filter(Boolean).join('\n\n');
     }
@@ -79,6 +79,8 @@ export function createDeclarativeMcpGuide(spec) {
 export class McpGuideRegistry {
     guides = [];
     fallback;
+    /** 웹 설정에서 넣은 사용자 추가 규칙 (D-61). mcpId별, '*'는 모든 Guide 공통 */
+    userRules;
     constructor(initial = [], fallback = new GenericMcpGuide()) {
         this.fallback = fallback;
         for (const g of initial)
@@ -91,7 +93,14 @@ export class McpGuideRegistry {
         else
             this.guides.push(guide);
     }
+    /** 사용자 추가 규칙 공급자 (D-61). 부를 때마다 최신 값을 읽는다 */
+    setUserRules(fn) {
+        this.userRules = fn;
+    }
     resolve(mcpId) {
+        return this.withUserRules(this.resolveBase(mcpId));
+    }
+    resolveBase(mcpId) {
         const lower = mcpId.toLowerCase();
         const exact = this.guides.find((g) => g.mcpId.toLowerCase() === lower);
         if (exact)
@@ -100,6 +109,24 @@ export class McpGuideRegistry {
         if (matched)
             return matched;
         return this.fallback;
+    }
+    /**
+     * 사용자 추가 규칙을 프롬프트 끝에 덧붙인 Guide (D-61). 가드·권한 확인·Fast-Path·결과 정리는 원래 Guide 그대로.
+     * 규칙이 없으면 원래 Guide를 그대로 돌려준다
+     */
+    withUserRules(guide) {
+        const rules = this.userRulesFor(guide.mcpId);
+        if (!rules.length)
+            return guide;
+        const wrapped = Object.create(guide);
+        wrapped.buildInstructions = (ctx) => [guide.buildInstructions(ctx), ['[사용자 추가 규칙 (웹 설정)]', ...rules.map((r, i) => `${i + 1}. ${r}`)].join('\n')].join('\n\n');
+        return wrapped;
+    }
+    /** 이 Guide에 붙는 사용자 규칙: 공통('*') + 이 mcpId */
+    userRulesFor(mcpId) {
+        const all = this.userRules?.() ?? {};
+        const own = mcpId === '*' ? [] : Object.entries(all).find(([k]) => k.toLowerCase() === mcpId.toLowerCase())?.[1] ?? [];
+        return [...(all['*'] ?? []), ...own].map((r) => r.trim()).filter(Boolean);
     }
     list() {
         return [...this.guides, this.fallback];

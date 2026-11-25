@@ -58,7 +58,7 @@ export abstract class BaseMcpGuide implements McpGuide {
         '[자율 실행 원칙]',
         '- 발견된 MCP 도구와 Fast-Path 도구를 자유롭게 조합해 작업을 직접 완수하세요.',
         '- Guide에 명시되지 않은 임의 제약을 가정하지 마세요.',
-        '- 최종 finish.summary는 음성 TTS로 읽히는 짧고 자연스러운 한국어 1~2문장(코드 블록·마크다운·장황한 diff 제외)으로 작성하세요.',
+        "- `kind: \"finish\"`로 종료할 때는 반드시 최상위 `summary` 필드에 사용자에게 전달할 실제 답변·조사 결과·변경 내용을 한국어 1~2문장(코드 블록·마크다운·장황한 diff 제외)으로 작성하세요. `summary`를 비우거나 '작업을 완료했어요.' 같은 무의미한 완료 문구만 적지 마세요.",
       ].join('\n'),
     );
 

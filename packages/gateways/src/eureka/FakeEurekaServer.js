@@ -57,6 +57,9 @@ export class FakeEurekaServer {
     route(req) {
         const ok = (b) => ({ status: 200, bodyText: JSON.stringify(b) });
         let m;
+        if (req.method === 'GET' && req.path === '/_api_/session') {
+            return ok({ sid: '10200', roles: ['member'] });
+        }
         if (req.method === 'GET' && req.path === '/_api_/items/0/list') {
             const all = [...this.items.values()].map((i) => this.itemJson(i));
             const limit = Number(req.query?.['limit'] ?? 100);
